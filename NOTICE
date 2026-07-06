@@ -1,0 +1,18 @@
+ADE
+
+This product is a modified derivative of Superset (Copyright Superset, Inc.),
+distributed under the Elastic License 2.0. The full license terms are in
+LICENSE.md.
+
+Modifications made in this derivative include, but are not limited to:
+
+  - Renamed the product to ADE.
+  - Reworked the application around an agent-fleet model, with per-agent
+    repositories, per-agent runtimes, and Hermes-style persistent agent memory.
+  - Added a model picker for selecting the model backing each agent.
+  - Removed the hosted cloud and organization/multi-tenant features.
+
+Use of this software remains subject to the Elastic License 2.0.
+
+Third-party components bundled with or adapted by this software are attributed
+in THIRD-PARTY-NOTICES.md.

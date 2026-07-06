@@ -1,0 +1,658 @@
+import { toast } from "@superset/ui/sonner";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useFileOpenMode } from "renderer/hooks/useFileOpenMode";
+import { electronTrpc } from "renderer/lib/electron-trpc";
+import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
+import { usePresets } from "renderer/react-query/presets";
+import type { WorkspaceSearchParams } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
+import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
+import { usePresetHotkeys } from "renderer/routes/_authenticated/_dashboard/workspace/$workspaceId/hooks/usePresetHotkeys";
+import { NotFound } from "renderer/routes/not-found";
+import {
+	CommandPalette,
+	useCommandPalette,
+} from "renderer/screens/main/components/CommandPalette";
+import {
+	KeywordSearch,
+	useKeywordSearch,
+} from "renderer/screens/main/components/KeywordSearch";
+import { WorkspaceInitializingView } from "renderer/screens/main/components/WorkspaceView/WorkspaceInitializingView";
+import { WorkspaceLayout } from "renderer/screens/main/components/WorkspaceView/WorkspaceLayout";
+import { usePRStatus } from "renderer/screens/main/hooks";
+import { useAppHotkey } from "renderer/stores/hotkeys";
+import { SidebarMode, useSidebarStore } from "renderer/stores/sidebar-state";
+import { getPaneDimensions } from "renderer/stores/tabs/pane-refs";
+import { useTabsStore } from "renderer/stores/tabs/store";
+import type { Tab } from "renderer/stores/tabs/types";
+import { useAgentSession } from "renderer/stores/tabs/useAgentSession";
+import { useTabsWithPresets } from "renderer/stores/tabs/useTabsWithPresets";
+import {
+	findPanePath,
+	getFirstPaneId,
+	getNextPaneId,
+	getPreviousPaneId,
+	resolveActiveTabIdForWorkspace,
+} from "renderer/stores/tabs/utils";
+import {
+	useHasWorkspaceFailed,
+	useIsWorkspaceInitializing,
+} from "renderer/stores/workspace-init";
+
+export const Route = createFileRoute(
+	"/_authenticated/_dashboard/workspace/$workspaceId/",
+)({
+	component: WorkspacePage,
+	notFoundComponent: NotFound,
+	validateSearch: (search: Record<string, unknown>): WorkspaceSearchParams => ({
+		tabId: typeof search.tabId === "string" ? search.tabId : undefined,
+		paneId: typeof search.paneId === "string" ? search.paneId : undefined,
+	}),
+	loader: async ({ params, context }) => {
+		const queryKey = [
+			["workspaces", "get"],
+			{ input: { id: params.workspaceId }, type: "query" },
+		];
+
+		try {
+			await context.queryClient.ensureQueryData({
+				queryKey,
+				queryFn: () =>
+					trpcClient.workspaces.get.query({ id: params.workspaceId }),
+			});
+		} catch (error) {
+			// A persisted/last route can point at an agent that was deleted. Send
+			// it to the workspace index, which routes to the list (or /welcome when
+			// there are no categories) instead of rendering a dead 404.
+			if (error instanceof Error && error.message.includes("not found")) {
+				throw redirect({ to: "/workspace", replace: true });
+			}
+			// Re-throw other errors
+			throw error;
+		}
+	},
+});
+
+function WorkspacePage() {
+	const { workspaceId } = Route.useParams();
+	const { data: workspace } = electronTrpc.workspaces.get.useQuery({
+		id: workspaceId,
+	});
+	const navigate = useNavigate();
+	const routeNavigate = Route.useNavigate();
+	const { tabId: searchTabId, paneId: searchPaneId } = Route.useSearch();
+
+	// Keep the file open mode cache warm for addFileViewerPane
+	useFileOpenMode();
+
+	// Handle search-param-driven tab/pane activation (e.g. from notification clicks)
+	useEffect(() => {
+		if (!searchTabId) return;
+
+		const state = useTabsStore.getState();
+		const tab = state.tabs.find(
+			(t) => t.id === searchTabId && t.workspaceId === workspaceId,
+		);
+		if (!tab) return;
+
+		state.setActiveTab(workspaceId, searchTabId);
+
+		if (searchPaneId && state.panes[searchPaneId]) {
+			state.setFocusedPane(searchTabId, searchPaneId);
+		}
+
+		routeNavigate({ search: {}, replace: true });
+	}, [searchTabId, searchPaneId, workspaceId, routeNavigate]);
+
+	// Check if workspace is initializing or failed
+	const isInitializing = useIsWorkspaceInitializing(workspaceId);
+	const hasFailed = useHasWorkspaceFailed(workspaceId);
+
+	// Check for incomplete init after app restart
+	const gitStatus = workspace?.worktree?.gitStatus;
+	const hasIncompleteInit =
+		workspace?.type === "worktree" &&
+		(gitStatus === null || gitStatus === undefined);
+
+	// Show full-screen initialization view for:
+	// - Actively initializing workspaces (shows progress)
+	// - Failed workspaces (shows error with retry)
+	// - Interrupted workspaces that aren't currently initializing (shows resume option)
+	const showInitView = isInitializing || hasFailed || hasIncompleteInit;
+
+	const allTabs = useTabsStore((s) => s.tabs);
+	const activeTabIds = useTabsStore((s) => s.activeTabIds);
+	const tabHistoryStacks = useTabsStore((s) => s.tabHistoryStacks);
+	const focusedPaneIds = useTabsStore((s) => s.focusedPaneIds);
+	const {
+		addTab,
+		splitPaneAuto,
+		splitPaneVertical,
+		splitPaneHorizontal,
+		openPreset,
+	} = useTabsWithPresets();
+	const { spawnAgentSession } = useAgentSession();
+	const reopenClosedTab = useTabsStore((s) => s.reopenClosedTab);
+	const addBrowserTab = useTabsStore((s) => s.addBrowserTab);
+	const setActiveTab = useTabsStore((s) => s.setActiveTab);
+	const removeTab = useTabsStore((s) => s.removeTab);
+	const removePane = useTabsStore((s) => s.removePane);
+	const setFocusedPane = useTabsStore((s) => s.setFocusedPane);
+	const toggleSidebar = useSidebarStore((s) => s.toggleSidebar);
+	const isSidebarOpen = useSidebarStore((s) => s.isSidebarOpen);
+	const setSidebarOpen = useSidebarStore((s) => s.setSidebarOpen);
+	const currentSidebarMode = useSidebarStore((s) => s.currentMode);
+	const setSidebarMode = useSidebarStore((s) => s.setMode);
+
+	const tabs = useMemo(
+		() => allTabs.filter((tab) => tab.workspaceId === workspaceId),
+		[workspaceId, allTabs],
+	);
+
+	const activeTabId = useMemo(() => {
+		return resolveActiveTabIdForWorkspace({
+			workspaceId,
+			tabs,
+			activeTabIds,
+			tabHistoryStacks,
+		});
+	}, [workspaceId, tabs, activeTabIds, tabHistoryStacks]);
+
+	const activeTab = useMemo(
+		() => (activeTabId ? tabs.find((t) => t.id === activeTabId) : null),
+		[activeTabId, tabs],
+	);
+
+	const focusedPaneId = activeTabId ? focusedPaneIds[activeTabId] : null;
+
+	// Spawn the agent's runtime CLI as a session tab. Used for the "New session"
+	// affordance and the auto-spawn-on-activation effect below.
+	const spawnSession = useCallback(() => {
+		return spawnAgentSession({
+			id: workspaceId,
+			runtime: workspace?.runtime ?? null,
+			worktreePath: workspace?.worktreePath ?? null,
+		});
+	}, [spawnAgentSession, workspaceId, workspace?.runtime, workspace?.worktreePath]);
+
+	// Wait for the persisted tabs store to hydrate before deciding whether an
+	// agent has any existing session — otherwise we'd race persistence and
+	// double-spawn on every launch.
+	const [tabsHydrated, setTabsHydrated] = useState(() =>
+		useTabsStore.persist.hasHydrated(),
+	);
+	useEffect(() => {
+		if (tabsHydrated) return;
+		if (useTabsStore.persist.hasHydrated()) {
+			setTabsHydrated(true);
+			return;
+		}
+		return useTabsStore.persist.onFinishHydration(() => setTabsHydrated(true));
+	}, [tabsHydrated]);
+
+	// Auto-spawn a runtime session when a freshly-activated agent has no tabs yet.
+	const autoSpawnedRef = useRef<Set<string>>(new Set());
+	useEffect(() => {
+		if (!tabsHydrated) return;
+		if (!workspace) return;
+		if (showInitView) return;
+		if (tabs.length > 0) return;
+		if (autoSpawnedRef.current.has(workspaceId)) return;
+		autoSpawnedRef.current.add(workspaceId);
+		spawnSession();
+	}, [tabsHydrated, workspace, showInitView, tabs.length, workspaceId, spawnSession]);
+
+	const { presets } = usePresets();
+
+	const openTabWithPreset = useCallback(
+		(presetIndex: number) => {
+			const preset = presets[presetIndex];
+			if (preset) {
+				openPreset(workspaceId, preset, { target: "active-tab" });
+			} else {
+				addTab(workspaceId);
+			}
+		},
+		[presets, workspaceId, addTab, openPreset],
+	);
+
+	// "New session" defaults to spawning the agent's runtime CLI in a new tab
+	// (falls back to a plain shell when the workspace has no runtime).
+	useAppHotkey("NEW_GROUP", () => spawnSession(), undefined, [spawnSession]);
+	useAppHotkey(
+		"REOPEN_TAB",
+		() => {
+			if (!reopenClosedTab(workspaceId)) {
+				addTab(workspaceId);
+			}
+		},
+		undefined,
+		[workspaceId, reopenClosedTab, addTab],
+	);
+	useAppHotkey("NEW_BROWSER", () => addBrowserTab(workspaceId), undefined, [
+		workspaceId,
+		addBrowserTab,
+	]);
+	usePresetHotkeys(openTabWithPreset);
+
+	useAppHotkey(
+		"CLOSE_TERMINAL",
+		() => {
+			if (!focusedPaneId) return;
+			if (!window.confirm("Close this pane?")) return;
+			removePane(focusedPaneId);
+		},
+		undefined,
+		[focusedPaneId, removePane],
+	);
+	useAppHotkey(
+		"CLOSE_TAB",
+		() => {
+			if (!activeTabId) return;
+			if (!window.confirm("Close this session and all of its panes?")) return;
+			removeTab(activeTabId);
+		},
+		undefined,
+		[activeTabId, removeTab],
+	);
+
+	useAppHotkey(
+		"PREV_TAB",
+		() => {
+			if (!activeTabId || tabs.length === 0) return;
+			const index = tabs.findIndex((t) => t.id === activeTabId);
+			const prevIndex = index <= 0 ? tabs.length - 1 : index - 1;
+			setActiveTab(workspaceId, tabs[prevIndex].id);
+		},
+		undefined,
+		[workspaceId, activeTabId, tabs, setActiveTab],
+	);
+
+	useAppHotkey(
+		"NEXT_TAB",
+		() => {
+			if (!activeTabId || tabs.length === 0) return;
+			const index = tabs.findIndex((t) => t.id === activeTabId);
+			const nextIndex =
+				index >= tabs.length - 1 || index === -1 ? 0 : index + 1;
+			setActiveTab(workspaceId, tabs[nextIndex].id);
+		},
+		undefined,
+		[workspaceId, activeTabId, tabs, setActiveTab],
+	);
+
+	useAppHotkey(
+		"PREV_TAB_ALT",
+		() => {
+			if (!activeTabId || tabs.length === 0) return;
+			const index = tabs.findIndex((t) => t.id === activeTabId);
+			const prevIndex = index <= 0 ? tabs.length - 1 : index - 1;
+			setActiveTab(workspaceId, tabs[prevIndex].id);
+		},
+		undefined,
+		[workspaceId, activeTabId, tabs, setActiveTab],
+	);
+
+	useAppHotkey(
+		"NEXT_TAB_ALT",
+		() => {
+			if (!activeTabId || tabs.length === 0) return;
+			const index = tabs.findIndex((t) => t.id === activeTabId);
+			const nextIndex =
+				index >= tabs.length - 1 || index === -1 ? 0 : index + 1;
+			setActiveTab(workspaceId, tabs[nextIndex].id);
+		},
+		undefined,
+		[workspaceId, activeTabId, tabs, setActiveTab],
+	);
+
+	// Middle mouse button cycles to next tab — covers Logitech MX scroll-wheel
+	// click and similar. Reads store state on each click so we don't have to
+	// re-bind on every tab change.
+	useEffect(() => {
+		if (!workspaceId) return;
+		const handler = (e: MouseEvent) => {
+			if (e.button !== 1) return;
+			const target = e.target as HTMLElement | null;
+			if (
+				target?.tagName === "INPUT" ||
+				target?.tagName === "TEXTAREA" ||
+				target?.isContentEditable
+			) {
+				return;
+			}
+			e.preventDefault();
+			const state = useTabsStore.getState();
+			const wsTabs = state.tabs.filter((t) => t.workspaceId === workspaceId);
+			if (wsTabs.length === 0) return;
+			const currentActive = resolveActiveTabIdForWorkspace({
+				workspaceId,
+				tabs: state.tabs,
+				activeTabIds: state.activeTabIds,
+				tabHistoryStacks: state.tabHistoryStacks,
+			});
+			const idx = wsTabs.findIndex((t) => t.id === currentActive);
+			const nextIdx = idx >= wsTabs.length - 1 || idx === -1 ? 0 : idx + 1;
+			state.setActiveTab(workspaceId, wsTabs[nextIdx].id);
+		};
+		window.addEventListener("auxclick", handler);
+		return () => window.removeEventListener("auxclick", handler);
+	}, [workspaceId]);
+
+	const switchToTab = useCallback(
+		(index: number) => {
+			const tab = tabs[index];
+			if (tab) {
+				setActiveTab(workspaceId, tab.id);
+			}
+		},
+		[tabs, workspaceId, setActiveTab],
+	);
+
+	useAppHotkey("JUMP_TO_TAB_1", () => switchToTab(0), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_2", () => switchToTab(1), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_3", () => switchToTab(2), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_4", () => switchToTab(3), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_5", () => switchToTab(4), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_6", () => switchToTab(5), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_7", () => switchToTab(6), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_8", () => switchToTab(7), undefined, [switchToTab]);
+	useAppHotkey("JUMP_TO_TAB_9", () => switchToTab(8), undefined, [switchToTab]);
+
+	useAppHotkey(
+		"PREV_PANE",
+		() => {
+			if (!activeTabId || !activeTab?.layout || !focusedPaneId) return;
+			const prevPaneId = getPreviousPaneId(activeTab.layout, focusedPaneId);
+			if (prevPaneId) {
+				setFocusedPane(activeTabId, prevPaneId);
+			}
+		},
+		undefined,
+		[activeTabId, activeTab?.layout, focusedPaneId, setFocusedPane],
+	);
+
+	useAppHotkey(
+		"NEXT_PANE",
+		() => {
+			if (!activeTabId || !activeTab?.layout || !focusedPaneId) return;
+			const nextPaneId = getNextPaneId(activeTab.layout, focusedPaneId);
+			if (nextPaneId) {
+				setFocusedPane(activeTabId, nextPaneId);
+			}
+		},
+		undefined,
+		[activeTabId, activeTab?.layout, focusedPaneId, setFocusedPane],
+	);
+
+	// Open in last used app shortcut
+	const projectId = workspace?.projectId;
+	const { data: defaultApp } = electronTrpc.projects.getDefaultApp.useQuery(
+		{ projectId: projectId as string },
+		{ enabled: !!projectId },
+	);
+	const utils = electronTrpc.useUtils();
+	const openInApp = electronTrpc.external.openInApp.useMutation({
+		onSuccess: () => {
+			if (projectId) {
+				utils.projects.getDefaultApp.invalidate({ projectId });
+			}
+		},
+	});
+	useAppHotkey(
+		"OPEN_IN_APP",
+		() => {
+			if (workspace?.worktreePath && defaultApp) {
+				openInApp.mutate({
+					path: workspace.worktreePath,
+					app: defaultApp,
+					projectId,
+				});
+			}
+		},
+		undefined,
+		[workspace?.worktreePath, defaultApp, projectId],
+	);
+
+	// Copy path shortcut
+	const copyPath = electronTrpc.external.copyPath.useMutation();
+	useAppHotkey(
+		"COPY_PATH",
+		() => {
+			if (workspace?.worktreePath) {
+				copyPath.mutate(workspace.worktreePath);
+			}
+		},
+		undefined,
+		[workspace?.worktreePath],
+	);
+
+	// Open PR shortcut (⌘⇧P)
+	const { pr } = usePRStatus({ workspaceId });
+	const createPRMutation = electronTrpc.changes.createPR.useMutation({
+		onSuccess: () => toast.success("Opening GitHub..."),
+		onError: (error) => toast.error(`Failed: ${error.message}`),
+	});
+	useAppHotkey(
+		"OPEN_PR",
+		() => {
+			if (pr?.url) {
+				window.open(pr.url, "_blank");
+			} else if (workspace?.worktreePath) {
+				createPRMutation.mutate({ worktreePath: workspace.worktreePath });
+			}
+		},
+		undefined,
+		[pr?.url, workspace?.worktreePath],
+	);
+
+	const commandPalette = useCommandPalette({
+		workspaceId,
+		worktreePath: workspace?.worktreePath,
+	});
+	const keywordSearch = useKeywordSearch({
+		workspaceId,
+		worktreePath: workspace?.worktreePath,
+	});
+	useAppHotkey(
+		"QUICK_OPEN",
+		() => {
+			keywordSearch.handleOpenChange(false);
+			commandPalette.toggle();
+		},
+		undefined,
+		[commandPalette.toggle, keywordSearch.handleOpenChange],
+	);
+	useAppHotkey(
+		"KEYWORD_SEARCH",
+		() => {
+			commandPalette.handleOpenChange(false);
+			keywordSearch.toggle();
+		},
+		undefined,
+		[commandPalette.handleOpenChange, keywordSearch.toggle],
+	);
+
+	// Toggle changes sidebar (⌘L)
+	useAppHotkey("TOGGLE_SIDEBAR", () => toggleSidebar(), undefined, [
+		toggleSidebar,
+	]);
+
+	// Toggle expand/collapse sidebar (⌘⇧L)
+	useAppHotkey(
+		"TOGGLE_EXPAND_SIDEBAR",
+		() => {
+			if (!isSidebarOpen) {
+				setSidebarOpen(true);
+				setSidebarMode(SidebarMode.Changes);
+			} else {
+				const isExpanded = currentSidebarMode === SidebarMode.Changes;
+				setSidebarMode(isExpanded ? SidebarMode.Tabs : SidebarMode.Changes);
+			}
+		},
+		undefined,
+		[isSidebarOpen, setSidebarOpen, setSidebarMode, currentSidebarMode],
+	);
+
+	// Pane splitting helper - resolves target pane for split operations
+	const resolveSplitTarget = useCallback(
+		(paneId: string, tabId: string, targetTab: Tab) => {
+			const path = findPanePath(targetTab.layout, paneId);
+			if (path !== null) return { path, paneId };
+
+			const firstPaneId = getFirstPaneId(targetTab.layout);
+			const firstPanePath = findPanePath(targetTab.layout, firstPaneId);
+			setFocusedPane(tabId, firstPaneId);
+			return { path: firstPanePath ?? [], paneId: firstPaneId };
+		},
+		[setFocusedPane],
+	);
+
+	// Pane splitting shortcuts
+	useAppHotkey(
+		"SPLIT_AUTO",
+		() => {
+			if (activeTabId && focusedPaneId && activeTab) {
+				const target = resolveSplitTarget(
+					focusedPaneId,
+					activeTabId,
+					activeTab,
+				);
+				if (!target) return;
+				const dimensions = getPaneDimensions(target.paneId);
+				if (dimensions) {
+					splitPaneAuto(activeTabId, target.paneId, dimensions, target.path);
+				}
+			}
+		},
+		undefined,
+		[activeTabId, focusedPaneId, activeTab, splitPaneAuto, resolveSplitTarget],
+	);
+
+	useAppHotkey(
+		"SPLIT_RIGHT",
+		() => {
+			if (activeTabId && focusedPaneId && activeTab) {
+				const target = resolveSplitTarget(
+					focusedPaneId,
+					activeTabId,
+					activeTab,
+				);
+				if (!target) return;
+				splitPaneVertical(activeTabId, target.paneId, target.path);
+			}
+		},
+		undefined,
+		[
+			activeTabId,
+			focusedPaneId,
+			activeTab,
+			splitPaneVertical,
+			resolveSplitTarget,
+		],
+	);
+
+	useAppHotkey(
+		"SPLIT_DOWN",
+		() => {
+			if (activeTabId && focusedPaneId && activeTab) {
+				const target = resolveSplitTarget(
+					focusedPaneId,
+					activeTabId,
+					activeTab,
+				);
+				if (!target) return;
+				splitPaneHorizontal(activeTabId, target.paneId, target.path);
+			}
+		},
+		undefined,
+		[
+			activeTabId,
+			focusedPaneId,
+			activeTab,
+			splitPaneHorizontal,
+			resolveSplitTarget,
+		],
+	);
+
+	// Navigate to previous workspace (⌘↑)
+	const getPreviousWorkspace =
+		electronTrpc.workspaces.getPreviousWorkspace.useQuery(
+			{ id: workspaceId },
+			{ enabled: !!workspaceId },
+		);
+	useAppHotkey(
+		"PREV_WORKSPACE",
+		() => {
+			const prevWorkspaceId = getPreviousWorkspace.data;
+			if (prevWorkspaceId) {
+				navigateToWorkspace(prevWorkspaceId, navigate);
+			}
+		},
+		undefined,
+		[getPreviousWorkspace.data, navigate],
+	);
+
+	// Navigate to next workspace (⌘↓)
+	const getNextWorkspace = electronTrpc.workspaces.getNextWorkspace.useQuery(
+		{ id: workspaceId },
+		{ enabled: !!workspaceId },
+	);
+	useAppHotkey(
+		"NEXT_WORKSPACE",
+		() => {
+			const nextWorkspaceId = getNextWorkspace.data;
+			if (nextWorkspaceId) {
+				navigateToWorkspace(nextWorkspaceId, navigate);
+			}
+		},
+		undefined,
+		[getNextWorkspace.data, navigate],
+	);
+
+	return (
+		<div className="flex-1 h-full flex flex-col overflow-hidden">
+			<div className="flex-1 min-h-0 flex overflow-hidden">
+				{showInitView ? (
+					<WorkspaceInitializingView
+						workspaceId={workspaceId}
+						workspaceName={workspace?.name ?? "Agent"}
+						isInterrupted={hasIncompleteInit && !isInitializing}
+					/>
+				) : (
+					<WorkspaceLayout />
+				)}
+			</div>
+			<CommandPalette
+				open={commandPalette.open}
+				onOpenChange={commandPalette.handleOpenChange}
+				query={commandPalette.query}
+				onQueryChange={commandPalette.setQuery}
+				filtersOpen={commandPalette.filtersOpen}
+				onFiltersOpenChange={commandPalette.setFiltersOpen}
+				includePattern={commandPalette.includePattern}
+				onIncludePatternChange={commandPalette.setIncludePattern}
+				excludePattern={commandPalette.excludePattern}
+				onExcludePatternChange={commandPalette.setExcludePattern}
+				isLoading={commandPalette.isFetching}
+				searchResults={commandPalette.searchResults}
+				onSelectFile={commandPalette.selectFile}
+			/>
+			<KeywordSearch
+				open={keywordSearch.open}
+				onOpenChange={keywordSearch.handleOpenChange}
+				query={keywordSearch.query}
+				onQueryChange={keywordSearch.setQuery}
+				filtersOpen={keywordSearch.filtersOpen}
+				onFiltersOpenChange={keywordSearch.setFiltersOpen}
+				includePattern={keywordSearch.includePattern}
+				onIncludePatternChange={keywordSearch.setIncludePattern}
+				excludePattern={keywordSearch.excludePattern}
+				onExcludePatternChange={keywordSearch.setExcludePattern}
+				isLoading={keywordSearch.isFetching}
+				searchResults={keywordSearch.searchResults}
+				onSelectMatch={keywordSearch.selectMatch}
+			/>
+		</div>
+	);
+}
