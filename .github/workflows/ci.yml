@@ -79,14 +79,12 @@ jobs:
         run: bun install --frozen
 
       - name: Test focused suites in isolated processes
-        env:
-          OPENROUTER_API_KEY: ""
         run: |
           bun test packages/shared/src/agent-command.test.ts
           bun test apps/desktop/src/lib/trpc/routers/external/helpers.test.ts apps/desktop/src/lib/trpc/routers/external/index.test.ts
           bun test apps/desktop/src/lib/trpc/routers/workspaces/procedures/create-agent.test.ts
           bun test apps/desktop/src/main/lib/agent-home.test.ts apps/desktop/src/main/lib/agent-repo.test.ts apps/desktop/src/main/lib/agent-scaffold.test.ts
-          bun test apps/desktop/src/main/lib/terminal/env.test.ts
+          env -u OPENROUTER_API_KEY bun test apps/desktop/src/main/lib/terminal/env.test.ts
           bun test apps/desktop/src/main/lib/static-ports/loader.test.ts
           bun test apps/desktop/src/main/lib/agent-setup/shell-wrappers.test.ts
           bun test apps/desktop/src/lib/trpc/routers/workspaces/utils/teardown.test.ts
