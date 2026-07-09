@@ -16,7 +16,7 @@ const productName = pkg.productName;
 // are published. Keep these values in sync with RELEASE_REPO_* in
 // src/main/lib/auto-updater.ts.
 const RELEASE_REPO_OWNER = "Chi944";
-const RELEASE_REPO_NAME = "damon-ade-windows";
+const RELEASE_REPO_NAME = "chi-ade-windows";
 
 // Notarize only when Apple credentials are present in the environment
 // (CI signing job, or a local signed build). electron-builder reads the

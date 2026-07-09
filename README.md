@@ -11,15 +11,23 @@ ADE runs whatever CLI coding agents you already have installed. Claude Code, Ope
 
 ## Screenshots
 
-<!-- TODO: rail with teams + agents -->
-<!-- TODO: agent workspace with session tabs + model bar -->
-<!-- TODO: Agent Files panel showing memory -->
+### Agent workspace
+
+![ADE Windows workspace with the team and agent rail, PowerShell terminal, model bar, and Agent Files panel](docs/screenshots/workspace.png)
+
+### Zero-copy existing project
+
+![New agent dialog with the zero-copy existing-folder option selected](docs/screenshots/new-agent.png)
+
+### First launch
+
+![ADE first-launch screen before a team or agent has been created](docs/screenshots/first-launch.png)
 
 ## Install
 
 ### Download (recommended)
 
-Download the installer for your platform from the [latest release](https://github.com/Chi944/damon-ade-windows/releases/latest):
+Download the installer for your platform from the [latest release](https://github.com/Chi944/chi-ade-windows/releases/latest):
 
 - macOS: signed `.dmg`
 - Windows: `ADE-<version>-x64.exe`
@@ -30,8 +38,8 @@ Download the installer for your platform from the [latest release](https://githu
 Requires [Bun](https://bun.sh) 1.3.6+.
 
 ```bash
-git clone https://github.com/Chi944/damon-ade-windows.git
-cd damon-ade-windows
+git clone https://github.com/Chi944/chi-ade-windows.git
+cd chi-ade-windows
 bun install
 cd apps/desktop
 bun run compile:app        # builds main + preload + renderer into dist/

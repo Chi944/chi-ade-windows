@@ -17,7 +17,7 @@ const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4; // 4 hours
 //
 // Keep this fork identity in sync with apps/desktop/electron-builder.ts.
 const RELEASE_REPO_OWNER = "Chi944";
-const RELEASE_REPO_NAME = "damon-ade-windows";
+const RELEASE_REPO_NAME = "chi-ade-windows";
 
 // Auto-update is intentionally DISABLED for the v1 public launch. To turn it
 // on later: set RELEASE_REPO_NAME above and flip this single flag to `true`.

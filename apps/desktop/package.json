@@ -7,7 +7,7 @@
 	"resources": "src/resources",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/Chi944/damon-ade-windows.git"
+		"url": "https://github.com/Chi944/chi-ade-windows.git"
 	},
 	"author": {
 		"name": "ADE"
