@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { JSONFilePreset } from "lowdb/node";
 import {
 	APP_STATE_PATH,
+	ensureSupersetHomeDirExists,
 	SUPERSET_HOME_DIR,
 	SUPERSET_SENSITIVE_FILE_MODE,
-	ensureSupersetHomeDirExists,
 } from "../app-environment";
 import type { AppState } from "./schemas";
 import { defaultAppState } from "./schemas";
@@ -47,9 +47,7 @@ function loadOrCreateDeviceId(): string {
 
 export function getDeviceId(): string {
 	if (!_deviceId) {
-		throw new Error(
-			"Device ID not initialized. Call initAppState() first.",
-		);
+		throw new Error("Device ID not initialized. Call initAppState() first.");
 	}
 	return _deviceId;
 }
@@ -110,6 +108,13 @@ export async function initAppState(): Promise<void> {
 
 	// Reshape data to ensure it has the correct structure (handles legacy formats)
 	_appState.data = ensureValidShape(_appState.data, _deviceId);
+
+	// JSONFilePreset keeps defaults in memory when the file does not exist. The
+	// watcher starts immediately after this function returns, so materialize the
+	// first-run file before it attempts fs.watch.
+	if (!existsSync(APP_STATE_PATH)) {
+		await _appState.write();
+	}
 
 	console.log(
 		`App state initialized at: ${APP_STATE_PATH} (deviceId=${_deviceId.slice(0, 8)}...)`,

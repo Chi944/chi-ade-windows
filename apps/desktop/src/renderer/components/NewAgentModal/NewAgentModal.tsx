@@ -1,4 +1,4 @@
-import { AGENT_RUNTIMES } from "@superset/local-db";
+import type { AGENT_RUNTIMES } from "@superset/local-db";
 import {
 	type AgentBinary,
 	type CheckedBinary,
@@ -38,7 +38,7 @@ import {
 	usePreSelectedProjectId,
 } from "renderer/stores/new-workspace-modal";
 
-type RepoMode = "init" | "clone" | "local";
+type RepoMode = "init" | "clone" | "local" | "existing";
 
 /**
  * Runtimes offered in the New Agent picker. The full AGENT_RUNTIMES enum (and
@@ -60,6 +60,8 @@ export function NewAgentModal() {
 	const categoryId = usePreSelectedProjectId();
 	const utils = electronTrpc.useUtils();
 	const { isAvailable, recheck, isFetching } = useRuntimeAvailability();
+	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
+	const selectDirectory = electronTrpc.window.selectDirectory.useMutation();
 
 	const [name, setName] = useState("");
 	const [role, setRole] = useState("");
@@ -74,9 +76,9 @@ export function NewAgentModal() {
 	const nameInputRef = useRef<HTMLInputElement>(null);
 
 	const createAgent = electronTrpc.workspaces.createAgent.useMutation();
-	const setWorkspaceIcon = electronTrpc.workspaces.setWorkspaceIcon.useMutation();
+	const setWorkspaceIcon =
+		electronTrpc.workspaces.setWorkspaceIcon.useMutation();
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reset each open
 	useEffect(() => {
 		if (!isOpen) return;
 		setName("");
@@ -101,12 +103,12 @@ export function NewAgentModal() {
 		}
 	};
 
-	// Building the agent's repo (init OR clone) shells to git, which a fresh Mac
-	// lacks until the Command Line Tools are installed. Block create until it's
-	// present rather than letting agent-repo fail with a generic error.
+	// Building or linking an agent repo shells to Git. Block create until it is
+	// available rather than letting agent-repo fail with a generic error.
 	const gitMissing = !isAvailable("git");
 	const runtimeBinary = RUNTIME_BINARY[runtime];
 	const runtimeMissing = !isAvailable(runtimeBinary as CheckedBinary);
+	const localPathRequired = repoMode === "local" || repoMode === "existing";
 
 	const canCreate =
 		!!categoryId &&
@@ -114,8 +116,21 @@ export function NewAgentModal() {
 		!gitMissing &&
 		(repoMode === "init" ||
 			(repoMode === "clone" && cloneUrl.trim().length > 0) ||
-			(repoMode === "local" && localPath.trim().length > 0)) &&
+			(localPathRequired && localPath.trim().length > 0)) &&
 		!createAgent.isPending;
+
+	const handleBrowseForRepo = async () => {
+		const result = await selectDirectory.mutateAsync({
+			title:
+				repoMode === "existing"
+					? "Select an existing Git repository"
+					: "Select a repository to clone",
+			defaultPath: localPath || undefined,
+		});
+		if (!result.canceled && result.path) {
+			setLocalPath(result.path);
+		}
+	};
 
 	const handleCreate = async () => {
 		if (!categoryId || !canCreate) return;
@@ -130,7 +145,9 @@ export function NewAgentModal() {
 						? { type: "clone", url: cloneUrl.trim() }
 						: repoMode === "local"
 							? { type: "clone", url: localPath.trim() }
-							: { type: "init" },
+							: repoMode === "existing"
+								? { type: "existing", path: localPath.trim() }
+								: { type: "init" },
 			});
 			if (photoDataUrl) {
 				await setWorkspaceIcon.mutateAsync({
@@ -153,11 +170,7 @@ export function NewAgentModal() {
 	};
 
 	return (
-		<Dialog
-			modal
-			open={isOpen}
-			onOpenChange={(open) => !open && closeModal()}
-		>
+		<Dialog modal open={isOpen} onOpenChange={(open) => !open && closeModal()}>
 			<DialogContent className="sm:max-w-[440px]">
 				<DialogHeader>
 					<DialogTitle>New agent</DialogTitle>
@@ -248,8 +261,8 @@ export function NewAgentModal() {
 						</Select>
 						{runtimeMissing && (
 							<p className="text-xs text-muted-foreground">
-								{AGENT_LABELS[runtime]}'s CLI isn't installed — the agent will be
-								created, but you'll need it to run sessions.{" "}
+								{AGENT_LABELS[runtime]}'s CLI isn't installed — the agent will
+								be created, but you'll need it to run sessions.{" "}
 								<button
 									type="button"
 									className="text-foreground underline underline-offset-2 hover:no-underline"
@@ -286,6 +299,12 @@ export function NewAgentModal() {
 									Clone from local path
 								</Label>
 							</div>
+							<div className="flex items-center gap-2">
+								<RadioGroupItem value="existing" id="repo-existing" />
+								<Label htmlFor="repo-existing" className="font-normal">
+									Use existing folder (zero-copy)
+								</Label>
+							</div>
 						</RadioGroup>
 						{repoMode === "clone" && (
 							<Input
@@ -294,12 +313,35 @@ export function NewAgentModal() {
 								placeholder="https://github.com/owner/repo.git"
 							/>
 						)}
-						{repoMode === "local" && (
-							<Input
-								value={localPath}
-								onChange={(e) => setLocalPath(e.target.value)}
-								placeholder="/Users/you/code/my-repo"
-							/>
+						{localPathRequired && (
+							<div className="flex flex-col gap-1.5">
+								<div className="flex gap-2">
+									<Input
+										value={localPath}
+										onChange={(e) => setLocalPath(e.target.value)}
+										placeholder={
+											platform === "win32"
+												? "C:\\path\\to\\my-repo"
+												: "/Users/you/code/my-repo"
+										}
+									/>
+									<Button
+										type="button"
+										variant="outline"
+										onClick={handleBrowseForRepo}
+										disabled={selectDirectory.isPending}
+									>
+										Browse...
+									</Button>
+								</div>
+								{repoMode === "existing" && (
+									<p className="text-xs text-muted-foreground">
+										ADE will run in this folder without copying it. Removing the
+										agent will never delete the repository. A folder can belong
+										to only one ADE agent at a time.
+									</p>
+								)}
+							</div>
 						)}
 					</div>
 				</div>
@@ -308,12 +350,10 @@ export function NewAgentModal() {
 					<div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs">
 						<p className="font-medium text-foreground">Git is required</p>
 						<p className="text-muted-foreground">
-							Creating an agent sets up a git repository, and Git isn't installed.
-							Install Apple's Command Line Tools, then re-check:
+							Creating an agent needs Git. Install{" "}
+							{platform === "win32" ? "Git for Windows" : "Git"}, ensure it is
+							on PATH, then re-check.
 						</p>
-						<code className="select-all rounded bg-background/60 px-2 py-1 font-mono">
-							xcode-select --install
-						</code>
 						<button
 							type="button"
 							onClick={recheck}

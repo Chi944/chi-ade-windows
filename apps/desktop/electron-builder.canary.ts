@@ -20,7 +20,7 @@ const canaryWinIconPath = join(pkg.resources, "build/icons/icon-canary.ico");
 
 const config: Configuration = {
 	...baseConfig,
-	appId: "studio.persimmons.ade.canary",
+	appId: "io.github.chi944.ade.canary",
 	productName,
 
 	// Inherit the public release repo from the base config (single source of

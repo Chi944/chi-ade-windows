@@ -52,7 +52,7 @@ export function resolveDefaultEditor(projectId?: string): ExternalApp | null {
 	return row?.defaultEditor ?? null;
 }
 
-async function openPathInApp(
+export async function openPathInApp(
 	filePath: string,
 	app: ExternalApp,
 ): Promise<void> {
@@ -62,25 +62,28 @@ async function openPathInApp(
 	}
 
 	const candidates = getAppCommand(app, filePath);
-	if (candidates) {
-		let lastError: Error | undefined;
-		for (const cmd of candidates) {
-			try {
-				await spawnAsync(cmd.command, cmd.args);
-				return;
-			} catch (error) {
-				lastError = error instanceof Error ? error : new Error(String(error));
-				if (candidates.length > 1) {
-					console.warn(
-						`[external/openInApp] ${cmd.args[1]} not found, trying next candidate`,
-					);
-				}
-			}
-		}
-		throw lastError;
+	if (!candidates) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `'${app}' is not supported on ${process.platform}.`,
+		});
 	}
 
-	await shell.openPath(filePath);
+	let lastError: Error | undefined;
+	for (const cmd of candidates) {
+		try {
+			await spawnAsync(cmd.command, cmd.args);
+			return;
+		} catch (error) {
+			lastError = error instanceof Error ? error : new Error(String(error));
+			if (candidates.length > 1) {
+				console.warn(
+					`[external/openInApp] ${cmd.command} not found, trying next candidate`,
+				);
+			}
+		}
+	}
+	throw lastError;
 }
 
 /**

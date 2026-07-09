@@ -1,16 +1,32 @@
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { workspaces, worktrees } from "@superset/local-db";
-import { beginAgentInit } from "main/lib/agent-init";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { getAgentWorktreePath } from "main/lib/agent-home";
+import { beginAgentInit } from "main/lib/agent-init";
+import { resolveExistingAgentRepo } from "main/lib/agent-repo";
 import { localDb } from "main/lib/local-db";
 import { v4 as uuidv4 } from "uuid";
 import { publicProcedure, router } from "../../..";
-import { createAgentInput } from "./create-agent-input";
 import {
 	activateProject,
 	getMaxWorkspaceTabOrder,
 	getProject,
 	setLastActiveWorkspace,
 } from "../utils/db-helpers";
+import { createAgentInput } from "./create-agent-input";
+
+function repoPathKey(repoPath: string): string {
+	let canonicalPath: string;
+	try {
+		canonicalPath = realpathSync(repoPath);
+	} catch {
+		canonicalPath = resolve(repoPath);
+	}
+	return process.platform === "win32"
+		? canonicalPath.toLocaleLowerCase("en-US")
+		: canonicalPath;
+}
 
 /**
  * ADE: create an Agent (a `workspaces` row) with its OWN standalone git repo.
@@ -26,17 +42,45 @@ export const createAgentProcedures = () => {
 	return router({
 		createAgent: publicProcedure
 			.input(createAgentInput)
-			.mutation(({ input }) => {
+			.mutation(async ({ input }) => {
 				const project = getProject(input.projectId);
 				if (!project) {
 					throw new Error(`Category ${input.projectId} not found`);
 				}
 
 				const agentId = uuidv4();
-				const worktreePath = getAgentWorktreePath(agentId);
-				// Placeholder branch; the init job resolves the real branch (a
-				// clone may not be on "main") and updates these rows.
-				const branch = "main";
+				let source = input.repo;
+				let worktreePath = getAgentWorktreePath(agentId);
+				// Clone/init sources begin with a placeholder; the background job
+				// resolves their real branch. Existing repositories resolve below.
+				let branch = "main";
+
+				if (source.type === "existing") {
+					const existing = await resolveExistingAgentRepo(source.path);
+					const existingPathKey = repoPathKey(existing.worktreePath);
+					const duplicate = localDb
+						.select({ name: workspaces.name, path: worktrees.path })
+						.from(workspaces)
+						.innerJoin(worktrees, eq(workspaces.worktreeId, worktrees.id))
+						.where(
+							and(
+								isNotNull(workspaces.runtime),
+								isNotNull(workspaces.worktreeId),
+							),
+						)
+						.all()
+						.find(({ path }) => repoPathKey(path) === existingPathKey);
+
+					if (duplicate) {
+						throw new Error(
+							`This repository is already linked to agent "${duplicate.name}". One zero-copy repository can belong to only one ADE agent.`,
+						);
+					}
+
+					worktreePath = existing.worktreePath;
+					branch = existing.branch;
+					source = { type: "existing", path: existing.worktreePath };
+				}
 
 				// gitStatus is null until the init job completes, so the content
 				// view shows the checklist (see workspace/$workspaceId/page.tsx
@@ -80,7 +124,7 @@ export const createAgentProcedures = () => {
 					agentName: input.name,
 					role: input.role,
 					runtime: input.runtime,
-					source: input.repo,
+					source,
 				});
 
 				return {

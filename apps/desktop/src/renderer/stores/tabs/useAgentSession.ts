@@ -1,8 +1,8 @@
+import type { AgentRuntime, TerminalPreset } from "@superset/local-db";
 import {
 	AGENT_LABELS,
-	AGENT_PRESET_COMMANDS,
+	getAgentPresetCommands,
 } from "@superset/shared/agent-command";
-import type { AgentRuntime, TerminalPreset } from "@superset/local-db";
 import { useCallback } from "react";
 import { useTabsWithPresets } from "./useTabsWithPresets";
 
@@ -38,7 +38,9 @@ export function useAgentSession() {
 				id: `agent-${runtime}`,
 				name: AGENT_LABELS[runtime] ?? runtime,
 				cwd: worktreePath ?? "",
-				commands: AGENT_PRESET_COMMANDS[runtime],
+				commands: getAgentPresetCommands({
+					windows: process.platform === "win32",
+				})[runtime],
 				executionMode: "new-tab",
 			};
 

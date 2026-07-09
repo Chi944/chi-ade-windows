@@ -101,6 +101,7 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 				},
 				randomId: window.crypto.randomUUID(),
 				agent: selectedAgent,
+				windows: process.platform === "win32",
 			});
 
 			if (result.wasExisting) {

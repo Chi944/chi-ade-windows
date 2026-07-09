@@ -1,4 +1,4 @@
-When contributing to this repository, please first discuss the change you wish to make via [issues](https://github.com/per-simmons/damon-ade/issues) before making a change.
+When contributing to this repository, please first discuss the change you wish to make via [issues](https://github.com/Chi944/damon-ade-windows/issues) before making a change.
 
 Please note we have a [code of conduct](./CODE_OF_CONDUCT.md), please follow it in all your interactions with the project.
 
@@ -25,4 +25,4 @@ Please note we have a [code of conduct](./CODE_OF_CONDUCT.md), please follow it 
 
 We try to follow guidelines from [Clean Code](https://gist.github.com/wojteklu/73c6914cc446146b8b533c0988cf8d29) and the boy scoute rule:
 
-"Leave the code cleaner, not messier, than how you found it". 
+"Leave the code cleaner, not messier, than how you found it".

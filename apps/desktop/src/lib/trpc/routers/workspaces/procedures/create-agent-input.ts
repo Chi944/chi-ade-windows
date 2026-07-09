@@ -22,6 +22,7 @@ export const createAgentInput = z.object({
 		.discriminatedUnion("type", [
 			z.object({ type: z.literal("init") }),
 			z.object({ type: z.literal("clone"), url: z.string().min(1) }),
+			z.object({ type: z.literal("existing"), path: z.string().min(1) }),
 		])
 		.default({ type: "init" }),
 });

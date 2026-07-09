@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -648,6 +648,55 @@ export async function deleteLocalBranch({
 	}
 }
 
+async function renameWithRetry(
+	source: string,
+	destination: string,
+	{ attempts = 10, delayMs = 300 } = {},
+): Promise<void> {
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		try {
+			await rename(source, destination);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const retryable = code === "EBUSY" || code === "EPERM";
+			if (!retryable || attempt === attempts) throw error;
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
+
+function deleteDirectoryInBackground(targetPath: string): void {
+	if (process.platform === "win32") {
+		void rm(targetPath, { recursive: true, force: true }).catch((error) => {
+			console.error(
+				`[removeWorktree] Background cleanup of ${targetPath} failed:`,
+				error instanceof Error ? error.message : String(error),
+			);
+		});
+		return;
+	}
+
+	const child = spawn("/bin/rm", ["-rf", targetPath], {
+		detached: true,
+		stdio: "ignore",
+	});
+	child.unref();
+	child.on("error", (error) => {
+		console.error(
+			`[removeWorktree] Failed to spawn rm for ${targetPath}:`,
+			error.message,
+		);
+	});
+	child.on("exit", (code: number | null) => {
+		if (code !== 0) {
+			console.error(
+				`[removeWorktree] Background cleanup of ${targetPath} failed (exit ${code})`,
+			);
+		}
+	});
+}
+
 export async function removeWorktree(
 	mainRepoPath: string,
 	worktreePath: string,
@@ -657,11 +706,8 @@ export async function removeWorktree(
 
 		// Rename the worktree to a sibling temp dir (same filesystem to avoid EXDEV),
 		// then `git worktree prune` to clean metadata, then delete in background.
-		const tempPath = join(
-			dirname(worktreePath),
-			`.ade-delete-${randomUUID()}`,
-		);
-		await rename(worktreePath, tempPath);
+		const tempPath = join(dirname(worktreePath), `.ade-delete-${randomUUID()}`);
+		await renameWithRetry(worktreePath, tempPath);
 
 		await execFileAsync("git", ["-C", mainRepoPath, "worktree", "prune"], {
 			env,
@@ -671,24 +717,7 @@ export async function removeWorktree(
 		// Delete the moved directory in the background — don't block the caller.
 		// Use spawned `rm -rf` instead of Node's fs.rm which can hang on macOS
 		// when encountering .app bundles with extended attributes.
-		const child = spawn("/bin/rm", ["-rf", tempPath], {
-			detached: true,
-			stdio: "ignore",
-		});
-		child.unref();
-		child.on("error", (err) => {
-			console.error(
-				`[removeWorktree] Failed to spawn rm for ${tempPath}:`,
-				err.message,
-			);
-		});
-		child.on("exit", (code: number | null) => {
-			if (code !== 0) {
-				console.error(
-					`[removeWorktree] Background cleanup of ${tempPath} failed (exit ${code})`,
-				);
-			}
-		});
+		deleteDirectoryInBackground(tempPath);
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		// If the worktree directory is already gone, just prune metadata

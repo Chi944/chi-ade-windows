@@ -40,3 +40,27 @@ describe("createAgentInput role", () => {
 		).toThrow();
 	});
 });
+
+describe("createAgentInput repository source", () => {
+	const base = { projectId: "cat-1", name: "Scout" };
+
+	it("defaults to a new repository when omitted", () => {
+		const parsed = createAgentInput.parse(base);
+		expect(parsed.repo).toEqual({ type: "init" });
+	});
+
+	it("accepts an existing repository path", () => {
+		const repo = { type: "existing" as const, path: "C:\\code\\project" };
+		const parsed = createAgentInput.parse({ ...base, repo });
+		expect(parsed.repo).toEqual(repo);
+	});
+
+	it("rejects an empty existing repository path", () => {
+		expect(() =>
+			createAgentInput.parse({
+				...base,
+				repo: { type: "existing", path: "" },
+			}),
+		).toThrow();
+	});
+});

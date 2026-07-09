@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	appendFileSync,
 	existsSync,
@@ -5,7 +6,7 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentRuntime } from "@superset/local-db";
 import {
 	getAgentCodexHome,
@@ -56,10 +57,7 @@ export interface ScaffoldParams {
 	worktreePath?: string;
 }
 
-function sub(
-	template: string,
-	vars: Record<string, string>,
-): string {
+function sub(template: string, vars: Record<string, string>): string {
 	return template.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? "");
 }
 
@@ -73,6 +71,20 @@ function sub(
 function writeIfEmpty(path: string, content: string): void {
 	if (existsSync(path) && readFileSync(path, "utf8").trim().length > 0) return;
 	writeFileSync(path, content, "utf8");
+}
+
+function resolveGitExcludePath(worktreePath: string): string | null {
+	try {
+		const gitPath = execFileSync(
+			"git",
+			["-C", worktreePath, "rev-parse", "--git-path", "info/exclude"],
+			{ encoding: "utf8", windowsHide: true },
+		).trim();
+		if (!gitPath) return null;
+		return isAbsolute(gitPath) ? gitPath : resolve(worktreePath, gitPath);
+	} catch {
+		return null;
+	}
 }
 
 // AGENT.md is the ADE analog of Hermes' SOUL.md: a short identity that leads the
@@ -91,11 +103,11 @@ trust it, and maintain it per the write-back protocol.
 {{role_section}}
 
 ## Operating brief
-- Work only within your worktree: {{agent_home}}/worktree
+- Work only within your worktree: {{worktree_path}}
 - Prefer small, verifiable changes. Run the project's checks before declaring done.
 - When you learn something durable about {{user_name}} or the project, save it to
   memory per the write-back protocol.
-- Reusable procedures become skills under {{agent_home}}/skills/, not memory notes.
+- Reusable procedures become skills under {{skills_dir}}, not memory notes.
 
 ## Standing preferences
 - (none yet — {{user_name}} will add these, or you will learn them)
@@ -148,12 +160,12 @@ session. Memory is injected into every future turn, so keep entries compact and
 high-signal — everything here costs tokens forever. The best memory stops
 {{user_name}} from having to repeat themselves.
 
-- {{agent_home}}/memory/USER.md   — who the human is: name, role, preferences,
+- {{user_md_path}}   — who the human is: name, role, preferences,
   communication style, hard "always/never" rules. Target < 1,375 chars.
-- {{agent_home}}/memory/MEMORY.md — your own notes: environment facts, project
+- {{memory_md_path}} — your own notes: environment facts, project
   conventions, tool quirks, lessons learned, and a short index of any
   memory/<topic>.md detail files. Target < 2,200 chars for the inline notes.
-- {{agent_home}}/memory/AGENT.md  — your persona and standing brief. You rarely
+- {{agent_md_path}}  — your persona and standing brief. You rarely
   change this; the human owns it.
 
 WHEN to save (edit the file with your normal file tools, proactively — don't
@@ -184,7 +196,7 @@ future prompt.
 
 ## Skills — reusable know-how
 
-A skill is a folder under {{agent_home}}/skills/<name>/ with a SKILL.md
+A skill is a folder under {{skills_dir}}/<name>/ with a SKILL.md
 (agentskills.io format). Only its name + one-line description sit in context;
 the body loads on demand. Create a skill for any reusable, multi-step procedure
 or a class-of-task lesson — NOT for one-off facts (those go in MEMORY.md). When
@@ -267,8 +279,8 @@ dependency stance.
 A single command or check that proves the skill worked.
 `;
 
-const CLAUDE_BRIDGE = `@{{agent_home}}/memory/AGENT.md
-@{{agent_home}}/memory/USER.md
+const CLAUDE_BRIDGE = `@{{agent_md_path}}
+@{{user_md_path}}
 <!-- MEMORY.md is loaded via Claude Code native auto-memory (autoMemoryDirectory). -->
 `;
 
@@ -322,7 +334,12 @@ export function regenerateCodexAgentsMd(agentId: string): void {
 	mkdirSync(codexHome, { recursive: true });
 
 	const parts: string[] = [];
-	for (const file of ["AGENT.md", "USER.md", "MEMORY.md", ".writeback-protocol.md"]) {
+	for (const file of [
+		"AGENT.md",
+		"USER.md",
+		"MEMORY.md",
+		".writeback-protocol.md",
+	]) {
 		const p = join(memoryDir, file);
 		if (existsSync(p)) {
 			parts.push(readFileSync(p, "utf8"));
@@ -373,9 +390,14 @@ export function scaffoldAgentMemory({
 		agent_name: agentName,
 		agent_id: agentId,
 		agent_home: agentHome,
+		agent_md_path: join(memoryDir, "AGENT.md"),
+		user_md_path: join(memoryDir, "USER.md"),
+		memory_md_path: join(memoryDir, "MEMORY.md"),
+		skills_dir: skillsDir,
 		user_name: resolvedUserName,
 		role_section: roleSection(role, resolvedUserName),
 		runtime,
+		worktree_path: worktreePath,
 		created_date: new Date().toISOString().slice(0, 10),
 	};
 
@@ -435,10 +457,10 @@ export function scaffoldAgentMemory({
 			{
 				$schema: "https://opencode.ai/config.json",
 				instructions: [
-					"../memory/AGENT.md",
-					"../memory/USER.md",
-					"../memory/MEMORY.md",
-					"../memory/.writeback-protocol.md",
+					join(memoryDir, "AGENT.md"),
+					join(memoryDir, "USER.md"),
+					join(memoryDir, "MEMORY.md"),
+					join(memoryDir, ".writeback-protocol.md"),
 				],
 			},
 			null,
@@ -448,10 +470,10 @@ export function scaffoldAgentMemory({
 
 	// Keep the generated bridge files out of the repo (local, per-worktree).
 	// Guard against a duplicate block when re-run by the backfill.
-	const excludePath = join(worktreePath, ".git", "info", "exclude");
+	const excludePath = resolveGitExcludePath(worktreePath);
 	const excludeMarker = "# ADE agent bridge files (generated, not committed)";
-	if (existsSync(join(worktreePath, ".git"))) {
-		mkdirSync(join(worktreePath, ".git", "info"), { recursive: true });
+	if (excludePath) {
+		mkdirSync(dirname(excludePath), { recursive: true });
 		const existingExclude = existsSync(excludePath)
 			? readFileSync(excludePath, "utf8")
 			: "";

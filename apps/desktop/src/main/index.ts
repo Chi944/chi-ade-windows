@@ -52,15 +52,19 @@ if (process.env.NODE_ENV === "development") {
 	}
 }
 
-// Dev mode: register with execPath + app script so macOS launches Electron with our entry point
-if (process.defaultApp) {
-	if (process.argv.length >= 2) {
-		app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
-			path.resolve(process.argv[1]),
-		]);
+// Dev mode: register with execPath + app script so macOS launches Electron with
+// our entry point. Isolated startup smoke tests opt out to avoid touching the
+// user's OS protocol registration.
+if (process.env.ADE_DISABLE_PROTOCOL_REGISTRATION !== "1") {
+	if (process.defaultApp) {
+		if (process.argv.length >= 2) {
+			app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
+				path.resolve(process.argv[1]),
+			]);
+		}
+	} else {
+		app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
 	}
-} else {
-	app.setAsDefaultProtocolClient(PROTOCOL_SCHEME);
 }
 
 async function processDeepLink(url: string): Promise<void> {
@@ -262,7 +266,8 @@ if (!gotTheLock) {
 			// superset-icon://<namespace>/<id> — namespace is the URL host
 			// ("projects" for Category photos, "workspaces" for Agent avatars).
 			const url = new URL(request.url);
-			const namespace = url.hostname === "workspaces" ? "workspaces" : "projects";
+			const namespace =
+				url.hostname === "workspaces" ? "workspaces" : "projects";
 			const id = url.pathname.replace(/^\//, "");
 			const iconPath = getIconPath(namespace, id);
 			if (!iconPath) {

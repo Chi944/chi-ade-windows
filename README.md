@@ -1,5 +1,8 @@
 # ADE
 
+> Windows-focused fork: lean packaging, zero-copy existing-project agents,
+> PowerShell-native launch commands, and guarded cleanup for linked repositories.
+
 An agentic development environment for macOS, Windows, and Linux. ADE is a local-first, single-user desktop app where you build a roster of persistent coding agents and work alongside them in the terminal. Every agent is a durable identity — its own name, photo, git repository, runtime CLI, and long-lived memory — not a throwaway chat session. You come back to the same agent tomorrow and it remembers what it learned today.
 
 The interface is a two-level left rail. **Teams** group your work (a name and a square photo); inside each team live **Agents** (a name and a circular photo). Selecting an agent opens its workspace: a strip of **session** tabs, each a real terminal running the agent's coding CLI inside that agent's own git worktree. A **model bar** under the tabs lets you spawn a session on a different model without leaving the agent. On the right, the **Agent Files** panel shows the agent's memory growing as it works.
@@ -16,7 +19,7 @@ ADE runs whatever CLI coding agents you already have installed. Claude Code, Ope
 
 ### Download (recommended)
 
-Download the installer for your platform from the [latest release](https://github.com/per-simmons/damon-ade/releases/latest):
+Download the installer for your platform from the [latest release](https://github.com/Chi944/damon-ade-windows/releases/latest):
 
 - macOS: signed `.dmg`
 - Windows: `ADE-<version>-x64.exe`
@@ -27,8 +30,8 @@ Download the installer for your platform from the [latest release](https://githu
 Requires [Bun](https://bun.sh) 1.3.6+.
 
 ```bash
-git clone https://github.com/per-simmons/damon-ade.git
-cd damon-ade
+git clone https://github.com/Chi944/damon-ade-windows.git
+cd damon-ade-windows
 bun install
 cd apps/desktop
 bun run compile:app        # builds main + preload + renderer into dist/
@@ -44,6 +47,22 @@ bun run build
 ```
 
 On Windows, the installer is written to `apps/desktop/release/ADE-<version>-x64.exe`.
+
+### Lean Windows installer build
+
+With Bun, Node.js, and about 4 GiB of temporary free space available, run from
+Windows PowerShell 5.1 or later:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-lean.ps1
+```
+
+The script prunes the monorepo to the desktop dependency closure, keeps Bun's
+temporary cache inside the staging directory, uses the published native
+prebuilds instead of downloading Visual Studio build tools, smoke-tests those
+modules under Electron, and removes staging after a successful build. The
+installer, update manifest, and measured footprint are copied to `artifacts/`.
+Pass `-KeepStaging` only when diagnosing a build.
 
 ## Prerequisites
 
