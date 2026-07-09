@@ -102,7 +102,7 @@
 		"@types/express": "^5.0.5",
 		"@types/pidusage": "^2.0.5",
 		"@vercel/blob": "^2.0.0",
-		"@xterm/addon-clipboard": "0.3.0-beta.148",
+		"@xterm/addon-clipboard": "0.3.0-beta.288",
 		"@xterm/addon-fit": "0.12.0-beta.148",
 		"@xterm/addon-image": "0.10.0-beta.148",
 		"@xterm/addon-ligatures": "0.11.0-beta.148",
