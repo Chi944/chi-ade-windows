@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExternalApp } from "@superset/local-db";
 
 /** Map of app IDs to their macOS application names */
-const APP_NAMES: Record<ExternalApp, string | null> = {
+const MACOS_APP_NAMES: Record<ExternalApp, string | null> = {
 	finder: null, // Handled specially with shell.showItemInFolder
 	vscode: "Visual Studio Code",
 	"vscode-insiders": "Visual Studio Code - Insiders",
@@ -40,27 +41,124 @@ const BUNDLE_ID_CANDIDATES: Partial<Record<ExternalApp, string[]>> = {
 	pycharm: ["com.jetbrains.pycharm", "com.jetbrains.pycharm.ce"],
 };
 
+/** Map of app IDs to their Linux CLI commands. */
+const LINUX_CLI_COMMANDS: Record<ExternalApp, string | null> = {
+	finder: null,
+	vscode: "code",
+	"vscode-insiders": "code-insiders",
+	cursor: "cursor",
+	antigravity: "antigravity",
+	zed: "zed",
+	xcode: null,
+	iterm: null,
+	warp: "warp-terminal",
+	terminal: null,
+	ghostty: "ghostty",
+	sublime: "subl",
+	intellij: null,
+	webstorm: "webstorm",
+	pycharm: null,
+	phpstorm: "phpstorm",
+	rubymine: "rubymine",
+	goland: "goland",
+	clion: "clion",
+	rider: "rider",
+	datagrip: "datagrip",
+	appcode: null,
+	fleet: "fleet",
+	rustrover: "rustrover",
+};
+
+const LINUX_CLI_CANDIDATES: Partial<Record<ExternalApp, string[]>> = {
+	intellij: ["idea", "intellij-idea-ultimate", "intellij-idea-community"],
+	pycharm: ["pycharm", "pycharm-professional", "pycharm-community"],
+};
+
+/** Map of app IDs to their Windows CLI commands. */
+const WINDOWS_CLI_COMMANDS: Record<ExternalApp, string | null> = {
+	finder: null,
+	vscode: "code",
+	"vscode-insiders": "code-insiders",
+	cursor: "cursor",
+	antigravity: "antigravity",
+	zed: "zed",
+	xcode: null,
+	iterm: null,
+	warp: "warp",
+	terminal: "wt",
+	ghostty: null,
+	sublime: "subl",
+	intellij: null,
+	webstorm: null,
+	pycharm: null,
+	phpstorm: null,
+	rubymine: null,
+	goland: null,
+	clion: null,
+	rider: null,
+	datagrip: null,
+	appcode: null,
+	fleet: "fleet",
+	rustrover: null,
+};
+
+/**
+ * JetBrains Toolbox can expose short launchers while standalone installs commonly
+ * expose the 64-bit executable name, so try both on Windows.
+ */
+const WINDOWS_CLI_CANDIDATES: Partial<Record<ExternalApp, string[]>> = {
+	intellij: ["idea", "idea64"],
+	webstorm: ["webstorm", "webstorm64"],
+	pycharm: ["pycharm", "pycharm64"],
+	phpstorm: ["phpstorm", "phpstorm64"],
+	rubymine: ["rubymine", "rubymine64"],
+	goland: ["goland", "goland64"],
+	clion: ["clion", "clion64"],
+	rider: ["rider", "rider64"],
+	datagrip: ["datagrip", "datagrip64"],
+	rustrover: ["rustrover", "rustrover64"],
+};
+
 /**
  * Get candidate commands to open a path in the specified app.
- * Returns an array of commands to try in order — for multi-edition apps (IntelliJ, PyCharm),
- * multiple bundle IDs are returned so the caller can fall back if one isn't installed.
- * Uses `open -b` (bundle ID) for multi-edition apps and `open -a` (app name) for others.
+ * Returns an array of commands to try in order. macOS uses `open`, while Linux
+ * and Windows use each application's CLI launcher.
  */
 export function getAppCommand(
 	app: ExternalApp,
 	targetPath: string,
+	platform: NodeJS.Platform = process.platform,
 ): { command: string; args: string[] }[] | null {
-	const bundleIds = BUNDLE_ID_CANDIDATES[app];
-	if (bundleIds) {
-		return bundleIds.map((id) => ({
-			command: "open",
-			args: ["-b", id, targetPath],
-		}));
+	if (platform === "darwin") {
+		const bundleIds = BUNDLE_ID_CANDIDATES[app];
+		if (bundleIds) {
+			return bundleIds.map((id) => ({
+				command: "open",
+				args: ["-b", id, targetPath],
+			}));
+		}
+
+		const appName = MACOS_APP_NAMES[app];
+		if (!appName) return null;
+		return [{ command: "open", args: ["-a", appName, targetPath] }];
 	}
 
-	const appName = APP_NAMES[app];
-	if (!appName) return null;
-	return [{ command: "open", args: ["-a", appName, targetPath] }];
+	if (platform === "win32" && app === "terminal") {
+		return [{ command: "wt", args: ["-d", targetPath] }];
+	}
+
+	const candidates =
+		platform === "win32"
+			? WINDOWS_CLI_CANDIDATES[app]
+			: LINUX_CLI_CANDIDATES[app];
+	if (candidates) {
+		return candidates.map((command) => ({ command, args: [targetPath] }));
+	}
+
+	const command =
+		platform === "win32" ? WINDOWS_CLI_COMMANDS[app] : LINUX_CLI_COMMANDS[app];
+	if (!command) return null;
+	return [{ command, args: [targetPath] }];
 }
 
 /**
@@ -89,6 +187,7 @@ const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
 function looksLikePath(str: string): boolean {
 	return (
 		str.includes("/") ||
+		str.includes("\\") ||
 		str.startsWith(".") ||
 		str.startsWith("~") ||
 		str.startsWith("/")
@@ -217,18 +316,21 @@ export function resolvePath(filePath: string, cwd?: string): string {
 
 	if (resolved.startsWith("file://")) {
 		try {
-			const url = new URL(resolved);
-			resolved = decodeURIComponent(url.pathname);
+			resolved = fileURLToPath(resolved);
 		} catch {
 			// If URL parsing fails, try simple prefix removal
 			resolved = decodeURIComponent(resolved.replace(/^file:\/\//, ""));
 		}
 	}
 
-	if (resolved.startsWith("~")) {
+	if (
+		resolved === "~" ||
+		resolved.startsWith("~/") ||
+		resolved.startsWith("~\\")
+	) {
 		const home = process.env.HOME || process.env.USERPROFILE;
 		if (home) {
-			resolved = resolved.replace(/^~/, home);
+			resolved = nodePath.resolve(home, resolved.slice(2));
 		}
 	}
 
@@ -238,7 +340,7 @@ export function resolvePath(filePath: string, cwd?: string): string {
 			: nodePath.resolve(resolved);
 	}
 
-	return resolved;
+	return nodePath.resolve(resolved);
 }
 
 /**
@@ -246,8 +348,35 @@ export function resolvePath(filePath: string, cwd?: string): string {
  * @throws Error if the process exits with non-zero code or fails to spawn
  */
 export function spawnAsync(command: string, args: string[]): Promise<void> {
+	let spawnCommand = command;
+	let spawnArgs = args;
+
+	// Windows editor launchers such as code.cmd and cursor.cmd cannot be spawned
+	// directly by Node. Invoke them through PowerShell without enabling a shell
+	// for untrusted path input.
+	if (process.platform === "win32") {
+		const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+		const invocation = [command, ...args].map(quote).join(" ");
+		const script = [
+			"$ErrorActionPreference = 'Stop'",
+			`& ${invocation}`,
+			"if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+		].join("; ");
+
+		spawnCommand = "powershell.exe";
+		spawnArgs = [
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-EncodedCommand",
+			Buffer.from(script, "utf16le").toString("base64"),
+		];
+	}
+
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, {
+		const child = spawn(spawnCommand, spawnArgs, {
 			stdio: ["ignore", "ignore", "pipe"],
 			detached: false,
 		});

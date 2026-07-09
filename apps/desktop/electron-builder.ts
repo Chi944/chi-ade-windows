@@ -13,11 +13,10 @@ const author = pkg.author?.name ?? pkg.author;
 const productName = pkg.productName;
 
 // Release repo — single source of truth for where artifacts + update manifests
-// are published. TODO(release): confirm GitHub owner/org and set the public repo
-// name before publishing. Must stay in sync with RELEASE_REPO_* in
+// are published. Keep these values in sync with RELEASE_REPO_* in
 // src/main/lib/auto-updater.ts.
-const RELEASE_REPO_OWNER = "per-simmons"; // TODO(release): confirm GitHub owner/org
-const RELEASE_REPO_NAME = "damon-ade"; // TODO(release): set public repo name
+const RELEASE_REPO_OWNER = "Chi944";
+const RELEASE_REPO_NAME = "damon-ade-windows";
 
 // Notarize only when Apple credentials are present in the environment
 // (CI signing job, or a local signed build). electron-builder reads the
@@ -37,12 +36,24 @@ const shouldSignAndEditWindowsExecutable =
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
+const nodePtyFiles =
+	process.platform === "win32"
+		? [
+				"package.json",
+				"LICENSE",
+				"lib/**/*",
+				"prebuilds/win32-x64/**/*",
+				"!prebuilds/win32-x64/**/*.pdb",
+			]
+		: ["**/*"];
 
 const config: Configuration = {
-	appId: "studio.persimmons.ade",
+	appId: "io.github.chi944.ade",
 	productName,
 	copyright: `Copyright © ${currentYear} — ${author}`,
 	electronVersion: pkg.devDependencies.electron.replace(/^\^/, ""),
+	// ADE's UI is English-only; omit Chromium's other 54 locale packs.
+	electronLanguages: ["en-US"],
 
 	// Generate update manifests for all channels (latest.yml, canary.yml, etc.)
 	// This enables proper channel-based auto-updates following electron-builder conventions
@@ -89,15 +100,25 @@ const config: Configuration = {
 			to: "resources/migrations",
 			filter: ["**/*"],
 		},
+		{ from: "../../LICENSE.md", to: "LICENSE.md" },
+		{ from: "../../NOTICE", to: "NOTICE" },
+		{
+			from: "../../THIRD-PARTY-NOTICES.md",
+			to: "THIRD-PARTY-NOTICES.md",
+		},
 	],
 
 	files: [
 		"dist/**/*",
+		"!dist/**/*.map",
+		// Migrations are copied outside ASAR via extraResources below.
+		"!dist/resources/migrations/**/*",
 		"package.json",
 		{
 			from: pkg.resources,
 			to: "resources",
-			filter: ["**/*"],
+			// Icons and entitlements are build inputs, not runtime resources.
+			filter: ["**/*", "!build/**/*"],
 		},
 		// Native modules that can't be bundled by Vite.
 		// bun creates symlinks for direct deps in workspace node_modules.
@@ -123,7 +144,9 @@ const config: Configuration = {
 		{
 			from: "node_modules/node-pty",
 			to: "node_modules/node-pty",
-			filter: ["**/*"],
+			// Windows x64 builds need only their published runtime prebuilds. PDBs,
+			// source trees, and binaries for other platforms add about 59 MiB.
+			filter: nodePtyFiles,
 		},
 		// ast-grep native bindings (package + platform binary package)
 		{
@@ -236,6 +259,7 @@ const config: Configuration = {
 	nsis: {
 		oneClick: false,
 		allowToChangeInstallationDirectory: true,
+		license: "../../LICENSE.md",
 	},
 };
 

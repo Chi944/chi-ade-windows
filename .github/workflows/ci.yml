@@ -125,4 +125,4 @@ jobs:
         run: bun install --frozen
 
       - name: Build Desktop
-        run: bun turbo run build --filter=@superset/desktop
+        run: bun turbo run build --filter=@ade/desktop

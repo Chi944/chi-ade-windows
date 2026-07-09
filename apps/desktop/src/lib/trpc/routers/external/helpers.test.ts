@@ -1,22 +1,33 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import os from "node:os";
 import path from "node:path";
-import { getAppCommand, resolvePath, stripPathWrappers } from "./helpers";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+	getAppCommand,
+	resolvePath,
+	spawnAsync,
+	stripPathWrappers,
+} from "./helpers";
 
 describe("getAppCommand", () => {
+	const getMacAppCommand = (
+		app: Parameters<typeof getAppCommand>[0],
+		targetPath: string,
+	) => getAppCommand(app, targetPath, "darwin");
+
 	test("returns null for finder (handled specially)", () => {
-		expect(getAppCommand("finder", "/path/to/file")).toBeNull();
+		expect(getMacAppCommand("finder", "/path/to/file")).toBeNull();
 	});
 
 	test("returns single-element array for cursor", () => {
-		const result = getAppCommand("cursor", "/path/to/file");
+		const result = getMacAppCommand("cursor", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Cursor", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for vscode", () => {
-		const result = getAppCommand("vscode", "/path/to/file");
+		const result = getMacAppCommand("vscode", "/path/to/file");
 		expect(result).toEqual([
 			{
 				command: "open",
@@ -26,42 +37,42 @@ describe("getAppCommand", () => {
 	});
 
 	test("returns single-element array for sublime", () => {
-		const result = getAppCommand("sublime", "/path/to/file");
+		const result = getMacAppCommand("sublime", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Sublime Text", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for xcode", () => {
-		const result = getAppCommand("xcode", "/path/to/file");
+		const result = getMacAppCommand("xcode", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Xcode", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for iterm", () => {
-		const result = getAppCommand("iterm", "/path/to/file");
+		const result = getMacAppCommand("iterm", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "iTerm", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for warp", () => {
-		const result = getAppCommand("warp", "/path/to/file");
+		const result = getMacAppCommand("warp", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Warp", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for terminal", () => {
-		const result = getAppCommand("terminal", "/path/to/file");
+		const result = getMacAppCommand("terminal", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Terminal", "/path/to/file"] },
 		]);
 	});
 
 	test("returns single-element array for ghostty", () => {
-		const result = getAppCommand("ghostty", "/path/to/file");
+		const result = getMacAppCommand("ghostty", "/path/to/file");
 		expect(result).toEqual([
 			{ command: "open", args: ["-a", "Ghostty", "/path/to/file"] },
 		]);
@@ -69,7 +80,7 @@ describe("getAppCommand", () => {
 
 	describe("JetBrains IDEs", () => {
 		test("returns bundle ID candidates for intellij (multi-edition)", () => {
-			const result = getAppCommand("intellij", "/path/to/file");
+			const result = getMacAppCommand("intellij", "/path/to/file");
 			expect(result).toEqual([
 				{
 					command: "open",
@@ -83,7 +94,7 @@ describe("getAppCommand", () => {
 		});
 
 		test("returns bundle ID candidates for pycharm (multi-edition)", () => {
-			const result = getAppCommand("pycharm", "/path/to/file");
+			const result = getMacAppCommand("pycharm", "/path/to/file");
 			expect(result).toEqual([
 				{
 					command: "open",
@@ -97,21 +108,21 @@ describe("getAppCommand", () => {
 		});
 
 		test("returns single-element array for webstorm (single-edition)", () => {
-			const result = getAppCommand("webstorm", "/path/to/file");
+			const result = getMacAppCommand("webstorm", "/path/to/file");
 			expect(result).toEqual([
 				{ command: "open", args: ["-a", "WebStorm", "/path/to/file"] },
 			]);
 		});
 
 		test("returns single-element array for goland (single-edition)", () => {
-			const result = getAppCommand("goland", "/path/to/file");
+			const result = getMacAppCommand("goland", "/path/to/file");
 			expect(result).toEqual([
 				{ command: "open", args: ["-a", "GoLand", "/path/to/file"] },
 			]);
 		});
 
 		test("returns single-element array for rustrover (single-edition)", () => {
-			const result = getAppCommand("rustrover", "/path/to/file");
+			const result = getMacAppCommand("rustrover", "/path/to/file");
 			expect(result).toEqual([
 				{ command: "open", args: ["-a", "RustRover", "/path/to/file"] },
 			]);
@@ -119,7 +130,7 @@ describe("getAppCommand", () => {
 	});
 
 	test("preserves paths with spaces", () => {
-		const result = getAppCommand("cursor", "/path/with spaces/file.ts");
+		const result = getMacAppCommand("cursor", "/path/with spaces/file.ts");
 		expect(result).toEqual([
 			{
 				command: "open",
@@ -127,11 +138,77 @@ describe("getAppCommand", () => {
 			},
 		]);
 	});
+
+	describe("Linux", () => {
+		test("uses the VS Code CLI launcher", () => {
+			expect(getAppCommand("vscode", "/project", "linux")).toEqual([
+				{ command: "code", args: ["/project"] },
+			]);
+		});
+
+		test("preserves JetBrains edition fallbacks", () => {
+			expect(getAppCommand("intellij", "/project", "linux")).toEqual([
+				{ command: "idea", args: ["/project"] },
+				{ command: "intellij-idea-ultimate", args: ["/project"] },
+				{ command: "intellij-idea-community", args: ["/project"] },
+			]);
+		});
+
+		test("returns null for macOS-only applications", () => {
+			expect(getAppCommand("xcode", "/project", "linux")).toBeNull();
+		});
+	});
+
+	describe("Windows", () => {
+		const targetPath = "C:\\Users\\Ada\\Project with spaces";
+
+		test("uses CLI launchers for editors and Windows Terminal", () => {
+			expect(getAppCommand("cursor", targetPath, "win32")).toEqual([
+				{ command: "cursor", args: [targetPath] },
+			]);
+			expect(getAppCommand("vscode", targetPath, "win32")).toEqual([
+				{ command: "code", args: [targetPath] },
+			]);
+			expect(getAppCommand("terminal", targetPath, "win32")).toEqual([
+				{ command: "wt", args: ["-d", targetPath] },
+			]);
+		});
+
+		test("uses JetBrains launcher fallbacks", () => {
+			expect(getAppCommand("intellij", targetPath, "win32")).toEqual([
+				{ command: "idea", args: [targetPath] },
+				{ command: "idea64", args: [targetPath] },
+			]);
+		});
+
+		test("returns null for unsupported macOS-only applications", () => {
+			expect(getAppCommand("xcode", targetPath, "win32")).toBeNull();
+			expect(getAppCommand("iterm", targetPath, "win32")).toBeNull();
+		});
+	});
 });
+
+if (process.platform === "win32") {
+	describe("spawnAsync on Windows", () => {
+		test("runs .cmd launchers through PowerShell", async () => {
+			await expect(
+				spawnAsync("npm.cmd", ["--version"]),
+			).resolves.toBeUndefined();
+		});
+
+		test("rejects when the launcher does not exist", async () => {
+			await expect(
+				spawnAsync("definitely-not-an-ade-launcher", []),
+			).rejects.toBeInstanceOf(Error);
+		});
+	});
+}
 
 describe("resolvePath", () => {
 	const homedir = os.homedir();
 	const originalHome = process.env.HOME;
+	const absoluteFilePath = path.resolve("/absolute/path/file.ts");
+	const projectPath = path.resolve("/project");
 
 	beforeEach(() => {
 		process.env.HOME = homedir;
@@ -154,36 +231,36 @@ describe("resolvePath", () => {
 
 		test("does not expand ~ in middle of path", () => {
 			const result = resolvePath("/path/~/file.ts");
-			expect(result).toBe("/path/~/file.ts");
+			expect(result).toBe(path.resolve("/path/~/file.ts"));
 		});
 	});
 
 	describe("absolute paths", () => {
 		test("returns absolute path unchanged", () => {
 			const result = resolvePath("/absolute/path/file.ts");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("returns absolute path unchanged even with cwd", () => {
 			const result = resolvePath("/absolute/path/file.ts", "/some/cwd");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 	});
 
 	describe("relative paths", () => {
 		test("resolves relative path against cwd", () => {
 			const result = resolvePath("src/file.ts", "/project");
-			expect(result).toBe("/project/src/file.ts");
+			expect(result).toBe(path.join(projectPath, "src/file.ts"));
 		});
 
 		test("resolves ./prefixed path against cwd", () => {
 			const result = resolvePath("./src/file.ts", "/project");
-			expect(result).toBe("/project/src/file.ts");
+			expect(result).toBe(path.join(projectPath, "src/file.ts"));
 		});
 
 		test("resolves ../prefixed path against cwd", () => {
 			const result = resolvePath("../sibling/file.ts", "/project/subdir");
-			expect(result).toBe("/project/sibling/file.ts");
+			expect(result).toBe(path.join(projectPath, "sibling/file.ts"));
 		});
 
 		test("resolves relative path against process.cwd() when no cwd provided", () => {
@@ -201,70 +278,76 @@ describe("resolvePath", () => {
 
 	describe("file:// URL handling", () => {
 		test("converts file:// URL to regular path", () => {
-			const result = resolvePath("file:///Users/test/Documents/file.ts");
-			expect(result).toBe("/Users/test/Documents/file.ts");
+			const filePath = path.resolve("/Users/test/Documents/file.ts");
+			const result = resolvePath(pathToFileURL(filePath).href);
+			expect(result).toBe(filePath);
 		});
 
 		test("decodes URL-encoded characters in file:// URL", () => {
-			const result = resolvePath("file:///Users/test/My%20Documents/file.ts");
-			expect(result).toBe("/Users/test/My Documents/file.ts");
+			const filePath = path.resolve("/Users/test/My Documents/file.ts");
+			const result = resolvePath(pathToFileURL(filePath).href);
+			expect(result).toBe(filePath);
 		});
 
 		test("handles file:// URL with special characters", () => {
-			const result = resolvePath(
-				"file:///Users/test/path%20with%20spaces/file%2B1.ts",
-			);
-			expect(result).toBe("/Users/test/path with spaces/file+1.ts");
+			const filePath = path.resolve("/Users/test/path with spaces/file+1.ts");
+			const result = resolvePath(pathToFileURL(filePath).href);
+			expect(result).toBe(filePath);
 		});
 
 		test("handles file:// URL unchanged when already absolute", () => {
 			const result = resolvePath(
-				"file:///absolute/path/file.ts",
+				pathToFileURL(absoluteFilePath).href,
 				"/ignored/cwd",
 			);
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
+		});
+
+		test("converts a Windows drive file URL", () => {
+			const url = "file:///C:/Users/Ada/My%20Project/file.ts";
+			expect(resolvePath(url)).toBe(path.resolve(fileURLToPath(url)));
 		});
 	});
 
 	describe("wrapper character stripping", () => {
 		test("strips double quotes from path", () => {
 			const result = resolvePath('"/absolute/path/file.ts"');
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips single quotes from path", () => {
 			const result = resolvePath("'/absolute/path/file.ts'");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips backticks from path", () => {
 			const result = resolvePath("`/absolute/path/file.ts`");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips parentheses from path", () => {
 			const result = resolvePath("(/absolute/path/file.ts)");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips square brackets from path", () => {
 			const result = resolvePath("[/absolute/path/file.ts]");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips angle brackets from path", () => {
 			const result = resolvePath("</absolute/path/file.ts>");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips nested wrappers", () => {
 			const result = resolvePath("\"'/absolute/path/file.ts'\"");
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("strips wrappers with leading/trailing whitespace", () => {
 			const result = resolvePath('  "/absolute/path/file.ts"  ');
-			expect(result).toBe("/absolute/path/file.ts");
+			expect(result).toBe(absoluteFilePath);
 		});
 
 		test("handles wrappers combined with ~ expansion", () => {
@@ -274,7 +357,7 @@ describe("resolvePath", () => {
 
 		test("handles wrappers combined with relative paths", () => {
 			const result = resolvePath("(src/file.ts)", "/project");
-			expect(result).toBe("/project/src/file.ts");
+			expect(result).toBe(path.join(projectPath, "src/file.ts"));
 		});
 	});
 });
@@ -454,6 +537,12 @@ describe("stripPathWrappers", () => {
 		test("handles absolute path inside parentheses with prefix", () => {
 			expect(stripPathWrappers("see (/absolute/path/file.ts)")).toBe(
 				"/absolute/path/file.ts",
+			);
+		});
+
+		test("extracts a native Windows path from surrounding prose", () => {
+			expect(stripPathWrappers(String.raw`see (C:\repo\file.ts) here`)).toBe(
+				String.raw`C:\repo\file.ts`,
 			);
 		});
 

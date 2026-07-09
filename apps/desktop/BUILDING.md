@@ -14,6 +14,23 @@ When building for release, run `bun run prebuild` first so native modules are co
 
 # Windows (NSIS) local build
 
+For the smallest temporary disk footprint, install Bun and Node.js, make about
+4 GiB of temporary free space available, and run this once from the repository
+root in Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-lean.ps1
+```
+
+It prunes unused workspaces, validates the published native prebuilds under
+Electron, creates the NSIS installer, copies outputs to `artifacts/`, and cleans
+its staging directory after success. It deliberately avoids
+`electron-builder install-app-deps`, which otherwise requires the large Visual
+Studio/Spectre native toolchain on Windows.
+
+For an already-installed full source tree, the equivalent manual package steps
+are below.
+
 From `apps/desktop` in PowerShell, cmd, or Git Bash:
 
 ```bash

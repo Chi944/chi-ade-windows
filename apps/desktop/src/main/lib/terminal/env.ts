@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { delimiter, join } from "node:path";
@@ -41,15 +41,40 @@ export const HOOK_PROTOCOL_VERSION = "2";
 export const FALLBACK_SHELL = os.platform() === "win32" ? "cmd.exe" : "/bin/sh";
 export const SHELL_CRASH_THRESHOLD_MS = 1000;
 
-export function getDefaultShell(): string {
-	if (defaultShell) {
-		return defaultShell;
+let cachedWindowsShell: string | null = null;
+
+function getWindowsDefaultShell(): string {
+	if (cachedWindowsShell) return cachedWindowsShell;
+
+	for (const candidate of ["pwsh.exe", "powershell.exe"]) {
+		try {
+			const found = execFileSync("where.exe", [candidate], {
+				encoding: "utf8",
+				stdio: ["pipe", "pipe", "ignore"],
+				windowsHide: true,
+			})
+				.trim()
+				.split(/\r?\n/)[0];
+			if (found) {
+				cachedWindowsShell = found;
+				return found;
+			}
+		} catch {
+			// Try the next built-in shell.
+		}
 	}
 
-	const platform = os.platform();
+	cachedWindowsShell = process.env.COMSPEC || "cmd.exe";
+	return cachedWindowsShell;
+}
 
-	if (platform === "win32") {
-		return process.env.COMSPEC || "powershell.exe";
+export function getDefaultShell(): string {
+	if (os.platform() === "win32") {
+		return getWindowsDefaultShell();
+	}
+
+	if (defaultShell) {
+		return defaultShell;
 	}
 
 	if (process.env.SHELL) {

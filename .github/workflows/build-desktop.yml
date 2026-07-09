@@ -261,6 +261,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen
 
+      - name: Smoke-test Windows native prebuilds
+        run: bun run --cwd apps/desktop smoke:native
+
       - name: Set version suffix
         if: inputs.version_suffix != ''
         working-directory: apps/desktop
@@ -307,6 +310,14 @@ jobs:
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: bun run package -- --publish never --config ${{ inputs.electron_builder_config }}
+
+      - name: Smoke-test packaged Windows native modules
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          $asar = (Resolve-Path "apps/desktop/release/win-unpacked/resources/app.asar").Path
+          $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
+          node apps/desktop/node_modules/electron/cli.js apps/desktop/scripts/smoke-native-runtime.cjs
 
       - name: Verify Windows installer + update manifest exist
         working-directory: apps/desktop

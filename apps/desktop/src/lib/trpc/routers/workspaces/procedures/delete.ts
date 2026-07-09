@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { SelectWorktree } from "@superset/local-db";
+import { isManagedAgentWorktree, removeAgentHome } from "main/lib/agent-home";
 import { track } from "main/lib/analytics";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
@@ -90,6 +91,51 @@ export const createDeleteProcedures = () => {
 					? getWorktree(workspace.worktreeId)
 					: null;
 				const project = getProject(workspace.projectId);
+				const isAgent = workspace.runtime != null;
+
+				if (worktree && isAgent) {
+					const isExternal = !isManagedAgentWorktree(input.id, worktree.path);
+					if (!existsSync(worktree.path)) {
+						return {
+							canDelete: true,
+							reason: null,
+							workspace,
+							warning: isExternal
+								? "Linked repository not found; ADE will remove only its agent data"
+								: "Agent repository not found (it may have been removed manually)",
+							activeTerminalCount,
+							hasChanges: false,
+							hasUnpushedCommits: false,
+						};
+					}
+
+					try {
+						const [hasChanges, unpushedCommits] = await Promise.all([
+							hasUncommittedChanges(worktree.path),
+							hasUnpushedCommits(worktree.path),
+						]);
+						return {
+							canDelete: true,
+							reason: null,
+							workspace,
+							warning: isExternal
+								? "The linked repository will stay on disk; only ADE's agent data will be removed"
+								: null,
+							activeTerminalCount,
+							hasChanges,
+							hasUnpushedCommits: unpushedCommits,
+						};
+					} catch (error) {
+						return {
+							canDelete: false,
+							reason: `Failed to check repository status: ${error instanceof Error ? error.message : String(error)}`,
+							workspace,
+							activeTerminalCount,
+							hasChanges: false,
+							hasUnpushedCommits: false,
+						};
+					}
+				}
 
 				if (worktree && project) {
 					try {
@@ -192,8 +238,10 @@ export const createDeleteProcedures = () => {
 				}
 
 				const project = getProject(workspace.projectId);
+				const isAgent = workspace.runtime != null;
 
 				let worktree: SelectWorktree | undefined;
+				let isExternalAgent = false;
 
 				const terminalPromise = getWorkspaceRuntimeRegistry()
 					.getForWorkspaceId(input.id)
@@ -204,10 +252,19 @@ export const createDeleteProcedures = () => {
 					| undefined;
 				if (workspace.type === "worktree" && workspace.worktreeId) {
 					worktree = getWorktree(workspace.worktreeId);
+					isExternalAgent = Boolean(
+						isAgent &&
+							worktree &&
+							!isManagedAgentWorktree(workspace.id, worktree.path),
+					);
 
-					if (worktree && project && existsSync(worktree.path)) {
+					if (isExternalAgent) {
+						console.log(
+							`[workspace/delete] Detaching external repository without running teardown: ${worktree?.path}`,
+						);
+					} else if (worktree && project && existsSync(worktree.path)) {
 						teardownPromise = runTeardown({
-							mainRepoPath: project.mainRepoPath,
+							mainRepoPath: isAgent ? worktree.path : project.mainRepoPath,
 							worktreePath: worktree.path,
 							workspaceName: workspace.name,
 							projectId: project.id,
@@ -248,7 +305,17 @@ export const createDeleteProcedures = () => {
 					}
 				}
 
-				if (worktree && project) {
+				if (worktree && isAgent) {
+					try {
+						await removeAgentHome(workspace.id);
+					} catch (error) {
+						clearWorkspaceDeletingStatus(input.id);
+						return {
+							success: false,
+							error: `Failed to remove ADE agent data: ${error instanceof Error ? error.message : String(error)}`,
+						};
+					}
+				} else if (worktree && project) {
 					await workspaceInitManager.acquireProjectLock(project.id);
 
 					try {

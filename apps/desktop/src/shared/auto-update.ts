@@ -10,4 +10,4 @@ export type AutoUpdateStatus =
 	(typeof AUTO_UPDATE_STATUS)[keyof typeof AUTO_UPDATE_STATUS];
 
 export const RELEASES_URL =
-	"https://github.com/per-simmons/damon-ade/releases";
+	"https://github.com/Chi944/damon-ade-windows/releases";

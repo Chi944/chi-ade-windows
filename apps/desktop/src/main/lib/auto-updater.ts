@@ -15,11 +15,9 @@ const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4; // 4 hours
 // The updater feed points at GitHub Releases on the PUBLIC repo. There is a
 // single source of truth for the repo name below.
 //
-// TODO(release): before publishing, confirm the GitHub owner/org and set the
-// public repo name. These two constants are the ONLY place the updater names
-// the release repo.
-const RELEASE_REPO_OWNER = "per-simmons"; // TODO(release): confirm GitHub owner/org
-const RELEASE_REPO_NAME = "damon-ade"; // TODO(release): set public repo name
+// Keep this fork identity in sync with apps/desktop/electron-builder.ts.
+const RELEASE_REPO_OWNER = "Chi944";
+const RELEASE_REPO_NAME = "damon-ade-windows";
 
 // Auto-update is intentionally DISABLED for the v1 public launch. To turn it
 // on later: set RELEASE_REPO_NAME above and flip this single flag to `true`.
@@ -104,7 +102,7 @@ export function getUpdateStatus(): AutoUpdateStatusEvent {
 }
 
 export function installUpdate(): void {
-	if (env.NODE_ENV === "development") {
+	if (!AUTO_UPDATE_ENABLED || env.NODE_ENV === "development") {
 		console.info("[auto-updater] Install skipped in dev mode");
 		emitStatus(AUTO_UPDATE_STATUS.IDLE);
 		return;
@@ -120,7 +118,11 @@ export function dismissUpdate(): void {
 }
 
 export function checkForUpdates(): void {
-	if (env.NODE_ENV === "development" || !IS_AUTO_UPDATE_PLATFORM) {
+	if (
+		!AUTO_UPDATE_ENABLED ||
+		env.NODE_ENV === "development" ||
+		!IS_AUTO_UPDATE_PLATFORM
+	) {
 		return;
 	}
 	isDismissed = false;
@@ -137,6 +139,14 @@ export function checkForUpdates(): void {
 }
 
 export function checkForUpdatesInteractive(): void {
+	if (!AUTO_UPDATE_ENABLED) {
+		dialog.showMessageBox({
+			type: "info",
+			title: "Updates",
+			message: "Auto-updates are not enabled for this build.",
+		});
+		return;
+	}
 	if (env.NODE_ENV === "development") {
 		dialog.showMessageBox({
 			type: "info",

@@ -7,7 +7,7 @@
 	"resources": "src/resources",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/per-simmons/damon-ade.git"
+		"url": "https://github.com/Chi944/damon-ade-windows.git"
 	},
 	"author": {
 		"name": "ADE"
@@ -20,6 +20,7 @@
 		"compile:app": "cross-env NODE_OPTIONS=--max-old-space-size=8192 electron-vite build",
 		"copy:native-modules": "bun run scripts/copy-native-modules.ts",
 		"validate:native-runtime": "bun run scripts/validate-native-runtime.ts",
+		"smoke:native": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-native-runtime.cjs",
 		"prebuild": "bun run clean:dev && bun run compile:app && bun run copy:native-modules && bun run validate:native-runtime",
 		"build": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never",
 		"prepackage": "bun run copy:native-modules && bun run validate:native-runtime",

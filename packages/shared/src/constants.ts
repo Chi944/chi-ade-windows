@@ -13,7 +13,7 @@ export const COMPANY = {
 	NAME: "ADE",
 	DOMAIN: "superset.sh",
 	EMAIL_DOMAIN: "@superset.sh",
-	GITHUB_URL: "https://github.com/per-simmons/damon-ade",
+	GITHUB_URL: "https://github.com/Chi944/damon-ade-windows",
 	DOCS_URL: process.env.NEXT_PUBLIC_DOCS_URL || "https://docs.superset.sh",
 	MARKETING_URL: process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh",
 	TERMS_URL: `${process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh"}/terms`,
@@ -25,7 +25,7 @@ export const COMPANY = {
 		"/changelog",
 	X_URL: "https://x.com/superset_sh",
 	MAIL_TO: "mailto:hello@superset.sh",
-	REPORT_ISSUE_URL: "https://github.com/per-simmons/damon-ade/issues/new",
+	REPORT_ISSUE_URL: "https://github.com/Chi944/damon-ade-windows/issues/new",
 	DISCORD_URL: "https://discord.gg/cZeD9WYcV7",
 } as const;
 

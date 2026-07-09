@@ -61,7 +61,7 @@ is set, and hardened runtime is already enabled with the entitlements in
 # Compile the app + prepare native modules (better-sqlite3, node-pty, libsql, …)
 bun run prebuild
 
-# Sign + notarize + package. Uses electron-builder.ts (appId studio.persimmons.ade).
+# Sign + notarize + package. Uses electron-builder.ts (appId io.github.chi944.ade).
 # --publish never = build locally, do not upload anywhere.
 bun run package -- --publish never --config electron-builder.ts
 ```

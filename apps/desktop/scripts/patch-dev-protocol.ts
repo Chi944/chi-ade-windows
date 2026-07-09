@@ -66,7 +66,7 @@ if (!workspaceName) {
 	process.exit(0);
 }
 const PROTOCOL_SCHEME = `ade-${workspaceName}`;
-const BUNDLE_ID = `studio.persimmons.ade.${workspaceName}`;
+const BUNDLE_ID = `io.github.chi944.ade.${workspaceName}`;
 const ELECTRON_DIST_DIR = resolve(
 	import.meta.dirname,
 	"../node_modules/electron/dist",

@@ -9,8 +9,8 @@ import {
 	type TerminalPreset,
 } from "@superset/local-db";
 import {
-	AGENT_PRESET_COMMANDS,
 	AGENT_PRESET_DESCRIPTIONS,
+	getAgentPresetCommands,
 } from "@superset/shared/agent-command";
 import { TRPCError } from "@trpc/server";
 import { app } from "electron";
@@ -103,12 +103,16 @@ const DEFAULT_PRESET_AGENTS = [
 	"gemini",
 ] as const;
 
+const PLATFORM_AGENT_PRESET_COMMANDS = getAgentPresetCommands({
+	windows: process.platform === "win32",
+});
+
 const DEFAULT_PRESETS: Omit<TerminalPreset, "id">[] = DEFAULT_PRESET_AGENTS.map(
 	(name) => ({
 		name,
 		description: AGENT_PRESET_DESCRIPTIONS[name],
 		cwd: "",
-		commands: AGENT_PRESET_COMMANDS[name],
+		commands: PLATFORM_AGENT_PRESET_COMMANDS[name],
 	}),
 );
 
@@ -723,11 +727,9 @@ export const createSettingsRouter = () => {
 				.input(
 					z.object({
 						provider: z.enum(PROVIDER_IDS),
-						key: z
-							.string()
-							.refine((value) => value.trim().length > 0, {
-								message: "API key must not be empty",
-							}),
+						key: z.string().refine((value) => value.trim().length > 0, {
+							message: "API key must not be empty",
+						}),
 					}),
 				)
 				.mutation(({ input }) => {
