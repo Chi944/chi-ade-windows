@@ -105,6 +105,7 @@ describe("Terminal Host Daemon", () => {
 				{
 					env: {
 						...process.env,
+						ADE_HOME_DIR: SUPERSET_HOME_DIR,
 						NODE_ENV: "development",
 						SUPERSET_WORKSPACE_NAME: "test",
 					},

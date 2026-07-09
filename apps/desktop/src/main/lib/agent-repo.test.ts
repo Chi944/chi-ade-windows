@@ -15,13 +15,14 @@ const TEST_ROOT = join(
 	`ade-agent-repo-test-${process.pid}-${Date.now()}`,
 );
 const TEST_HOME = join(TEST_ROOT, "ade-home");
-process.env.ADE_HOME_DIR = TEST_HOME;
+const ORIGINAL_ADE_HOME = process.env.ADE_HOME_DIR;
 
 let getAgentMemoryDir: (agentId: string) => string;
 let getAgentWorktreePath: (agentId: string) => string;
 let setupAgentRepo: typeof import("./agent-repo").setupAgentRepo;
 
 beforeAll(async () => {
+	process.env.ADE_HOME_DIR = TEST_HOME;
 	mkdirSync(TEST_ROOT, { recursive: true });
 
 	const home = await import("./agent-home");
@@ -32,6 +33,11 @@ beforeAll(async () => {
 
 afterAll(() => {
 	rmSync(TEST_ROOT, { recursive: true, force: true });
+	if (ORIGINAL_ADE_HOME === undefined) {
+		delete process.env.ADE_HOME_DIR;
+	} else {
+		process.env.ADE_HOME_DIR = ORIGINAL_ADE_HOME;
+	}
 });
 
 async function createRepo(path: string, branch: string): Promise<void> {

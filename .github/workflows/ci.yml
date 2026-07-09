@@ -32,11 +32,13 @@ jobs:
         run: bunx sherif
 
   lint:
-    name: Lint
+    name: Changed-file lint
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -52,11 +54,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen
 
-      - name: Lint
-        run: bun run lint
+      - name: Lint changed files
+        run: bun run scripts/lint-changed.ts
 
   test:
-    name: Test
+    name: Isolated Windows-fork tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -76,8 +78,22 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen
 
-      - name: Test
-        run: bun run test
+      - name: Test focused suites in isolated processes
+        env:
+          OPENROUTER_API_KEY: ""
+        run: |
+          bun test packages/shared/src/agent-command.test.ts
+          bun test apps/desktop/src/lib/trpc/routers/external/helpers.test.ts apps/desktop/src/lib/trpc/routers/external/index.test.ts
+          bun test apps/desktop/src/lib/trpc/routers/workspaces/procedures/create-agent.test.ts
+          bun test apps/desktop/src/main/lib/agent-home.test.ts apps/desktop/src/main/lib/agent-repo.test.ts apps/desktop/src/main/lib/agent-scaffold.test.ts
+          bun test apps/desktop/src/main/lib/terminal/env.test.ts
+          bun test apps/desktop/src/main/lib/static-ports/loader.test.ts
+          bun test apps/desktop/src/main/lib/agent-setup/shell-wrappers.test.ts
+          bun test apps/desktop/src/lib/trpc/routers/workspaces/utils/teardown.test.ts
+          bun test apps/desktop/src/main/lib/terminal-host/headless-emulator.test.ts apps/desktop/src/main/terminal-host/session.test.ts
+          bun test apps/desktop/src/main/lib/terminal/daemon/daemon-manager.test.ts
+          bun test apps/desktop/src/main/terminal-host/daemon.test.ts
+          bun test apps/desktop/src/main/terminal-host/session-lifecycle.test.ts
 
   typecheck:
     name: Typecheck

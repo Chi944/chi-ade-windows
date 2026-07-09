@@ -8,7 +8,6 @@ const TEST_HOME = join(
 	tmpdir(),
 	`ade-agent-home-test-${process.pid}-${Date.now()}`,
 );
-process.env.ADE_HOME_DIR = TEST_HOME;
 
 let getAgentHome: typeof import("./agent-home").getAgentHome;
 let getAgentWorktreePath: typeof import("./agent-home").getAgentWorktreePath;
@@ -16,6 +15,7 @@ let isManagedAgentWorktree: typeof import("./agent-home").isManagedAgentWorktree
 let removeAgentHome: typeof import("./agent-home").removeAgentHome;
 
 beforeAll(async () => {
+	process.env.ADE_HOME_DIR = TEST_HOME;
 	const home = await import("./agent-home");
 	getAgentHome = home.getAgentHome;
 	getAgentWorktreePath = home.getAgentWorktreePath;

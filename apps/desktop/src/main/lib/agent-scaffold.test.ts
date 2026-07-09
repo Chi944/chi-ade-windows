@@ -18,7 +18,7 @@ const TEST_HOME = join(
 	tmpdir(),
 	`ade-scaffold-test-${process.pid}-${Date.now()}`,
 );
-process.env.ADE_HOME_DIR = TEST_HOME;
+const ORIGINAL_ADE_HOME = process.env.ADE_HOME_DIR;
 
 // Deferred (dynamic) imports so the env override above wins over module load.
 let getAgentHome: (id: string) => string;
@@ -30,6 +30,7 @@ let scaffoldAgentMemory: typeof import("./agent-scaffold").scaffoldAgentMemory;
 let regenerateCodexAgentsMd: typeof import("./agent-scaffold").regenerateCodexAgentsMd;
 
 beforeAll(async () => {
+	process.env.ADE_HOME_DIR = TEST_HOME;
 	const home = await import("./agent-home");
 	getAgentHome = home.getAgentHome;
 	getAgentMemoryDir = home.getAgentMemoryDir;
@@ -47,6 +48,11 @@ beforeAll(async () => {
 
 afterAll(() => {
 	rmSync(TEST_HOME, { recursive: true, force: true });
+	if (ORIGINAL_ADE_HOME === undefined) {
+		delete process.env.ADE_HOME_DIR;
+	} else {
+		process.env.ADE_HOME_DIR = ORIGINAL_ADE_HOME;
+	}
 });
 
 async function makeAgent(
