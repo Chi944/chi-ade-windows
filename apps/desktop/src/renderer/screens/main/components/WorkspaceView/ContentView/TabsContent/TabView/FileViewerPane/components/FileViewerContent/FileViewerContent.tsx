@@ -72,6 +72,7 @@ interface FileViewerContentProps {
 	isLoadingRaw: boolean;
 	isLoadingImage?: boolean;
 	isLoadingDiff: boolean;
+	loadError?: string;
 	rawFileData: RawFileResult;
 	imageData?: ImageResult;
 	diffData: DiffData | undefined;
@@ -118,6 +119,7 @@ export function FileViewerContent({
 	isLoadingRaw,
 	isLoadingImage,
 	isLoadingDiff,
+	loadError,
 	rawFileData,
 	imageData,
 	diffData,
@@ -256,6 +258,14 @@ export function FileViewerContent({
 					onMoveToNewTab,
 				}}
 			/>
+		);
+	}
+
+	if (loadError) {
+		return (
+			<div className="flex h-full items-center justify-center p-4 text-center text-sm text-destructive">
+				{loadError}
+			</div>
 		);
 	}
 

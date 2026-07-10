@@ -1,12 +1,16 @@
 import { describe, expect, it } from "bun:test";
 import {
 	buildRemoteWorktreeCommand,
+	buildRemoteWorktreeRemoteCommand,
+	buildRemoteWorktreeSshInvocation,
 	buildSshArgs,
 	buildSshProcessEnv,
 	buildSshTerminalCommand,
 	buildSshTerminalLaunch,
 	buildSshTunnelLaunch,
+	createRemoteWorktree,
 	resolveSystemSshExecutable,
+	validateRemoteWorktreeInput,
 } from "./ssh";
 
 const profile = {
@@ -53,20 +57,151 @@ describe("SSH command builder", () => {
 	});
 
 	it("quotes every remote worktree value", () => {
-		const command = buildRemoteWorktreeCommand(
+		const input = {
+			repoPath: "/srv/repo with space/$(date)",
+			worktreePath: "/srv/worktrees/feature-one",
+			branch: "feature/one",
+			baseBranch: "origin/main",
+		};
+		const remoteCommand = buildRemoteWorktreeRemoteCommand(input);
+		const displayCommand = buildRemoteWorktreeCommand(profile, input, "linux");
+
+		expect(remoteCommand).toBe(
+			"git -C '/srv/repo with space/$(date)' worktree add -b 'feature/one' '/srv/worktrees/feature-one' 'origin/main'",
+		);
+		expect(displayCommand).toContain("'/usr/bin/ssh'");
+		expect(displayCommand).toContain("StrictHostKeyChecking=yes");
+	});
+
+	it("expands home-relative worktree paths on the remote host", () => {
+		const command = buildRemoteWorktreeRemoteCommand({
+			repoPath: "~/repos/project",
+			worktreePath: "~/worktrees/feature-one",
+			branch: "feature/one",
+			baseBranch: "origin/main",
+		});
+
+		expect(command).toContain("git -C \"$HOME\"/'repos/project'");
+		expect(command).toContain("\"$HOME\"/'worktrees/feature-one'");
+		expect(command).not.toContain("'~/");
+	});
+
+	it("rejects relative, traversal, root, and unsafe ref inputs", () => {
+		const valid = {
+			repoPath: "/srv/repos/project",
+			worktreePath: "/srv/worktrees/feature-one",
+			branch: "feature/one",
+			baseBranch: "origin/main",
+		};
+
+		expect(() =>
+			validateRemoteWorktreeInput({ ...valid, repoPath: "srv/repos/project" }),
+		).toThrow("absolute POSIX");
+		expect(() =>
+			validateRemoteWorktreeInput({
+				...valid,
+				worktreePath: "/srv/worktrees/../outside",
+			}),
+		).toThrow("traversal");
+		expect(() =>
+			validateRemoteWorktreeInput({ ...valid, worktreePath: "/" }),
+		).toThrow("child directory");
+		expect(() =>
+			validateRemoteWorktreeInput({ ...valid, branch: "-oProxyCommand=bad" }),
+		).toThrow("Invalid worktree branch");
+		expect(() =>
+			validateRemoteWorktreeInput({ ...valid, baseBranch: "origin/main;rm" }),
+		).toThrow("Invalid base branch");
+	});
+
+	it("builds strict non-interactive worktree SSH argv", () => {
+		const invocation = buildRemoteWorktreeSshInvocation(
 			profile,
 			{
-				repoPath: "/srv/repo with space/$(date)",
+				repoPath: "/srv/repos/project",
 				worktreePath: "/srv/worktrees/feature-one",
 				branch: "feature/one",
 				baseBranch: "origin/main",
 			},
-			"linux",
+			"darwin",
+			{
+				HOME: "/Users/chi",
+				PATH: "/usr/bin:/bin",
+				OPENAI_API_KEY: "must-not-leak",
+			},
 		);
-		expect(command).toContain("git -C '");
-		expect(command).toContain("$(date)");
-		expect(command).toContain("'feature/one'");
-		expect(command).toContain("'origin/main'");
+
+		expect(invocation.executable).toBe("/usr/bin/ssh");
+		expect(invocation.args).toContain("-F");
+		expect(invocation.args).toContain("none");
+		expect(invocation.args).toContain("BatchMode=yes");
+		expect(invocation.args).toContain("StrictHostKeyChecking=yes");
+		expect(invocation.args).toContain("ClearAllForwardings=yes");
+		expect(invocation.args).toContain("-T");
+		expect(invocation.args).toContain("-a");
+		expect(invocation.args).not.toContain("-A");
+		expect(invocation.env.OPENAI_API_KEY).toBeUndefined();
+		expect(invocation.args.at(-1)).toContain("git -C");
+	});
+
+	it("executes the fixed invocation with bounded process options", async () => {
+		let captured:
+			| {
+					executable: string;
+					args: string[];
+					options: { timeout: number; maxBuffer: number; windowsHide: boolean };
+			  }
+			| undefined;
+		const result = await createRemoteWorktree(
+			profile,
+			{
+				repoPath: "/srv/repos/project",
+				worktreePath: "/srv/worktrees/feature-one",
+				branch: "feature/one",
+				baseBranch: "origin/main",
+			},
+			{
+				platform: "darwin",
+				env: { HOME: "/Users/chi", PATH: "/usr/bin:/bin" },
+				timeoutMs: 12_345,
+				execFileFn: (executable, args, options, callback) => {
+					captured = { executable, args, options };
+					callback(null, " created\n", "");
+				},
+			},
+		);
+
+		expect(result).toEqual({ stdout: "created", stderr: "" });
+		expect(captured?.executable).toBe("/usr/bin/ssh");
+		expect(captured?.args.at(-1)).toContain("git -C");
+		expect(captured?.options).toMatchObject({
+			timeout: 12_345,
+			maxBuffer: 64 * 1024,
+			windowsHide: true,
+		});
+	});
+
+	it("bounds SSH failure details and reports timeouts", async () => {
+		const input = {
+			repoPath: "/srv/repos/project",
+			worktreePath: "/srv/worktrees/feature-one",
+			branch: "feature/one",
+			baseBranch: "origin/main",
+		};
+		const longError = `start-${"x".repeat(5_000)}-end`;
+		const failed = createRemoteWorktree(profile, input, {
+			execFileFn: (_executable, _args, _options, callback) =>
+				callback(new Error("failed"), "", longError),
+		});
+		await expect(failed).rejects.toThrow("Remote worktree creation failed");
+		await expect(failed).rejects.not.toThrow("-end");
+
+		const timedOut = createRemoteWorktree(profile, input, {
+			timeoutMs: 500,
+			execFileFn: (_executable, _args, _options, callback) =>
+				callback(Object.assign(new Error("killed"), { killed: true }), "", ""),
+		});
+		await expect(timedOut).rejects.toThrow("timed out after 500 ms");
 	});
 
 	it("uses the fixed platform OpenSSH executable", () => {

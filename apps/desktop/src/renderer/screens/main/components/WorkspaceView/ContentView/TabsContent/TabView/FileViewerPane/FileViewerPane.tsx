@@ -1,6 +1,7 @@
 import type * as Monaco from "monaco-editor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MosaicBranch } from "react-mosaic-component";
+import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useChangesStore } from "renderer/stores/changes";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import type { Tab } from "renderer/stores/tabs/types";
@@ -19,6 +20,7 @@ interface FileViewerPaneProps {
 	paneId: string;
 	path: MosaicBranch[];
 	tabId: string;
+	workspaceId: string;
 	worktreePath: string;
 	splitPaneAuto: (
 		tabId: string,
@@ -47,6 +49,7 @@ export function FileViewerPane({
 	paneId,
 	path,
 	tabId,
+	workspaceId,
 	worktreePath,
 	splitPaneAuto,
 	splitPaneHorizontal,
@@ -70,7 +73,13 @@ export function FileViewerPane({
 	const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 	const markdownContainerRef = useRef<HTMLDivElement>(null);
 	const [isDirty, setIsDirty] = useState(false);
+	const [remoteTransportToken, setRemoteTransportToken] = useState<
+		string | null
+	>(null);
 	const originalContentRef = useRef<string>("");
+	const baselineLoadedRef = useRef(false);
+	const lastLiveTransportTokenRef = useRef<string | null>(null);
+	const remoteRevisionRef = useRef<string | null>(null);
 	const draftContentRef = useRef<string | null>(null);
 	const originalDiffContentRef = useRef<string>("");
 	const currentDiffContentRef = useRef<string>("");
@@ -86,6 +95,34 @@ export function FileViewerPane({
 	const oldPath = fileViewer?.oldPath;
 	const initialLine = fileViewer?.initialLine;
 	const initialColumn = fileViewer?.initialColumn;
+	const {
+		data: remoteBinding,
+		isLoading: isRemoteBindingLoading,
+		error: remoteBindingError,
+	} = electronTrpc.remote.binding.useQuery({ workspaceId });
+	const isRemoteWorkspace = !!remoteBinding;
+	const isRemoteBindingUnresolved =
+		isRemoteBindingLoading || !!remoteBindingError;
+	const isWorkspaceFile =
+		!absolutePath &&
+		!filePath.startsWith("https://") &&
+		!filePath.startsWith("http://");
+	const isRemoteFile =
+		isWorkspaceFile &&
+		(isRemoteWorkspace || (isDirty && !!remoteTransportToken));
+
+	useEffect(() => {
+		if (!isDirty) {
+			const nextToken = remoteBinding?.transportToken ?? null;
+			if (lastLiveTransportTokenRef.current !== nextToken) {
+				baselineLoadedRef.current = false;
+				originalContentRef.current = "";
+				remoteRevisionRef.current = null;
+				lastLiveTransportTokenRef.current = nextToken;
+			}
+			setRemoteTransportToken(nextToken);
+		}
+	}, [isDirty, remoteBinding?.transportToken]);
 
 	const pinPane = useTabsStore((s) => s.pinPane);
 
@@ -97,12 +134,17 @@ export function FileViewerPane({
 	});
 
 	const { handleSaveRaw, handleSaveDiff } = useFileSave({
+		workspaceId,
+		isRemoteWorkspace: isRemoteFile,
+		isRemoteBindingLoading: isRemoteFile && isRemoteBindingUnresolved,
+		remoteTransportToken,
 		worktreePath,
 		filePath,
 		paneId,
 		diffCategory,
 		editorRef,
 		originalContentRef,
+		remoteRevisionRef,
 		originalDiffContentRef,
 		draftContentRef,
 		setIsDirty,
@@ -113,9 +155,14 @@ export function FileViewerPane({
 		isLoadingRaw,
 		imageData,
 		isLoadingImage,
+		loadError,
 		diffData,
 		isLoadingDiff,
 	} = useFileContent({
+		workspaceId,
+		isRemoteWorkspace: isRemoteFile,
+		isRemoteBindingLoading: isRemoteFile && isRemoteBindingUnresolved,
+		remoteTransportToken,
 		worktreePath,
 		filePath,
 		absolutePath,
@@ -125,22 +172,24 @@ export function FileViewerPane({
 		oldPath,
 		isDirty,
 		originalContentRef,
+		baselineLoadedRef,
+		remoteRevisionRef,
 		originalDiffContentRef,
 	});
 
 	const handleEditorChange = useCallback((value: string | undefined) => {
 		if (value === undefined) return;
-		if (originalContentRef.current === "") {
-			originalContentRef.current = value;
-			return;
-		}
+		if (!baselineLoadedRef.current) return;
 		setIsDirty(value !== originalContentRef.current);
 	}, []);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Reset on file change only
 	useEffect(() => {
 		setIsDirty(false);
+		baselineLoadedRef.current = false;
 		originalContentRef.current = "";
+		remoteRevisionRef.current = null;
+		setRemoteTransportToken(remoteBinding?.transportToken ?? null);
 		originalDiffContentRef.current = "";
 		currentDiffContentRef.current = "";
 		draftContentRef.current = null;
@@ -175,6 +224,30 @@ export function FileViewerPane({
 			>
 				<div className="flex items-center justify-center h-full text-muted-foreground">
 					No file viewer state
+				</div>
+			</BasePaneWindow>
+		);
+	}
+
+	if (
+		remoteBindingError &&
+		!absolutePath &&
+		!filePath.startsWith("https://") &&
+		!filePath.startsWith("http://")
+	) {
+		return (
+			<BasePaneWindow
+				paneId={paneId}
+				path={path}
+				tabId={tabId}
+				splitPaneAuto={splitPaneAuto}
+				removePane={removePane}
+				setFocusedPane={setFocusedPane}
+				renderToolbar={() => <div className="h-full w-full" />}
+			>
+				<div className="flex h-full items-center justify-center p-4 text-sm text-destructive">
+					Could not resolve the workspace transport:{" "}
+					{remoteBindingError.message}
 				</div>
 			</BasePaneWindow>
 		);
@@ -267,7 +340,7 @@ export function FileViewerPane({
 
 	const fileName = filePath.split("/").pop() || filePath;
 	const hasRenderedMode = isMarkdownFile(filePath) || isImageFile(filePath);
-	const hasDiff = !!diffCategory;
+	const hasDiff = !!diffCategory && !isRemoteFile;
 	const hasDraft = draftContentRef.current !== null;
 	const canEditDiff =
 		diffCategory != null && isDiffEditable(diffCategory) && !hasDraft;
@@ -311,6 +384,7 @@ export function FileViewerPane({
 					isLoadingRaw={isLoadingRaw}
 					isLoadingImage={isLoadingImage}
 					isLoadingDiff={isLoadingDiff}
+					loadError={loadError}
 					rawFileData={rawFileData}
 					imageData={imageData}
 					diffData={diffData}

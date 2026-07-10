@@ -4,6 +4,10 @@ import type { ChangeCategory } from "shared/changes-types";
 import { isImageFile } from "shared/file-types";
 
 interface UseFileContentParams {
+	workspaceId: string;
+	isRemoteWorkspace: boolean;
+	isRemoteBindingLoading: boolean;
+	remoteTransportToken: string | null;
 	worktreePath: string;
 	filePath: string;
 	/** Absolute path for out-of-worktree files (e.g. agent memory). When set,
@@ -15,10 +19,16 @@ interface UseFileContentParams {
 	oldPath?: string;
 	isDirty: boolean;
 	originalContentRef: React.MutableRefObject<string>;
+	baselineLoadedRef: React.MutableRefObject<boolean>;
+	remoteRevisionRef: React.MutableRefObject<string | null>;
 	originalDiffContentRef: React.MutableRefObject<string>;
 }
 
 export function useFileContent({
+	workspaceId,
+	isRemoteWorkspace,
+	isRemoteBindingLoading,
+	remoteTransportToken,
 	worktreePath,
 	filePath,
 	absolutePath,
@@ -28,10 +38,12 @@ export function useFileContent({
 	oldPath,
 	isDirty,
 	originalContentRef,
+	baselineLoadedRef,
+	remoteRevisionRef,
 	originalDiffContentRef,
 }: UseFileContentParams) {
 	// For remote URLs (e.g. Vercel Blob), skip all IPC queries
-	const isRemote =
+	const isRemoteUrl =
 		filePath.startsWith("https://") || filePath.startsWith("http://");
 
 	// Out-of-worktree files (e.g. agent memory) are read by absolute path.
@@ -40,7 +52,12 @@ export function useFileContent({
 	const { data: branchData } = electronTrpc.changes.getBranches.useQuery(
 		{ worktreePath },
 		{
-			enabled: !isRemote && !!worktreePath && diffCategory === "against-base",
+			enabled:
+				!isRemoteBindingLoading &&
+				!isRemoteWorkspace &&
+				!isRemoteUrl &&
+				!!worktreePath &&
+				diffCategory === "against-base",
 		},
 	);
 	const effectiveBaseBranch =
@@ -53,7 +70,9 @@ export function useFileContent({
 			{ worktreePath, filePath },
 			{
 				enabled:
-					!isRemote &&
+					!isRemoteBindingLoading &&
+					!isRemoteWorkspace &&
+					!isRemoteUrl &&
 					!isAbsolute &&
 					viewMode !== "diff" &&
 					!isImage &&
@@ -67,7 +86,9 @@ export function useFileContent({
 			{ absolutePath: absolutePath ?? "" },
 			{
 				enabled:
-					!isRemote &&
+					!isRemoteBindingLoading &&
+					!isRemoteWorkspace &&
+					!isRemoteUrl &&
 					isAbsolute &&
 					viewMode !== "diff" &&
 					!isImage &&
@@ -75,21 +96,74 @@ export function useFileContent({
 			},
 		);
 
-	const rawFileData = isAbsolute ? absoluteFileData : workingFileData;
-	const isLoadingRaw = isAbsolute ? isLoadingAbsolute : isLoadingWorkingFile;
+	const {
+		data: remoteFileData,
+		isLoading: isLoadingRemoteFile,
+		error: remoteFileError,
+	} = electronTrpc.remote.readFile.useQuery(
+		{
+			workspaceId,
+			relativePath: filePath,
+			transportToken: remoteTransportToken ?? "",
+		},
+		{
+			enabled:
+				!isRemoteBindingLoading &&
+				isRemoteWorkspace &&
+				!!remoteTransportToken &&
+				viewMode !== "diff" &&
+				!isImage &&
+				!!filePath,
+		},
+	);
 
-	const { data: imageData, isLoading: isLoadingImage } =
+	const rawFileData = isRemoteWorkspace
+		? remoteFileData
+		: isAbsolute
+			? absoluteFileData
+			: workingFileData;
+	const isLoadingRaw =
+		isRemoteBindingLoading ||
+		(isRemoteWorkspace
+			? isLoadingRemoteFile
+			: isAbsolute
+				? isLoadingAbsolute
+				: isLoadingWorkingFile);
+
+	const { data: localImageData, isLoading: isLoadingLocalImage } =
 		electronTrpc.changes.readWorkingFileImage.useQuery(
 			{ worktreePath, filePath },
 			{
 				enabled:
-					!isRemote &&
+					!isRemoteBindingLoading &&
+					!isRemoteWorkspace &&
+					!isRemoteUrl &&
 					viewMode === "rendered" &&
 					isImage &&
 					!!filePath &&
 					!!worktreePath,
 			},
 		);
+	const {
+		data: remoteImageData,
+		isLoading: isLoadingRemoteImage,
+		error: remoteImageError,
+	} = electronTrpc.remote.readImage.useQuery(
+		{
+			workspaceId,
+			relativePath: filePath,
+			transportToken: remoteTransportToken ?? "",
+		},
+		{
+			enabled:
+				!isRemoteBindingLoading &&
+				isRemoteWorkspace &&
+				!!remoteTransportToken &&
+				viewMode === "rendered" &&
+				isImage &&
+				!!filePath,
+		},
+	);
 
 	const { data: diffData, isLoading: isLoadingDiff } =
 		electronTrpc.changes.getFileContents.useQuery(
@@ -104,7 +178,9 @@ export function useFileContent({
 			},
 			{
 				enabled:
-					!isRemote &&
+					!isRemoteBindingLoading &&
+					!isRemoteWorkspace &&
+					!isRemoteUrl &&
 					viewMode === "diff" &&
 					!!diffCategory &&
 					!!filePath &&
@@ -116,6 +192,9 @@ export function useFileContent({
 	useEffect(() => {
 		if (rawFileData?.ok === true && !isDirty) {
 			originalContentRef.current = rawFileData.content;
+			baselineLoadedRef.current = true;
+			remoteRevisionRef.current =
+				"revision" in rawFileData ? rawFileData.revision : null;
 		}
 	}, [rawFileData]);
 
@@ -127,19 +206,35 @@ export function useFileContent({
 	}, [diffData]);
 
 	// For remote URLs, return the URL directly as imageData (works with <img src=>)
-	const remoteImageData = useMemo(
+	const urlImageData = useMemo(
 		() =>
-			isRemote
+			isRemoteUrl
 				? { ok: true as const, dataUrl: filePath, byteLength: 0 }
 				: undefined,
-		[isRemote, filePath],
+		[isRemoteUrl, filePath],
 	);
+	const imageData = isRemoteUrl
+		? urlImageData
+		: isRemoteWorkspace
+			? remoteImageData
+			: localImageData;
+	const isLoadingImage = isRemoteUrl
+		? false
+		: isRemoteBindingLoading ||
+			(isRemoteWorkspace ? isLoadingRemoteImage : isLoadingLocalImage);
 
 	return {
 		rawFileData,
 		isLoadingRaw: isLoadingRaw || (isImage && isLoadingImage),
-		imageData: isRemote ? remoteImageData : imageData,
-		isLoadingImage: isRemote ? false : isLoadingImage,
+		imageData,
+		isLoadingImage,
+		loadError:
+			(remoteFileError instanceof Error
+				? remoteFileError.message
+				: undefined) ??
+			(remoteImageError instanceof Error
+				? remoteImageError.message
+				: undefined),
 		diffData,
 		isLoadingDiff,
 	};

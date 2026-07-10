@@ -134,7 +134,7 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 ADE binds a workspace to a password-free OpenSSH profile and launches it through the same detached terminal service used by local panes. Sessions survive closing ADE, reconnect automatically after network loss, and reattach to a stable remote `tmux` session when the host provides it. Local and remote forwards run once per workspace in a separate managed tunnel, use loopback-only listeners, and survive app restarts without colliding across terminal splits.
 
-Windows and macOS use their fixed system OpenSSH executable, existing agent/keychain and `known_hosts`; ADE stores no private keys or passwords and never passes provider API keys into SSH. First-class remote file browsing, atomic SFTP editing, remote diffs, and remote worktree lifecycle are the next milestone. See [remote work](docs/remote-work.md).
+Windows and macOS use their fixed system OpenSSH and SFTP executables, existing agent/keychain, and `known_hosts`; ADE stores no private keys or passwords and never passes provider API keys into SSH. Bound workspaces now provide remote browsing, conflict-safe editing, native upload/download dialogs, drag-and-drop uploads, and SSH worktree creation. Remote Git diffs and resumable transfer queues are the next milestone. See [remote work](docs/remote-work.md).
 
 ## Extensions
 

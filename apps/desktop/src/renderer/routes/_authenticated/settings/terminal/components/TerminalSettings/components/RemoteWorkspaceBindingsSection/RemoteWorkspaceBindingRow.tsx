@@ -16,7 +16,14 @@ import {
 } from "@superset/ui/select";
 import { toast } from "@superset/ui/sonner";
 import { useEffect, useState } from "react";
-import { LuCable, LuPlus, LuSave, LuSquare, LuTrash2 } from "react-icons/lu";
+import {
+	LuCable,
+	LuGitBranch,
+	LuPlus,
+	LuSave,
+	LuSquare,
+	LuTrash2,
+} from "react-icons/lu";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import type { TunnelStatus } from "./RemoteWorkspaceBindingsSection";
 
@@ -58,13 +65,23 @@ export function RemoteWorkspaceBindingRow({
 		binding?.portForwards ?? [],
 	);
 	const [expanded, setExpanded] = useState(!!binding);
+	const [showWorktreeCreator, setShowWorktreeCreator] = useState(false);
+	const [repoPath, setRepoPath] = useState(binding?.remotePath ?? "");
+	const [worktreePath, setWorktreePath] = useState("");
+	const [worktreeBranch, setWorktreeBranch] = useState(workspace.branch);
+	const [baseBranch, setBaseBranch] = useState("origin/main");
 
 	useEffect(() => {
 		setRemoteHostId(binding?.remoteHostId ?? "");
 		setRemotePath(binding?.remotePath ?? "");
 		setPortForwards(binding?.portForwards ?? []);
 		setExpanded(!!binding);
-	}, [binding]);
+		setShowWorktreeCreator(false);
+		setRepoPath(binding?.remotePath ?? "");
+		setWorktreePath("");
+		setWorktreeBranch(workspace.branch);
+		setBaseBranch("origin/main");
+	}, [binding, workspace.branch]);
 
 	const refresh = async () => {
 		await Promise.all([
@@ -95,6 +112,16 @@ export function RemoteWorkspaceBindingRow({
 		onSuccess: refresh,
 		onError: (error) => toast.error(error.message),
 	});
+	const createWorktree = electronTrpc.remote.createWorktree.useMutation({
+		onSuccess: async (_result, variables) => {
+			setRemotePath(variables.worktreePath);
+			setWorktreePath("");
+			setShowWorktreeCreator(false);
+			await refresh();
+			toast.success(`Created ${variables.branch} on the SSH host`);
+		},
+		onError: (error) => toast.error(error.message),
+	});
 
 	const currentStatus = status?.state ?? "stopped";
 	const hasUnsavedChanges =
@@ -106,7 +133,8 @@ export function RemoteWorkspaceBindingRow({
 		bind.isPending ||
 		unbind.isPending ||
 		startTunnel.isPending ||
-		stopTunnel.isPending;
+		stopTunnel.isPending ||
+		createWorktree.isPending;
 	const save = () => {
 		if (!remoteHostId) return;
 		bind.mutate({
@@ -122,6 +150,23 @@ export function RemoteWorkspaceBindingRow({
 				forward.id === id ? { ...forward, ...patch } : forward,
 			),
 		);
+	};
+	const canCreateWorktree =
+		!!binding &&
+		!hasUnsavedChanges &&
+		!!repoPath.trim() &&
+		!!worktreePath.trim() &&
+		!!worktreeBranch.trim() &&
+		!!baseBranch.trim();
+	const submitWorktree = () => {
+		if (!canCreateWorktree) return;
+		createWorktree.mutate({
+			workspaceId: workspace.id,
+			repoPath: repoPath.trim(),
+			worktreePath: worktreePath.trim(),
+			branch: worktreeBranch.trim(),
+			baseBranch: baseBranch.trim(),
+		});
 	};
 
 	return (
@@ -173,6 +218,95 @@ export function RemoteWorkspaceBindingRow({
 						/>
 					</div>
 				</div>
+
+				{binding && (
+					<div className="space-y-3 rounded-md border border-border/60 p-3">
+						<div className="flex flex-wrap items-start justify-between gap-3">
+							<div>
+								<Label>SSH worktree</Label>
+								<p className="text-xs text-muted-foreground">
+									Create a branch worktree on this workspace&apos;s saved host.
+								</p>
+							</div>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={busy || hasUnsavedChanges}
+								title={
+									hasUnsavedChanges ? "Save runtime changes first" : undefined
+								}
+								onClick={() => setShowWorktreeCreator((current) => !current)}
+							>
+								<LuGitBranch className="size-3.5" />
+								{showWorktreeCreator ? "Cancel" : "Create worktree"}
+							</Button>
+						</div>
+
+						{showWorktreeCreator && (
+							<div className="grid gap-3 md:grid-cols-2">
+								<div className="space-y-1 md:col-span-2">
+									<Label htmlFor={`remote-repo-${workspace.id}`}>
+										Repository path
+									</Label>
+									<Input
+										id={`remote-repo-${workspace.id}`}
+										value={repoPath}
+										onChange={(event) => setRepoPath(event.target.value)}
+										placeholder="/srv/repos/project"
+										autoComplete="off"
+									/>
+								</div>
+								<div className="space-y-1 md:col-span-2">
+									<Label htmlFor={`remote-worktree-${workspace.id}`}>
+										New worktree path
+									</Label>
+									<Input
+										id={`remote-worktree-${workspace.id}`}
+										value={worktreePath}
+										onChange={(event) => setWorktreePath(event.target.value)}
+										placeholder="/srv/worktrees/feature-one"
+										autoComplete="off"
+									/>
+								</div>
+								<div className="space-y-1">
+									<Label htmlFor={`remote-branch-${workspace.id}`}>
+										Branch
+									</Label>
+									<Input
+										id={`remote-branch-${workspace.id}`}
+										value={worktreeBranch}
+										onChange={(event) => setWorktreeBranch(event.target.value)}
+										placeholder="feature/one"
+										autoComplete="off"
+									/>
+								</div>
+								<div className="space-y-1">
+									<Label htmlFor={`remote-base-${workspace.id}`}>
+										Base branch
+									</Label>
+									<Input
+										id={`remote-base-${workspace.id}`}
+										value={baseBranch}
+										onChange={(event) => setBaseBranch(event.target.value)}
+										placeholder="origin/main"
+										autoComplete="off"
+									/>
+								</div>
+								<div className="flex justify-end md:col-span-2">
+									<Button
+										disabled={!canCreateWorktree || createWorktree.isPending}
+										onClick={submitWorktree}
+									>
+										<LuGitBranch className="size-3.5" />
+										{createWorktree.isPending
+											? "Creating..."
+											: "Create on host"}
+									</Button>
+								</div>
+							</div>
+						)}
+					</div>
+				)}
 
 				<div className="space-y-2">
 					<div className="flex items-center justify-between gap-2">

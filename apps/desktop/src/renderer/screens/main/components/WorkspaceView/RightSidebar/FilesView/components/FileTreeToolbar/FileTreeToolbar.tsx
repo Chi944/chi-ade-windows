@@ -9,6 +9,7 @@ import {
 	LuFilePlus,
 	LuFolderPlus,
 	LuRefreshCw,
+	LuUpload,
 	LuX,
 } from "react-icons/lu";
 import { SEARCH_DEBOUNCE_MS } from "../../constants";
@@ -22,6 +23,9 @@ interface FileTreeToolbarProps {
 	onRefresh: () => void;
 	showHiddenFiles: boolean;
 	onToggleHiddenFiles: () => void;
+	searchDisabled?: boolean;
+	onUpload?: () => void;
+	isUploading?: boolean;
 	isRefreshing?: boolean;
 }
 
@@ -34,6 +38,9 @@ export function FileTreeToolbar({
 	onRefresh,
 	showHiddenFiles,
 	onToggleHiddenFiles,
+	searchDisabled = false,
+	onUpload,
+	isUploading = false,
 	isRefreshing = false,
 }: FileTreeToolbarProps) {
 	const [localSearchTerm, setLocalSearchTerm] = useState(searchTerm);
@@ -86,9 +93,14 @@ export function FileTreeToolbar({
 			<div className="relative">
 				<Input
 					type="text"
-					placeholder="Search files..."
+					placeholder={
+						searchDisabled
+							? "Remote search is not available yet"
+							: "Search files..."
+					}
 					value={localSearchTerm}
 					onChange={handleSearchChange}
+					disabled={searchDisabled}
 					className="h-7 text-xs pr-7"
 				/>
 				{localSearchTerm && (
@@ -130,6 +142,27 @@ export function FileTreeToolbar({
 					</TooltipTrigger>
 					<TooltipContent side="bottom">New Folder</TooltipContent>
 				</Tooltip>
+
+				{onUpload && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="ghost"
+								size="icon"
+								className="size-6"
+								onClick={onUpload}
+								disabled={isUploading}
+							>
+								<LuUpload
+									className={`size-3.5 ${isUploading ? "animate-pulse" : ""}`}
+								/>
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">
+							Upload to selected folder
+						</TooltipContent>
+					</Tooltip>
+				)}
 
 				<div className="flex-1" />
 

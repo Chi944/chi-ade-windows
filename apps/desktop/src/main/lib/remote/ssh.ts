@@ -19,6 +19,46 @@ export interface SshWorkspaceBindingInput {
 	portForwards?: RemotePortForward[] | null;
 }
 
+export interface RemoteWorktreeInput {
+	repoPath: string;
+	worktreePath: string;
+	branch: string;
+	baseBranch: string;
+}
+
+export interface RemoteWorktreeSshInvocation {
+	executable: string;
+	args: string[];
+	env: Record<string, string>;
+}
+
+export interface RemoteWorktreeResult {
+	stdout: string;
+	stderr: string;
+}
+
+interface RemoteWorktreeExecOptions {
+	platform?: NodeJS.Platform;
+	env?: NodeJS.ProcessEnv;
+	timeoutMs?: number;
+	execFileFn?: RemoteWorktreeExecFile;
+}
+
+interface RemoteWorktreeExecFileOptions {
+	encoding: "utf8";
+	timeout: number;
+	maxBuffer: number;
+	windowsHide: boolean;
+	env: Record<string, string>;
+}
+
+type RemoteWorktreeExecFile = (
+	executable: string,
+	args: string[],
+	options: RemoteWorktreeExecFileOptions,
+	callback: (error: Error | null, stdout: string, stderr: string) => void,
+) => void;
+
 interface BuildSshArgsOptions {
 	batch?: boolean;
 	trustNewHostKey?: boolean;
@@ -31,12 +71,67 @@ interface BuildSshArgsOptions {
 }
 
 const SAFE_DESTINATION_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+const SAFE_GIT_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,299}$/;
+const REMOTE_WORKTREE_TIMEOUT_MS = 120_000;
+const REMOTE_WORKTREE_MAX_BUFFER_BYTES = 64 * 1024;
+const REMOTE_WORKTREE_ERROR_DETAIL_LENGTH = 4_000;
 
 export function validateRemotePath(value: string): boolean {
 	return (
 		(value.startsWith("/") || value === "~" || value.startsWith("~/")) &&
 		!/[\r\n\0"']/.test(value)
 	);
+}
+
+function assertRemoteWorktreePath(value: string, label: string): void {
+	if (
+		value.length > 2_048 ||
+		value.trim() !== value ||
+		!validateRemotePath(value) ||
+		value.includes("\\")
+	) {
+		throw new Error(`${label} must be an absolute POSIX or ~/ path`);
+	}
+
+	const pathWithoutRoot = value.startsWith("~/")
+		? value.slice(2)
+		: value.startsWith("/")
+			? value.slice(1)
+			: "";
+	if (
+		pathWithoutRoot.length > 0 &&
+		pathWithoutRoot
+			.split("/")
+			.some((segment) => !segment || segment === "." || segment === "..")
+	) {
+		throw new Error(`${label} cannot contain empty or traversal segments`);
+	}
+}
+
+function assertGitRef(value: string, label: string): void {
+	if (
+		value.trim() !== value ||
+		!SAFE_GIT_REF.test(value) ||
+		value.includes("..") ||
+		value.includes("//") ||
+		value.endsWith("/") ||
+		value.endsWith(".") ||
+		value.endsWith(".lock") ||
+		value.split("/").some((segment) => segment.startsWith("."))
+	) {
+		throw new Error(`Invalid ${label}`);
+	}
+}
+
+export function validateRemoteWorktreeInput(input: RemoteWorktreeInput): void {
+	assertRemoteWorktreePath(input.repoPath, "Remote repository path");
+	assertRemoteWorktreePath(input.worktreePath, "Remote worktree path");
+	if (input.worktreePath === "/" || input.worktreePath === "~") {
+		throw new Error("Remote worktree path must identify a child directory");
+	}
+	assertGitRef(input.branch, "worktree branch");
+	if (input.branch === "HEAD") throw new Error("Invalid worktree branch");
+	assertGitRef(input.baseBranch, "base branch");
 }
 
 export function validatePortForward(forward: RemotePortForward): void {
@@ -307,37 +402,120 @@ export function buildSshTerminalCommand(
 		: `ssh ${args.join(" ")}`;
 }
 
+export function buildRemoteWorktreeRemoteCommand(
+	input: RemoteWorktreeInput,
+): string {
+	validateRemoteWorktreeInput(input);
+	return [
+		"git",
+		"-C",
+		remotePathExpression(input.repoPath),
+		"worktree",
+		"add",
+		"-b",
+		remoteShellQuote(input.branch),
+		remotePathExpression(input.worktreePath),
+		remoteShellQuote(input.baseBranch),
+	].join(" ");
+}
+
+export function buildRemoteWorktreeSshInvocation(
+	profile: SshProfileInput,
+	input: RemoteWorktreeInput,
+	platform: NodeJS.Platform = process.platform,
+	env: NodeJS.ProcessEnv = process.env,
+): RemoteWorktreeSshInvocation {
+	const args = buildSshArgs(profile, {
+		batch: true,
+		deterministic: true,
+		keepAlive: true,
+		agentForwarding: false,
+	});
+	const targetIndex = args.indexOf("--");
+	args.splice(targetIndex, 0, "-T", "-o", "ClearAllForwardings=yes");
+	args.push(buildRemoteWorktreeRemoteCommand(input));
+	return {
+		executable: resolveSystemSshExecutable(platform, env),
+		args,
+		env: buildSshProcessEnv(platform, env),
+	};
+}
+
 /**
- * Build a remote Git worktree command without interpolating unquoted user data.
- * The command runs inside the remote POSIX shell selected by OpenSSH.
+ * Build a copyable command for display without using it for execution.
+ * Automated worktree creation must call createRemoteWorktree instead.
  */
 export function buildRemoteWorktreeCommand(
 	profile: SshProfileInput,
-	input: {
-		repoPath: string;
-		worktreePath: string;
-		branch: string;
-		baseBranch: string;
-	},
+	input: RemoteWorktreeInput,
 	platform: NodeJS.Platform = process.platform,
 ): string {
-	const remoteCommand = [
-		"git",
-		"-C",
-		remoteShellQuote(input.repoPath),
-		"worktree",
-		"add",
-		remoteShellQuote(input.worktreePath),
-		"-b",
-		remoteShellQuote(input.branch),
-		remoteShellQuote(input.baseBranch),
-	].join(" ");
-	const args = [...buildSshArgs(profile), remoteCommand].map((arg) =>
-		localShellQuote(arg, platform),
+	const invocation = buildRemoteWorktreeSshInvocation(profile, input, platform);
+	const command = [invocation.executable, ...invocation.args]
+		.map((arg) => localShellQuote(arg, platform))
+		.join(" ");
+	return platform === "win32" ? `& ${command}` : command;
+}
+
+export function createRemoteWorktree(
+	profile: SshProfileInput,
+	input: RemoteWorktreeInput,
+	options: RemoteWorktreeExecOptions = {},
+): Promise<RemoteWorktreeResult> {
+	const platform = options.platform ?? process.platform;
+	const env = options.env ?? process.env;
+	const timeoutMs = options.timeoutMs ?? REMOTE_WORKTREE_TIMEOUT_MS;
+	const invocation = buildRemoteWorktreeSshInvocation(
+		profile,
+		input,
+		platform,
+		env,
 	);
-	return platform === "win32"
-		? `& ssh ${args.join(" ")}`
-		: `ssh ${args.join(" ")}`;
+	const execFileFn =
+		options.execFileFn ?? (execFile as unknown as RemoteWorktreeExecFile);
+
+	return new Promise((resolve, reject) => {
+		execFileFn(
+			invocation.executable,
+			invocation.args,
+			{
+				encoding: "utf8",
+				timeout: timeoutMs,
+				maxBuffer: REMOTE_WORKTREE_MAX_BUFFER_BYTES,
+				windowsHide: true,
+				env: invocation.env,
+			},
+			(error, stdout, stderr) => {
+				if (!error) {
+					resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+					return;
+				}
+
+				const processError = error as Error & {
+					killed?: boolean;
+					signal?: string | null;
+				};
+				const timedOut =
+					processError.killed || processError.signal === "SIGTERM";
+				const detail = (stderr || stdout || error.message || "SSH failed")
+					.trim()
+					.slice(0, REMOTE_WORKTREE_ERROR_DETAIL_LENGTH);
+				if (timedOut) {
+					reject(
+						new Error(
+							`Remote worktree creation timed out after ${timeoutMs} ms${detail ? `: ${detail}` : ""}`,
+						),
+					);
+					return;
+				}
+				reject(
+					new Error(
+						`Remote worktree creation failed${detail ? `: ${detail}` : ""}`,
+					),
+				);
+			},
+		);
+	});
 }
 
 export function testSshConnection(

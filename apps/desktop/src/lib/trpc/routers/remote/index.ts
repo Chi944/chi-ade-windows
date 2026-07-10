@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import path from "node:path";
 import {
 	remoteHosts,
 	remoteWorkspaceBindings,
@@ -6,11 +8,29 @@ import {
 } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { BrowserWindow } from "electron";
+import { dialog } from "electron";
 import { localDb } from "main/lib/local-db";
+import {
+	createRemoteDirectory,
+	createRemoteFile,
+	downloadRemoteEntry,
+	normalizeRemoteRelativePath,
+	RemoteFileConflictError,
+	type RemoteFilesystemContext,
+	readRemoteDirectory,
+	readRemoteFile,
+	readRemoteImage,
+	removeRemoteEntry,
+	renameRemoteEntry,
+	uploadLocalPaths,
+	writeRemoteFile,
+} from "main/lib/remote/filesystem";
 import {
 	buildRemoteWorktreeCommand,
 	buildSshTerminalCommand,
+	createRemoteWorktree,
 	testSshConnection,
 	validateRemotePath,
 } from "main/lib/remote/ssh";
@@ -146,6 +166,77 @@ function getWorkspaceBinding(workspaceId: string) {
 		.get();
 }
 
+function getRemoteFilesystemSession(workspaceId: string): {
+	context: RemoteFilesystemContext;
+	transportToken: string;
+} {
+	getWorkspace(workspaceId);
+	const binding = getWorkspaceBinding(workspaceId);
+	if (!binding) {
+		throw new TRPCError({
+			code: "PRECONDITION_FAILED",
+			message: "This workspace is not bound to an SSH host",
+		});
+	}
+	const profile = getRemoteHost(binding.remoteHostId);
+	return {
+		context: {
+			profile,
+			remoteRoot: binding.remotePath || profile.remoteRoot || "~",
+		},
+		transportToken: createHash("sha256")
+			.update(
+				JSON.stringify({
+					workspaceId,
+					remoteHostId: binding.remoteHostId,
+					remotePath: binding.remotePath,
+					host: profile.host,
+					user: profile.user,
+					port: profile.port,
+					identityFile: profile.identityFile,
+					remoteRoot: profile.remoteRoot,
+				}),
+			)
+			.digest("hex"),
+	};
+}
+
+function assertTransportToken(actual: string, expected?: string): void {
+	if (expected && actual !== expected) {
+		throw new TRPCError({
+			code: "CONFLICT",
+			message:
+				"The remote workspace changed while this file was open. Reload it before saving.",
+		});
+	}
+}
+
+function throwRemoteFilesystemError(error: unknown): never {
+	if (error instanceof TRPCError) throw error;
+	const message =
+		error instanceof Error
+			? error.message.slice(0, 1_000)
+			: "Remote filesystem operation failed";
+	if (error instanceof RemoteFileConflictError) {
+		throw new TRPCError({ code: "CONFLICT", message, cause: error });
+	}
+	if (/not found|no such file/i.test(message)) {
+		throw new TRPCError({ code: "NOT_FOUND", message, cause: error });
+	}
+	if (
+		/invalid|must be|cannot|choose between|too large|regular files only|already exists/i.test(
+			message,
+		)
+	) {
+		throw new TRPCError({ code: "BAD_REQUEST", message, cause: error });
+	}
+	throw new TRPCError({
+		code: "INTERNAL_SERVER_ERROR",
+		message,
+		cause: error,
+	});
+}
+
 async function assertNoLiveWorkspaceTerminals(
 	workspaceIds: string[],
 ): Promise<void> {
@@ -205,7 +296,7 @@ function assertNoActiveForwardConflicts(input: {
 	}
 }
 
-export const createRemoteRouter = () =>
+export const createRemoteRouter = (getWindow: () => BrowserWindow | null) =>
 	router({
 		list: publicProcedure.query(() =>
 			localDb
@@ -314,7 +405,329 @@ export const createRemoteRouter = () =>
 
 		binding: publicProcedure
 			.input(z.object({ workspaceId: z.string().uuid() }))
-			.query(({ input }) => getWorkspaceBinding(input.workspaceId) ?? null),
+			.query(({ input }) => {
+				const binding = getWorkspaceBinding(input.workspaceId);
+				if (!binding) return null;
+				const session = getRemoteFilesystemSession(input.workspaceId);
+				return {
+					...binding,
+					transportToken: session.transportToken,
+					effectiveRemoteRoot: session.context.remoteRoot,
+				};
+			}),
+
+		readDirectory: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().max(2_048).default(""),
+					includeHidden: z.boolean().default(false),
+					transportToken: z.string().length(64).optional(),
+				}),
+			)
+			.query(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await readRemoteDirectory(
+						session.context,
+						input.relativePath,
+						input.includeHidden,
+					);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		readFile: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.query(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					const result = await readRemoteFile(
+						session.context,
+						input.relativePath,
+					);
+					return { ...result, transportToken: session.transportToken };
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		readImage: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.query(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					const result = await readRemoteImage(
+						session.context,
+						input.relativePath,
+					);
+					return { ...result, transportToken: session.transportToken };
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		writeFile: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					content: z.string().max(2 * 1024 * 1024),
+					expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					const result = await writeRemoteFile(session.context, input);
+					const currentSession = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(
+						currentSession.transportToken,
+						session.transportToken,
+					);
+					return { ...result, transportToken: session.transportToken };
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		createFile: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					parentRelativePath: z.string().max(2_048).default(""),
+					name: z.string().min(1).max(255),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await createRemoteFile(
+						session.context,
+						input.parentRelativePath,
+						input.name,
+					);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		createDirectory: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					parentRelativePath: z.string().max(2_048).default(""),
+					name: z.string().min(1).max(255),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await createRemoteDirectory(
+						session.context,
+						input.parentRelativePath,
+						input.name,
+					);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		renameEntry: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					newName: z.string().min(1).max(255),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await renameRemoteEntry(
+						session.context,
+						input.relativePath,
+						input.newName,
+					);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		removeEntry: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await removeRemoteEntry(session.context, input.relativePath);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		uploadLocalPaths: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					destinationRelativePath: z.string().max(2_048).default(""),
+					localPaths: z.array(z.string().min(1).max(32_768)).min(1).max(100),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					return await uploadLocalPaths(
+						session.context,
+						input.destinationRelativePath,
+						input.localPaths,
+					);
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		pickAndUpload: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					destinationRelativePath: z.string().max(2_048).default(""),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				const options = {
+					title: "Upload files to remote workspace",
+					properties: ["openFile", "multiSelections"] as (
+						| "openFile"
+						| "multiSelections"
+					)[],
+				};
+				const window = getWindow();
+				const selection = window
+					? await dialog.showOpenDialog(window, options)
+					: await dialog.showOpenDialog(options);
+				if (selection.canceled || selection.filePaths.length === 0) {
+					return { canceled: true, uploaded: [] };
+				}
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					const result = await uploadLocalPaths(
+						session.context,
+						input.destinationRelativePath,
+						selection.filePaths,
+					);
+					return { canceled: false, ...result };
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
+
+		download: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					relativePath: z.string().min(1).max(2_048),
+					transportToken: z.string().length(64),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				try {
+					const session = getRemoteFilesystemSession(input.workspaceId);
+					assertTransportToken(session.transportToken, input.transportToken);
+					const context = session.context;
+					const relative = normalizeRemoteRelativePath(input.relativePath);
+					const parent =
+						path.posix.dirname(relative) === "."
+							? ""
+							: path.posix.dirname(relative);
+					const name = path.posix.basename(relative);
+					const entry = (await readRemoteDirectory(context, parent, true)).find(
+						(item) => item.name === name,
+					);
+					if (!entry) {
+						throw new TRPCError({
+							code: "NOT_FOUND",
+							message: "Remote item not found",
+						});
+					}
+					const window = getWindow();
+					let destinationPath: string | undefined;
+					if (entry.isDirectory) {
+						const options = {
+							title: `Choose where to download ${entry.name}`,
+							properties: ["openDirectory", "createDirectory"] as (
+								| "openDirectory"
+								| "createDirectory"
+							)[],
+						};
+						const selection = window
+							? await dialog.showOpenDialog(window, options)
+							: await dialog.showOpenDialog(options);
+						if (selection.canceled || !selection.filePaths[0]) {
+							return { canceled: true, path: null };
+						}
+						destinationPath = path.join(selection.filePaths[0], entry.name);
+					} else {
+						const options = {
+							title: `Download ${entry.name}`,
+							defaultPath: entry.name,
+						};
+						const selection = window
+							? await dialog.showSaveDialog(window, options)
+							: await dialog.showSaveDialog(options);
+						if (selection.canceled || !selection.filePath) {
+							return { canceled: true, path: null };
+						}
+						destinationPath = selection.filePath;
+					}
+					assertTransportToken(
+						getRemoteFilesystemSession(input.workspaceId).transportToken,
+						session.transportToken,
+					);
+					const result = await downloadRemoteEntry(
+						context,
+						relative,
+						destinationPath,
+					);
+					return { canceled: false, path: result.path };
+				} catch (error) {
+					throwRemoteFilesystemError(error);
+				}
+			}),
 
 		bindWorkspace: publicProcedure
 			.input(
@@ -460,6 +873,69 @@ export const createRemoteRouter = () =>
 			.query(({ input }) => ({
 				command: buildRemoteWorktreeCommand(getRemoteHost(input.id), input),
 			})),
+
+		createWorktree: publicProcedure
+			.input(
+				z.object({
+					workspaceId: z.string().uuid(),
+					repoPath: z.string().trim().min(1).max(2_048),
+					worktreePath: z.string().trim().min(1).max(2_048),
+					branch: z.string().trim().min(1).max(300),
+					baseBranch: z.string().trim().min(1).max(300),
+				}),
+			)
+			.mutation(async ({ input }) => {
+				getWorkspace(input.workspaceId);
+				const binding = getWorkspaceBinding(input.workspaceId);
+				if (!binding) {
+					throw new TRPCError({
+						code: "PRECONDITION_FAILED",
+						message: "Bind this workspace to an SSH host first",
+					});
+				}
+				await assertNoLiveWorkspaceTerminals([input.workspaceId]);
+				try {
+					const result = await createRemoteWorktree(
+						getRemoteHost(binding.remoteHostId),
+						input,
+					);
+					await assertNoLiveWorkspaceTerminals([input.workspaceId]);
+					const currentBinding = getWorkspaceBinding(input.workspaceId);
+					if (
+						!currentBinding ||
+						currentBinding.remoteHostId !== binding.remoteHostId ||
+						currentBinding.updatedAt !== binding.updatedAt
+					) {
+						throw new TRPCError({
+							code: "CONFLICT",
+							message:
+								"The SSH worktree was created, but the workspace binding changed before ADE could switch to it",
+						});
+					}
+					const update = localDb
+						.update(remoteWorkspaceBindings)
+						.set({ remotePath: input.worktreePath, updatedAt: Date.now() })
+						.where(
+							and(
+								eq(remoteWorkspaceBindings.workspaceId, input.workspaceId),
+								eq(remoteWorkspaceBindings.remoteHostId, binding.remoteHostId),
+								eq(remoteWorkspaceBindings.updatedAt, binding.updatedAt),
+							),
+						)
+						.run();
+					if (update.changes !== 1) {
+						throw new TRPCError({
+							code: "CONFLICT",
+							message:
+								"The SSH worktree was created, but the workspace binding changed before ADE could switch to it",
+						});
+					}
+					return { ...result, remotePath: input.worktreePath };
+				} catch (error) {
+					if (error instanceof TRPCError) throw error;
+					throwRemoteFilesystemError(error);
+				}
+			}),
 
 		test: publicProcedure
 			.input(
