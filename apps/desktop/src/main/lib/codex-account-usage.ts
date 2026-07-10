@@ -264,5 +264,5 @@ export async function readSelectedCodexAccountUsage(): Promise<CodexAccountUsage
 }
 
 function appVersion(): string {
-	return process.env.npm_package_version || "0.3.0";
+	return process.env.npm_package_version || "0.4.0";
 }

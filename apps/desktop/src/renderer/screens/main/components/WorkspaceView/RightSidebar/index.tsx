@@ -2,14 +2,22 @@ import { Button } from "@superset/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
 import { useState } from "react";
-import { LuBrain, LuExpand, LuFile, LuShrink, LuX } from "react-icons/lu";
+import {
+	LuBrain,
+	LuExpand,
+	LuFile,
+	LuMessagesSquare,
+	LuShrink,
+	LuX,
+} from "react-icons/lu";
 import { HotkeyTooltipContent } from "renderer/components/HotkeyTooltipContent";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { SidebarMode, useSidebarStore } from "renderer/stores/sidebar-state";
 import { AgentFilesView } from "./AgentFilesView";
+import { CoordinationView } from "./CoordinationView";
 import { FilesView } from "./FilesView";
 
-type PanelTab = "all-files" | "agent-files";
+type PanelTab = "all-files" | "agent-files" | "coordination";
 
 function TabButton({
 	isActive,
@@ -75,7 +83,8 @@ export function RightSidebar() {
 	// entirely until the memory scaffold flag is on.
 	const { data: featureFlags } = electronTrpc.config.featureFlags.useQuery();
 	const showAgentFiles = featureFlags?.memoryScaffold ?? false;
-	const activeTab: PanelTab = showAgentFiles ? panelTab : "all-files";
+	const activeTab: PanelTab =
+		panelTab === "agent-files" && !showAgentFiles ? "all-files" : panelTab;
 
 	const handleExpandToggle = () => {
 		setMode(isExpanded ? SidebarMode.Tabs : SidebarMode.Changes);
@@ -99,6 +108,12 @@ export function RightSidebar() {
 							label="Agent Files"
 						/>
 					)}
+					<TabButton
+						isActive={activeTab === "coordination"}
+						onClick={() => setPanelTab("coordination")}
+						icon={<LuMessagesSquare className="size-3.5" />}
+						label="Handoffs"
+					/>
 				</div>
 				<div className="flex items-center h-10 shrink-0 pl-1 pr-2 gap-1 border-l border-border/60">
 					<Tooltip>
@@ -144,7 +159,13 @@ export function RightSidebar() {
 				</div>
 			</div>
 			<div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-				{activeTab === "all-files" ? <FilesView /> : <AgentFilesView />}
+				{activeTab === "all-files" ? (
+					<FilesView />
+				) : activeTab === "agent-files" ? (
+					<AgentFilesView />
+				) : (
+					<CoordinationView />
+				)}
 			</div>
 		</aside>
 	);

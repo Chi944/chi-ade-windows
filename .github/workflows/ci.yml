@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "agent/**"]
   pull_request:
     types: [opened, synchronize]
 
@@ -154,12 +154,15 @@ jobs:
           - name: Windows x64
             runner: windows-latest
             package_args: --win --x64
+            target_arch: x64
           - name: macOS Apple Silicon
             runner: macos-15
             package_args: --mac --arm64
+            target_arch: arm64
           - name: macOS Intel
             runner: macos-15-intel
             package_args: --mac --x64
+            target_arch: x64
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -189,6 +192,7 @@ jobs:
 
       - name: Package unsigned directory
         env:
+          ADE_TARGET_ARCH: ${{ matrix.target_arch }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: bun run --cwd apps/desktop package -- --dir ${{ matrix.package_args }} --publish never --config electron-builder.ts
 

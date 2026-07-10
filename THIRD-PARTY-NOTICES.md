@@ -104,6 +104,33 @@ SOFTWARE.
 
 ---
 
+## Context-efficiency design references (not bundled)
+
+ADE's compact context policy and structured handoff format were informed by the
+following MIT-licensed projects:
+
+- Ponytail, verified at commit
+  `14a0d79548d4de8fc2de95c1b94bb0de63a739d3`
+  (<https://github.com/DietrichGebert/ponytail>), for its minimal-change policy,
+  mode scoping, and portable thin-adapter design.
+- Caveman, verified at commit
+  `0d95a81d35a9f2d123a5e9430d1cfc43d55f1bb0`
+  (<https://github.com/JuliusBrussee/caveman>), for structured concise subagent
+  results and the principle that brevity must not weaken safety or exact data.
+- pxpipe, verified at commit
+  `8d7ba3ee871c3b1053b188d0f68938229748051a`
+  (<https://github.com/teamchong/pxpipe>), for counterfactual context metrics,
+  recent-turn preservation, exact-identifier safeguards, and explicit break-even
+  gates.
+
+No source files, runtime packages, fonts, image atlases, installers, or prompt
+hooks from these projects are bundled in ADE 0.4. In particular, ADE does not
+enable pxpipe's lossy image transformation or Caveman's external memory
+compressor. The links and pinned commits record the design provenance and make
+the evaluated behavior reproducible.
+
+---
+
 ## Trademarks
 
 All product names, model names, brand names, and logos referenced in this

@@ -44,8 +44,28 @@ const shouldEditUnsignedWindowsExecutable =
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
-const nodePtyFiles =
-	process.platform === "win32"
+
+type MacNodePtyArch = "arm64" | "x64";
+
+function assertMacNodePtyArch(arch: string): MacNodePtyArch {
+	if (arch === "arm64" || arch === "x64") return arch;
+	throw new Error(`Unsupported macOS node-pty architecture: ${arch}`);
+}
+
+function macNodePtyArchFromBuilder(
+	arch: AfterPackContext["arch"],
+): MacNodePtyArch {
+	// electron-builder's Arch enum uses x64=1 and arm64=3.
+	if (arch === 1) return "x64";
+	if (arch === 3) return "arm64";
+	throw new Error(`Unsupported macOS node-pty architecture value: ${arch}`);
+}
+
+export function getNodePtyFiles(
+	platform: NodeJS.Platform,
+	arch: string,
+): string[] {
+	return platform === "win32"
 		? [
 				"package.json",
 				"LICENSE",
@@ -53,14 +73,20 @@ const nodePtyFiles =
 				"prebuilds/win32-x64/**/*",
 				"!prebuilds/win32-x64/**/*.pdb",
 			]
-		: process.platform === "darwin"
+		: platform === "darwin"
 			? [
 					"package.json",
 					"LICENSE",
 					"lib/**/*",
-					`prebuilds/darwin-${process.arch}/**/*`,
+					`prebuilds/darwin-${assertMacNodePtyArch(arch)}/**/*`,
 				]
 			: ["**/*"];
+}
+
+const nodePtyFiles = getNodePtyFiles(
+	process.platform,
+	process.env.ADE_TARGET_ARCH ?? process.arch,
+);
 const betterSqliteSource = ".cache/electron-native/node_modules/better-sqlite3";
 
 async function editUnsignedWindowsExecutable(context: AfterPackContext) {
@@ -94,10 +120,7 @@ async function editUnsignedWindowsExecutable(context: AfterPackContext) {
 async function restoreMacNodePtyHelperMode(context: AfterPackContext) {
 	if (context.electronPlatformName !== "darwin") return;
 
-	const arch = process.arch;
-	if (arch !== "arm64" && arch !== "x64") {
-		throw new Error(`Unsupported macOS node-pty architecture: ${arch}`);
-	}
+	const arch = macNodePtyArchFromBuilder(context.arch);
 
 	const appInfo = context.packager.appInfo;
 	const helperPath = join(
@@ -228,7 +251,7 @@ const config: Configuration = {
 		{
 			from: "node_modules/node-pty",
 			to: "node_modules/node-pty",
-			// Windows x64 builds need only their published runtime prebuilds. PDBs,
+			// Packages need only node-pty's runtime JS and target prebuild. PDBs,
 			// source trees, and binaries for other platforms add about 59 MiB.
 			filter: nodePtyFiles,
 		},

@@ -80,6 +80,7 @@ describe("scaffoldAgentMemory — canonical layout", () => {
 			"AGENT.md",
 			"USER.md",
 			"MEMORY.md",
+			".context-policy.md",
 			".writeback-protocol.md",
 		]) {
 			expect(existsSync(join(mem, f))).toBe(true);
@@ -233,6 +234,7 @@ describe("Claude Code bridge", () => {
 		const mem = getAgentMemoryDir(agentId);
 		expect(claudeMd).toContain(`@${join(mem, "AGENT.md")}`);
 		expect(claudeMd).toContain(`@${join(mem, "USER.md")}`);
+		expect(claudeMd).toContain(`@${join(mem, ".context-policy.md")}`);
 		// MEMORY.md must NOT be @imported (native auto-memory owns it).
 		expect(claudeMd).not.toContain(`@${join(mem, "MEMORY.md")}`);
 	});
@@ -261,7 +263,7 @@ describe("OpenCode bridge", () => {
 			join(memoryDir, "AGENT.md"),
 			join(memoryDir, "USER.md"),
 			join(memoryDir, "MEMORY.md"),
-			join(memoryDir, ".writeback-protocol.md"),
+			join(memoryDir, ".context-policy.md"),
 		]);
 		for (const instructionPath of cfg.instructions) {
 			expect(existsSync(instructionPath)).toBe(true);
@@ -296,7 +298,7 @@ describe("Codex bridge regen", () => {
 		);
 	});
 
-	it("concatenates AGENT + USER + MEMORY + protocol from canonical files", () => {
+	it("concatenates memory with the compact context policy", () => {
 		const agents = readFileSync(
 			join(getAgentCodexHome(agentId), "AGENTS.md"),
 			"utf8",
@@ -305,7 +307,8 @@ describe("Codex bridge regen", () => {
 		expect(agents).toContain("autonomous coding agent"); // AGENT.md
 		expect(agents).toContain("User profile"); // USER.md
 		expect(agents).toContain("Memory — Testy"); // MEMORY.md
-		expect(agents).toContain("Your persistent memory — how to maintain it"); // protocol
+		expect(agents).toContain("ADE context and coordination");
+		expect(agents).not.toContain("WHEN FULL"); // full protocol is on-demand
 		expect(Buffer.byteLength(agents, "utf8")).toBeLessThan(32 * 1024);
 	});
 

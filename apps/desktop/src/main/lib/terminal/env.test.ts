@@ -7,6 +7,7 @@ import {
 	removeAppEnvVars,
 	SHELL_CRASH_THRESHOLD_MS,
 	sanitizeEnv,
+	setCoordinationTokenResolver,
 	setOpenRouterKeyResolver,
 	setProviderEnvironmentResolver,
 } from "./env";
@@ -580,6 +581,7 @@ describe("env", () => {
 		});
 
 		afterEach(() => {
+			setCoordinationTokenResolver(null);
 			// Restore original values
 			for (const key of varsToTrack) {
 				if (originalEnvVars[key] === undefined) {
@@ -695,7 +697,18 @@ describe("env", () => {
 		it("should include SUPERSET_HOOK_VERSION for protocol versioning", () => {
 			const result = buildTerminalEnv(baseParams);
 			expect(result.SUPERSET_HOOK_VERSION).toBeDefined();
-			expect(result.SUPERSET_HOOK_VERSION).toBe("2");
+			expect(result.SUPERSET_HOOK_VERSION).toBe("3");
+		});
+
+		it("injects a workspace-scoped coordination capability", () => {
+			setCoordinationTokenResolver(
+				(workspaceId) => `capability:${workspaceId}`,
+			);
+			const result = buildTerminalEnv(baseParams);
+			expect(result.ADE_COORDINATION_TOKEN).toBe("capability:ws-1");
+			expect(buildSafeEnv(result).ADE_COORDINATION_TOKEN).toBe(
+				"capability:ws-1",
+			);
 		});
 
 		describe("SSL_CERT_FILE fallback on macOS", () => {

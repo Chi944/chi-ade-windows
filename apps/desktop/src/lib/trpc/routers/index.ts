@@ -7,6 +7,8 @@ import { createBrowserHistoryRouter } from "./browser-history";
 import { createCacheRouter } from "./cache";
 import { createChangesRouter } from "./changes";
 import { createConfigRouter } from "./config";
+import { createCoordinationRouter } from "./coordination";
+import { createExtensionsRouter } from "./extensions";
 import { createExternalRouter } from "./external";
 import { createFilesystemRouter } from "./filesystem";
 import { createHotkeysRouter } from "./hotkeys";
@@ -15,6 +17,7 @@ import { createNotificationsRouter } from "./notifications";
 import { createPermissionsRouter } from "./permissions";
 import { createPortsRouter } from "./ports";
 import { createProjectsRouter } from "./projects";
+import { createRemoteRouter } from "./remote";
 import { createResourceMetricsRouter } from "./resource-metrics";
 import { createRingtoneRouter } from "./ringtone";
 import { createSettingsRouter } from "./settings";
@@ -41,11 +44,14 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		permissions: createPermissionsRouter(),
 		ports: createPortsRouter(),
 		resourceMetrics: createResourceMetricsRouter(),
+		remote: createRemoteRouter(),
 		menu: createMenuRouter(),
 		hotkeys: createHotkeysRouter(getWindow),
 		external: createExternalRouter(),
+		extensions: createExtensionsRouter(),
 		settings: createSettingsRouter(),
 		config: createConfigRouter(),
+		coordination: createCoordinationRouter(),
 		uiState: createUiStateRouter(),
 		sync: createSyncRouter(),
 		ringtone: createRingtoneRouter(getWindow),

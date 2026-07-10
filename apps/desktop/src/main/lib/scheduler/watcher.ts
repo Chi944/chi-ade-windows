@@ -1,6 +1,7 @@
-import { type FSWatcher, existsSync, readFileSync, watch } from "node:fs";
+import { existsSync, type FSWatcher, readFileSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getInternalCoordinationToken } from "../coordination/auth";
 
 /**
  * Lightweight, NON-LLM event watcher. Detects new files in configured drops
@@ -33,7 +34,9 @@ export class AgentWatcher {
 		if (!existsSync(WATCHERS_PATH)) return;
 		let configs: WatcherConfig[] = [];
 		try {
-			configs = JSON.parse(readFileSync(WATCHERS_PATH, "utf8")) as WatcherConfig[];
+			configs = JSON.parse(
+				readFileSync(WATCHERS_PATH, "utf8"),
+			) as WatcherConfig[];
 		} catch (err) {
 			console.error("[agent-watcher] bad watchers.json:", err);
 			return;
@@ -41,7 +44,7 @@ export class AgentWatcher {
 		for (const cfg of configs) {
 			if (!cfg.dir || !existsSync(cfg.dir)) continue;
 			try {
-				const w = watch(cfg.dir, (eventType, filename) => {
+				const w = watch(cfg.dir, (_eventType, filename) => {
 					if (!filename) return;
 					const full = join(cfg.dir, filename.toString());
 					// Debounce per-file (editors/uploads fire multiple events).
@@ -72,7 +75,10 @@ export class AgentWatcher {
 		try {
 			await fetch(`http://127.0.0.1:${this.port}/agent/invoke`, {
 				method: "POST",
-				headers: { "content-type": "application/json" },
+				headers: {
+					"content-type": "application/json",
+					"x-ade-token": getInternalCoordinationToken(),
+				},
 				body: JSON.stringify({ agent: cfg.agent, prompt }),
 			});
 			console.log(`[agent-watcher] fired ${cfg.agent} for ${file}`);

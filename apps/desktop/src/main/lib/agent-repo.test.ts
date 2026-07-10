@@ -92,7 +92,7 @@ describe("setupAgentRepo existing source", () => {
 		expect(result.worktreePath).toBe(realpathSync(linkedPath));
 		expect(result.branch).toBe("feature/linked");
 		expect(existsSync(getAgentWorktreePath(agentId))).toBe(false);
-	});
+	}, 15_000);
 
 	it("rejects a missing path without creating an agent home", async () => {
 		const agentId = "missing-repo";

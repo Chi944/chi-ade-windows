@@ -6,6 +6,7 @@ import {
 } from "../../../utils/settings-search";
 import { LinkBehaviorSetting } from "./components/LinkBehaviorSetting";
 import { PresetsSection } from "./components/PresetsSection";
+import { RemoteHostsSection } from "./components/RemoteHostsSection";
 import { SessionsSection } from "./components/SessionsSection";
 
 interface TerminalSettingsProps {
@@ -78,6 +79,7 @@ export function TerminalSettings({
 				)}
 				{showLinkBehavior && <LinkBehaviorSetting key="link-behavior" />}
 				{showSessions && <SessionsSection key="sessions" />}
+				{visibleItems == null && <RemoteHostsSection key="remote-hosts" />}
 			</SectionList>
 		</div>
 	);

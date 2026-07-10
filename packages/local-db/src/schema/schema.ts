@@ -1,4 +1,10 @@
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+	index,
+	integer,
+	sqliteTable,
+	text,
+	uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { v4 as uuidv4 } from "uuid";
 
 import type {
@@ -153,6 +159,41 @@ export const workspaces = sqliteTable(
 
 export type InsertWorkspace = typeof workspaces.$inferInsert;
 export type SelectWorkspace = typeof workspaces.$inferSelect;
+
+/**
+ * Saved OpenSSH connection profiles. ADE stores connection metadata only;
+ * credentials, host keys, and private keys remain owned by the operating system.
+ */
+export const remoteHosts = sqliteTable(
+	"remote_hosts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => uuidv4()),
+		name: text("name").notNull(),
+		host: text("host").notNull(),
+		user: text("user"),
+		port: integer("port").notNull().default(22),
+		identityFile: text("identity_file"),
+		remoteRoot: text("remote_root"),
+		agentForwarding: integer("agent_forwarding", { mode: "boolean" })
+			.notNull()
+			.default(false),
+		createdAt: integer("created_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+		updatedAt: integer("updated_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+	},
+	(table) => [
+		uniqueIndex("remote_hosts_name_idx").on(table.name),
+		index("remote_hosts_host_idx").on(table.host),
+	],
+);
+
+export type InsertRemoteHost = typeof remoteHosts.$inferInsert;
+export type SelectRemoteHost = typeof remoteHosts.$inferSelect;
 
 export const settings = sqliteTable("settings", {
 	id: integer("id").primaryKey().default(1),
@@ -384,7 +425,27 @@ export const agentMessages = sqliteTable(
 		agentName: text("agent_name").notNull(),
 		// Optional link back to the agent's ADE workspace (for avatar/role lookup).
 		workspaceId: text("workspace_id"),
+		// Project-scoped routing keeps handoffs inside the repository that owns
+		// them. Nullable for feed rows created before coordination was added.
+		projectId: text("project_id"),
+		// Null means a project broadcast; otherwise this is a durable inbox item
+		// for one workspace/agent.
+		recipientWorkspaceId: text("recipient_workspace_id"),
+		kind: text("kind")
+			.notNull()
+			.default("message")
+			.$type<"message" | "handoff" | "decision" | "artifact" | "context">(),
+		status: text("status")
+			.notNull()
+			.default("queued")
+			.$type<"queued" | "acknowledged">(),
 		content: text("content").notNull(),
+		// A compact description is displayed in the coordination inbox and used
+		// in bounded context packets instead of replaying the full transcript.
+		summary: text("summary"),
+		tokenEstimate: integer("token_estimate"),
+		correlationId: text("correlation_id"),
+		replyToId: text("reply_to_id"),
 		// "assistant" = agent finding (default), "user" = a note Pat typed in.
 		role: text("role").notNull().default("assistant"),
 		// Optional structured extras (sources, scores, links) for rich rendering.
@@ -394,13 +455,103 @@ export const agentMessages = sqliteTable(
 		createdAt: integer("created_at")
 			.notNull()
 			.$defaultFn(() => Date.now()),
+		acknowledgedAt: integer("acknowledged_at"),
+		updatedAt: integer("updated_at")
+			.notNull()
+			.default(0)
+			.$defaultFn(() => Date.now()),
 	},
 	(table) => [
 		index("agent_messages_conversation_id_idx").on(table.conversationId),
 		index("agent_messages_agent_name_idx").on(table.agentName),
 		index("agent_messages_created_at_idx").on(table.createdAt),
+		index("agent_messages_project_id_idx").on(table.projectId),
+		index("agent_messages_recipient_status_idx").on(
+			table.recipientWorkspaceId,
+			table.status,
+		),
 	],
 );
 
 export type InsertAgentMessage = typeof agentMessages.$inferInsert;
 export type SelectAgentMessage = typeof agentMessages.$inferSelect;
+
+/** Per-workspace acknowledgements for project broadcasts. */
+export const agentMessageReceipts = sqliteTable(
+	"agent_message_receipts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => uuidv4()),
+		messageId: text("message_id")
+			.notNull()
+			.references(() => agentMessages.id, { onDelete: "cascade" }),
+		workspaceId: text("workspace_id").notNull(),
+		acknowledgedAt: integer("acknowledged_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+	},
+	(table) => [
+		uniqueIndex("agent_message_receipts_message_workspace_idx").on(
+			table.messageId,
+			table.workspaceId,
+		),
+		index("agent_message_receipts_workspace_idx").on(table.workspaceId),
+	],
+);
+
+export type InsertAgentMessageReceipt =
+	typeof agentMessageReceipts.$inferInsert;
+export type SelectAgentMessageReceipt =
+	typeof agentMessageReceipts.$inferSelect;
+
+/**
+ * Small, project-scoped facts shared by agents. Provider transcripts and
+ * provider session identifiers deliberately remain in their owning runtimes;
+ * this table stores only explicit durable memory selected for collaboration.
+ */
+export const sharedMemories = sqliteTable(
+	"shared_memories",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => uuidv4()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		scope: text("scope")
+			.notNull()
+			.default("project")
+			.$type<"project" | "workspace">(),
+		// Empty for project memory; the target workspace id for private memory.
+		workspaceId: text("workspace_id").notNull().default(""),
+		key: text("key").notNull(),
+		title: text("title").notNull(),
+		content: text("content").notNull(),
+		summary: text("summary"),
+		authorWorkspaceId: text("author_workspace_id"),
+		contentHash: text("content_hash").notNull(),
+		tokenEstimate: integer("token_estimate").notNull(),
+		createdAt: integer("created_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+		updatedAt: integer("updated_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+	},
+	(table) => [
+		uniqueIndex("shared_memories_project_scope_key_idx").on(
+			table.projectId,
+			table.scope,
+			table.workspaceId,
+			table.key,
+		),
+		index("shared_memories_project_updated_at_idx").on(
+			table.projectId,
+			table.updatedAt,
+		),
+	],
+);
+
+export type InsertSharedMemory = typeof sharedMemories.$inferInsert;
+export type SelectSharedMemory = typeof sharedMemories.$inferSelect;

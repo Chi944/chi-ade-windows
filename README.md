@@ -18,11 +18,12 @@
 
 ![chi-ade-windows workspace with a local preview and split PowerShell terminal](docs/screenshots/workspace.png)
 
-> Version 0.3 is currently available from source. The latest public installer remains Windows-only v0.2.1 until signed Windows and notarized macOS v0.3 artifacts are published.
+> Version 0.4 is currently available from source. The latest public installer remains Windows-only v0.2.1 until signed Windows and notarized macOS v0.4 artifacts are published.
 
 ## One workspace, many agents
 
 - **Parallel Git worktrees** keep branches and agents isolated while sharing Git object storage. Existing local repositories can be linked without copying them.
+- **Durable agent handoffs** let Claude, Codex, OpenCode, and any terminal agent exchange project-scoped messages, decisions, artifacts, and compact resume packets without sharing provider credentials or raw transcripts.
 - **Persistent split panes** place agents, PowerShell or other shells, files, diffs, and browser previews side by side. Layout and bounded terminal history survive restarts.
 - **Any terminal agent** can run in ADE. Use a built-in runtime or pin any installed CLI command as a custom Agent Bar preset.
 - **Provider Hub** brings Claude and Codex account profiles, Codex usage/reset windows, OpenRouter, remote Hugging Face models, and Ollama models into one place.
@@ -31,8 +32,15 @@
 - **Drag files to agents** pastes safely shell-quoted Explorer or Finder paths into a terminal.
 - **Custom appearance** includes a deep true-black theme and editable UI and terminal colours.
 - **User-controlled updates** announce new releases; nothing downloads or installs until you choose it.
+- **Remote and extensible by default** uses the operating system's OpenSSH client and a declarative local extension registry instead of bundling another runtime.
 
 ## Gallery
+
+| Durable cross-agent handoffs | Remote OpenSSH workspaces |
+| --- | --- |
+| ![Project-scoped handoffs, acknowledgement inbox, and bounded resume context](docs/screenshots/coordination.png) | ![Windows and macOS OpenSSH host metadata and remote worktree settings](docs/screenshots/remote-work.png) |
+
+![Declarative local extension registry for terminal agents, skills, and MCP connectors](docs/screenshots/extensions.png)
 
 | Provider Hub | Remote and local models |
 | --- | --- |
@@ -63,6 +71,23 @@ ADE does not bundle agent CLIs, subscriptions, model weights, or provider usage.
 
 Conversation-level cold resume is implemented for Claude, Codex, Codex-backed Hugging Face and Ollama sessions, and OpenCode. Other agents retain ADE's pane layout and bounded terminal scrollback; conversation continuation depends on the CLI itself.
 
+## Agent coordination and context
+
+Agents in the same project now share a durable SQLite inbox and explicit project memory. The **Handoffs** sidebar sends targeted or broadcast messages, tracks acknowledgement per recipient, and builds a deterministic resume packet capped at 1,200 estimated tokens by default.
+
+Every ADE terminal receives the cross-platform `ade-coord` command:
+
+```sh
+ade-coord peers
+ade-coord inbox
+ade-coord send <workspace-id|all> "Outcome; files; tests; blocker; next step"
+ade-coord context "current objective"
+```
+
+Claude and Codex keep separate provider sessions and authentication. They understand each other through explicit summaries, artifacts, decisions, and shared facts—not hidden transcript copying. See [coordination and context](docs/coordination.md).
+
+ADE applies a single compact context policy instead of stacking multiple always-on prompt hooks. Detailed memory rules load on demand. The design is informed by [Ponytail's](https://github.com/DietrichGebert/ponytail) minimal-code guidance and [Caveman's](https://github.com/JuliusBrussee/caveman) structured crew handoffs. [pxpipe](https://github.com/teamchong/pxpipe)-style image encoding remains unbundled because it is model-dependent, lossy for exact identifiers, and would increase the install size.
+
 ## Accounts and usage
 
 Each Claude or Codex profile completes its provider's official CLI login once. Selecting a profile affects new panes; running panes and resumed sessions stay pinned to the profile that created them.
@@ -81,13 +106,14 @@ Packaged builds check GitHub Releases at startup, every four hours, and when you
 
 ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The public v0.2.1 build predates this updater, so moving from v0.2.1 to v0.3 requires one manual installer download. Once v0.3 is installed, the in-app flow handles later published versions.
+The public v0.2.1 build predates this updater, so moving from v0.2.1 to v0.4 requires one manual installer download. Once v0.4 is installed, the in-app flow handles later published versions.
 
 ## Storage and privacy
 
 - App state lives under `~/.ade`.
 - Existing-folder linking is zero-copy, and Git worktrees share repository objects.
 - Terminal scrollback is capped at 5 MiB per pane; the reopen stack retains at most 20 closed tabs.
+- Handoffs and shared facts are compact SQLite rows with retention and per-project quotas; resume packets are bounded and raw provider transcripts are not duplicated.
 - Hugging Face weights stay remote, and Ollama models remain outside ADE.
 - Analytics emission is disabled in this build.
 - Agent memory is stored as small Markdown files outside the worktree; see [the memory design](docs/memory.md).
@@ -100,15 +126,19 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 | Platform | Status |
 | --- | --- |
-| Windows x64 | v0.3 packages locally and passes its packaged native-runtime smoke test. The latest public release remains v0.2.1. |
-| macOS Apple Silicon | Build, package, native-runtime smoke, signing, and updater jobs are defined; public support awaits a green pushed CI run and a notarized release. |
-| macOS Intel | Same validation and release requirement as Apple Silicon. |
+| Windows x64 | v0.4 compiles and packages locally and in GitHub Actions; packaged native-runtime and migration smokes pass. The latest public release remains v0.2.1. |
+| macOS Apple Silicon | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15`; a public release still requires Apple signing and notarization. |
+| macOS Intel | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15-intel`; a public release still requires Apple signing and notarization. |
 
 ## SSH status
 
-ADE supports Git SSH remotes and can run `ssh` or another installed remote CLI in a terminal or custom agent preset. Managed worktrees, file browsing, diffs, persistence, and Design Mode currently operate on local files.
+ADE stores password-free OpenSSH profiles, checks connections without an interactive password prompt, builds safe terminal commands, and can generate remote Git worktree commands. It uses Windows OpenSSH or macOS OpenSSH, including the user's existing SSH agent, key files, and `known_hosts`; ADE stores no private keys or passwords. See [remote work](docs/remote-work.md).
 
-First-class SSH worktrees, remote file editing, SFTP, reconnect, and port forwarding are not implemented yet.
+Remote terminal commands are implemented. First-class remote file browsing, SFTP editing, remote diffs, reconnecting persistent SSH PTYs, and managed port forwarding remain the next remote-runtime milestone.
+
+## Extensions
+
+Place a versioned `ade-extension.json` under `~/.ade/extensions/<extension>/` to register terminal agents, skills, and MCP connector declarations. Invalid manifests and path traversal are blocked; commands are never auto-run. Compatible agent commands can be added to the Agent Bar from **Settings → Integrations**. See [extension manifests](docs/extensions.md).
 
 ## Workspace recipes
 
