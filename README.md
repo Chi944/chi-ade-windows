@@ -126,9 +126,9 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 | Platform | Status |
 | --- | --- |
-| Windows x64 | v0.4 compiles and packages locally; the packaged native-runtime and full migration smoke tests pass. The latest public release remains v0.2.1. |
-| macOS Apple Silicon | Build, package, native-runtime smoke, signing, and updater jobs are defined; public support awaits a green pushed CI run and a notarized release. |
-| macOS Intel | Same validation and release requirement as Apple Silicon. |
+| Windows x64 | v0.4 compiles and packages locally and in GitHub Actions; packaged native-runtime and migration smokes pass. The latest public release remains v0.2.1. |
+| macOS Apple Silicon | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15`; a public release still requires Apple signing and notarization. |
+| macOS Intel | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15-intel`; a public release still requires Apple signing and notarization. |
 
 ## SSH status
 
