@@ -33,7 +33,7 @@ import type {
 	TerminalProps,
 	TerminalStreamEvent,
 } from "./types";
-import { shellEscapePaths } from "./utils";
+import { shellEscapePaths, validateDroppedPaths } from "./utils";
 
 const stripLeadingEmoji = (text: string) =>
 	text.trim().replace(/^[\p{Emoji}\p{Symbol}]\s*/u, "");
@@ -77,6 +77,11 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	const rendererRef = useRef<TerminalRendererRef | null>(null);
 	const isExitedRef = useRef(false);
 	const [exitStatus, setExitStatus] = useState<"killed" | "exited" | null>(
+		null,
+	);
+	const [lastExitCode, setLastExitCode] = useState<number | null>(null);
+	const remoteReconnectAttemptsRef = useRef(0);
+	const remoteStableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
 		null,
 	);
 	const wasKilledByUserRef = useRef(false);
@@ -141,6 +146,12 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	// URL click handler - opens in app browser or system browser based on setting
 	const { data: openLinksInApp } =
 		electronTrpc.settings.getOpenLinksInApp.useQuery();
+	const { data: remoteBinding, isPending: isRemoteBindingPending } =
+		electronTrpc.remote.binding.useQuery(
+			{ workspaceId },
+			{ staleTime: 30_000 },
+		);
+	const uploadDroppedFiles = electronTrpc.remote.uploadLocalPaths.useMutation();
 	const openInBrowserPane = useTabsStore((s) => s.openInBrowserPane);
 	const handleUrlClickRef = useRef<((url: string) => void) | undefined>(
 		undefined,
@@ -213,7 +224,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 			handleTerminalExitRef.current(exitCode, xterm, reason),
 		onErrorEvent: (event, xterm) => handleStreamErrorRef.current(event, xterm),
 		onDisconnectEvent: (reason) =>
-			setConnectionError(reason || "Connection to terminal daemon lost"),
+			setConnectionError(reason || "Connection to terminal service lost"),
 	});
 
 	// Cold restore handling
@@ -268,6 +279,13 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 			setConnectionError,
 			updateModesFromData,
 			updateCwdFromData,
+			onExit: (exitCode) => {
+				if (remoteStableTimerRef.current) {
+					clearTimeout(remoteStableTimerRef.current);
+					remoteStableTimerRef.current = null;
+				}
+				setLastExitCode(exitCode);
+			},
 		});
 
 	// Populate handler refs for flushPendingEvents to use
@@ -277,6 +295,17 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	// Stream subscription
 	electronTrpc.terminal.stream.useSubscription(paneId, {
 		onData: (event) => {
+			if (
+				remoteBinding &&
+				event.type === "data" &&
+				remoteReconnectAttemptsRef.current > 0 &&
+				!remoteStableTimerRef.current
+			) {
+				remoteStableTimerRef.current = setTimeout(() => {
+					remoteReconnectAttemptsRef.current = 0;
+					remoteStableTimerRef.current = null;
+				}, 10_000);
+			}
 			if (connectionErrorRef.current && event.type === "data") {
 				setConnectionError(null);
 				retryCountRef.current = 0;
@@ -376,6 +405,30 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	});
 
 	useEffect(() => {
+		if (!remoteBinding || exitStatus !== "exited" || lastExitCode !== 255) {
+			return;
+		}
+		if (remoteReconnectAttemptsRef.current >= 5) return;
+
+		const attempt = ++remoteReconnectAttemptsRef.current;
+		const delay = Math.min(1_000 * 2 ** (attempt - 1), 10_000);
+		xtermRef.current?.writeln(
+			`\r\n\x1b[90m[SSH disconnected. Reconnecting in ${Math.ceil(delay / 1000)}sâ€¦]\x1b[0m`,
+		);
+		const timeout = setTimeout(restartTerminal, delay);
+		return () => clearTimeout(timeout);
+	}, [remoteBinding, exitStatus, lastExitCode, restartTerminal]);
+
+	useEffect(
+		() => () => {
+			if (remoteStableTimerRef.current) {
+				clearTimeout(remoteStableTimerRef.current);
+			}
+		},
+		[],
+	);
+
+	useEffect(() => {
 		const xterm = xtermRef.current;
 		if (!xterm || !terminalTheme) return;
 		xterm.options.theme = terminalTheme;
@@ -406,22 +459,48 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		event.dataTransfer.dropEffect = "copy";
 	};
 
-	const handleDrop = (event: React.DragEvent) => {
+	const handleDrop = async (event: React.DragEvent) => {
 		event.preventDefault();
 		try {
+			if (isRemoteBindingPending) {
+				throw new Error("Wait for the workspace transport to finish loading");
+			}
 			const files = Array.from(event.dataTransfer.files);
 			let text: string;
 			if (files.length > 0) {
 				// Native file drop (from Finder, Explorer, etc.). Electron returns
 				// the actual OS path; the default platform shell gets a literal-safe
 				// representation for spaces and metacharacters.
-				const paths = files.map((file) => window.webUtils.getPathForFile(file));
-				text = shellEscapePaths(paths);
+				const paths = validateDroppedPaths(
+					files.map((file) => window.webUtils.getPathForFile(file)),
+				);
+				if (remoteBinding) {
+					const result = await uploadDroppedFiles.mutateAsync({
+						workspaceId,
+						destinationRelativePath: "",
+						localPaths: paths,
+						transportToken: remoteBinding.transportToken,
+					});
+					text = shellEscapePaths(
+						result.uploaded.map((file) => `./${file.relativePath}`),
+						"posix",
+					);
+					toast.success(
+						result.uploaded.length === 1
+							? "Uploaded file to the remote workspace"
+							: `Uploaded ${result.uploaded.length} files to the remote workspace`,
+					);
+				} else {
+					text = shellEscapePaths(paths);
+				}
 			} else {
 				// Internal drag (from file tree) - path is in text/plain.
 				const plainText = event.dataTransfer.getData("text/plain");
 				if (!plainText) return;
-				text = shellEscapePaths([plainText]);
+				text = shellEscapePaths(
+					[plainText],
+					remoteBinding ? "posix" : undefined,
+				);
 			}
 			if (!isExitedRef.current) {
 				writeRef.current({ paneId, data: text });

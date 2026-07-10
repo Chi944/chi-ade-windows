@@ -129,7 +129,7 @@ export function useTerminalRestore({
 				});
 			};
 
-			// Canonical initial content: prefer snapshot (daemon mode) over scrollback
+			// Canonical initial content: prefer snapshot (service mode) over scrollback
 			const initialAnsi = result.snapshot?.snapshotAnsi ?? result.scrollback;
 
 			// Track alternate screen mode from snapshot

@@ -15,9 +15,11 @@ import { electronTrpc } from "renderer/lib/electron-trpc";
 export function SessionsSection() {
 	const utils = electronTrpc.useUtils();
 
-	const { data: daemonSessions } =
-		electronTrpc.terminal.listDaemonSessions.useQuery();
-	const sessions = daemonSessions?.sessions ?? [];
+	const { data: serviceSessions } =
+		electronTrpc.terminal.listServiceSessions.useQuery();
+	const sessions = (serviceSessions?.sessions ?? []).filter(
+		(session) => !session.hidden,
+	);
 	const aliveSessions = useMemo(
 		() => sessions.filter((session) => session.isAlive),
 		[sessions],
@@ -35,7 +37,7 @@ export function SessionsSection() {
 
 	const [confirmKillAllOpen, setConfirmKillAllOpen] = useState(false);
 	const [confirmClearHistoryOpen, setConfirmClearHistoryOpen] = useState(false);
-	const [confirmRestartDaemonOpen, setConfirmRestartDaemonOpen] =
+	const [confirmRestartServiceOpen, setConfirmRestartServiceOpen] =
 		useState(false);
 	const [showSessionList, setShowSessionList] = useState(false);
 	const [pendingKillSession, setPendingKillSession] = useState<{
@@ -43,12 +45,12 @@ export function SessionsSection() {
 		workspaceId: string;
 	} | null>(null);
 
-	const killAllDaemonSessions =
-		electronTrpc.terminal.killAllDaemonSessions.useMutation({
+	const killAllServiceSessions =
+		electronTrpc.terminal.killAllServiceSessions.useMutation({
 			onMutate: async () => {
-				await utils.terminal.listDaemonSessions.cancel();
-				const previous = utils.terminal.listDaemonSessions.getData();
-				utils.terminal.listDaemonSessions.setData(undefined, {
+				await utils.terminal.listServiceSessions.cancel();
+				const previous = utils.terminal.listServiceSessions.getData();
+				utils.terminal.listServiceSessions.setData(undefined, {
 					sessions: [],
 				});
 				return { previous };
@@ -66,7 +68,7 @@ export function SessionsSection() {
 			},
 			onError: (error, _vars, context) => {
 				if (context?.previous) {
-					utils.terminal.listDaemonSessions.setData(
+					utils.terminal.listServiceSessions.setData(
 						undefined,
 						context.previous,
 					);
@@ -77,7 +79,7 @@ export function SessionsSection() {
 			},
 			onSettled: () => {
 				setTimeout(() => {
-					utils.terminal.listDaemonSessions.invalidate();
+					utils.terminal.listServiceSessions.invalidate();
 				}, 300);
 			},
 		});
@@ -86,7 +88,7 @@ export function SessionsSection() {
 		electronTrpc.terminal.clearTerminalHistory.useMutation({
 			onSuccess: () => {
 				toast.success("Cleared terminal history");
-				utils.terminal.listDaemonSessions.invalidate();
+				utils.terminal.listServiceSessions.invalidate();
 			},
 			onError: (error) => {
 				toast.error("Failed to clear terminal history", {
@@ -95,10 +97,10 @@ export function SessionsSection() {
 			},
 		});
 
-	const killDaemonSession = electronTrpc.terminal.kill.useMutation({
+	const killServiceSession = electronTrpc.terminal.kill.useMutation({
 		onSuccess: () => {
 			toast.success("Killed terminal session");
-			utils.terminal.listDaemonSessions.invalidate();
+			utils.terminal.listServiceSessions.invalidate();
 		},
 		onError: (error) => {
 			toast.error("Failed to kill session", {
@@ -107,16 +109,16 @@ export function SessionsSection() {
 		},
 	});
 
-	const restartDaemon = electronTrpc.terminal.restartDaemon.useMutation({
+	const restartService = electronTrpc.terminal.restartService.useMutation({
 		onSuccess: () => {
-			toast.success("Daemon restarted", {
+			toast.success("Service restarted", {
 				description:
-					"All sessions killed and daemon restarted. The app will use a fresh daemon.",
+					"All sessions killed and service restarted. The app will use a fresh service.",
 			});
-			utils.terminal.listDaemonSessions.invalidate();
+			utils.terminal.listServiceSessions.invalidate();
 		},
 		onError: (error) => {
-			toast.error("Failed to restart daemon", {
+			toast.error("Failed to restart service", {
 				description: error.message,
 			});
 		},
@@ -136,13 +138,13 @@ export function SessionsSection() {
 						<Button
 							variant="ghost"
 							size="sm"
-							onClick={() => utils.terminal.listDaemonSessions.invalidate()}
+							onClick={() => utils.terminal.listServiceSessions.invalidate()}
 						>
 							Refresh
 						</Button>
 					</div>
 					<p className="text-xs text-muted-foreground">
-						Daemon sessions running: {aliveSessions.length}
+						Service sessions running: {aliveSessions.length}
 					</p>
 					{aliveSessions.length >= 20 && (
 						<p className="text-xs text-muted-foreground/70">
@@ -157,7 +159,7 @@ export function SessionsSection() {
 						variant="destructive"
 						size="sm"
 						disabled={
-							aliveSessions.length === 0 || killAllDaemonSessions.isPending
+							aliveSessions.length === 0 || killAllServiceSessions.isPending
 						}
 						onClick={() => setConfirmKillAllOpen(true)}
 					>
@@ -176,10 +178,10 @@ export function SessionsSection() {
 					<Button
 						variant="outline"
 						size="sm"
-						disabled={restartDaemon.isPending}
-						onClick={() => setConfirmRestartDaemonOpen(true)}
+						disabled={restartService.isPending}
+						onClick={() => setConfirmRestartServiceOpen(true)}
 					>
-						Restart daemon
+						Restart service
 					</Button>
 					<Button
 						variant="ghost"
@@ -197,9 +199,7 @@ export function SessionsSection() {
 							<table className="w-full text-xs">
 								<thead className="sticky top-0 bg-background">
 									<tr className="text-muted-foreground">
-										<th className="px-2 py-2 text-left font-medium">
-											Agent
-										</th>
+										<th className="px-2 py-2 text-left font-medium">Agent</th>
 										<th className="px-2 py-2 text-left font-medium">Session</th>
 										<th className="px-2 py-2 text-right font-medium">
 											Clients
@@ -285,10 +285,10 @@ export function SessionsSection() {
 						<Button
 							variant="destructive"
 							size="sm"
-							disabled={killAllDaemonSessions.isPending}
+							disabled={killAllServiceSessions.isPending}
 							onClick={() => {
 								setConfirmKillAllOpen(false);
-								killAllDaemonSessions.mutate();
+								killAllServiceSessions.mutate();
 							}}
 						>
 							Kill all
@@ -378,12 +378,12 @@ export function SessionsSection() {
 						<Button
 							variant="destructive"
 							size="sm"
-							disabled={killDaemonSession.isPending}
+							disabled={killServiceSession.isPending}
 							onClick={() => {
 								const sessionId = pendingKillSession?.sessionId;
 								setPendingKillSession(null);
 								if (!sessionId) return;
-								killDaemonSession.mutate({ paneId: sessionId });
+								killServiceSession.mutate({ paneId: sessionId });
 							}}
 						>
 							Kill
@@ -393,19 +393,19 @@ export function SessionsSection() {
 			</AlertDialog>
 
 			<AlertDialog
-				open={confirmRestartDaemonOpen}
-				onOpenChange={setConfirmRestartDaemonOpen}
+				open={confirmRestartServiceOpen}
+				onOpenChange={setConfirmRestartServiceOpen}
 			>
 				<AlertDialogContent className="max-w-[520px] gap-0 p-0">
 					<AlertDialogHeader className="px-4 pt-4 pb-2">
 						<AlertDialogTitle className="font-medium">
-							Restart terminal daemon?
+							Restart terminal service?
 						</AlertDialogTitle>
 						<AlertDialogDescription asChild>
 							<div className="text-muted-foreground space-y-1.5">
 								<span className="block">
 									This will kill all running sessions and restart the terminal
-									daemon. The app will restart terminals with a fresh daemon.
+									service. The app will restart terminals with a fresh service.
 								</span>
 								<span className="block">
 									Use this to fix terminals that are stuck or unresponsive.
@@ -417,20 +417,20 @@ export function SessionsSection() {
 						<Button
 							variant="ghost"
 							size="sm"
-							onClick={() => setConfirmRestartDaemonOpen(false)}
+							onClick={() => setConfirmRestartServiceOpen(false)}
 						>
 							Cancel
 						</Button>
 						<Button
 							variant="default"
 							size="sm"
-							disabled={restartDaemon.isPending}
+							disabled={restartService.isPending}
 							onClick={() => {
-								setConfirmRestartDaemonOpen(false);
-								restartDaemon.mutate(undefined, {});
+								setConfirmRestartServiceOpen(false);
+								restartService.mutate(undefined, {});
 							}}
 						>
-							Restart daemon
+							Restart service
 						</Button>
 					</AlertDialogFooter>
 				</AlertDialogContent>

@@ -77,10 +77,15 @@ export function RemoteHostsSection() {
 									variant="outline"
 									size="sm"
 									disabled={test.isPending}
-									onClick={() => test.mutate({ id: saved.id })}
+									onClick={() =>
+										test.mutate({
+											id: saved.id,
+											trustNewHostKey: true,
+										})
+									}
 								>
 									<LuPlugZap className="size-3.5" />
-									Test
+									Trust &amp; test
 								</Button>
 								<Button
 									variant="outline"
@@ -174,7 +179,7 @@ export function RemoteHostsSection() {
 							id="remote-root"
 							value={remoteRoot}
 							onChange={(event) => setRemoteRoot(event.target.value)}
-							placeholder="~/worktrees"
+							placeholder="/srv/worktrees"
 						/>
 					</div>
 					<label className="md:col-span-2 flex items-center gap-2 text-sm">
@@ -185,6 +190,12 @@ export function RemoteHostsSection() {
 						/>
 						Forward the local SSH agent for this connection
 					</label>
+					{agentForwarding && (
+						<p className="md:col-span-2 text-xs text-amber-600 dark:text-amber-400">
+							Only enable agent forwarding for hosts you trust. A remote process
+							can use your forwarded agent while the SSH session is open.
+						</p>
+					)}
 					<div className="md:col-span-2 flex justify-end">
 						<Button
 							disabled={!name.trim() || !host.trim() || upsert.isPending}

@@ -10,6 +10,7 @@ export interface SessionInfo {
 	cols: number;
 	rows: number;
 	runtime?: AgentRuntime | null;
+	hidden?: boolean;
 	exitReason?: "killed" | "exited" | "error";
 	killedByUserAt?: number;
 }

@@ -1,5 +1,5 @@
 export enum PtySubprocessIpcType {
-	// Daemon -> subprocess commands
+	// Service -> subprocess commands
 	Spawn = 1,
 	Write = 2,
 	Resize = 3,
@@ -7,7 +7,7 @@ export enum PtySubprocessIpcType {
 	Dispose = 5,
 	Signal = 6, // Send signal without marking as terminating (e.g., SIGINT)
 
-	// Subprocess -> daemon events
+	// Subprocess -> service events
 	Ready = 101,
 	Spawned = 102,
 	Data = 103,

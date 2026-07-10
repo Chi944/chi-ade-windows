@@ -38,7 +38,7 @@
 
 | Durable cross-agent handoffs | Remote OpenSSH workspaces |
 | --- | --- |
-| ![Project-scoped handoffs, acknowledgement inbox, and bounded resume context](docs/screenshots/coordination.png) | ![Windows and macOS OpenSSH host metadata and remote worktree settings](docs/screenshots/remote-work.png) |
+| ![Project-scoped handoffs, acknowledgement inbox, and bounded resume context](docs/screenshots/coordination.png) | ![Windows and macOS OpenSSH host editor and remote workspace runtime settings](docs/screenshots/remote-work.jpg) |
 
 ![Declarative local extension registry for terminal agents, skills, and MCP connectors](docs/screenshots/extensions.png)
 
@@ -132,9 +132,9 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 ## SSH status
 
-ADE stores password-free OpenSSH profiles, checks connections without an interactive password prompt, builds safe terminal commands, and can generate remote Git worktree commands. It uses Windows OpenSSH or macOS OpenSSH, including the user's existing SSH agent, key files, and `known_hosts`; ADE stores no private keys or passwords. See [remote work](docs/remote-work.md).
+ADE binds a workspace to a password-free OpenSSH profile and launches it through the same detached terminal service used by local panes. Sessions survive closing ADE, reconnect automatically after network loss, and reattach to a stable remote `tmux` session when the host provides it. Local and remote forwards run once per workspace in a separate managed tunnel, use loopback-only listeners, and survive app restarts without colliding across terminal splits.
 
-Remote terminal commands are implemented. First-class remote file browsing, SFTP editing, remote diffs, reconnecting persistent SSH PTYs, and managed port forwarding remain the next remote-runtime milestone.
+Windows and macOS use their fixed system OpenSSH and SFTP executables, existing agent/keychain, and `known_hosts`; ADE stores no private keys or passwords and never passes provider API keys into SSH. Bound workspaces now provide remote browsing, conflict-safe editing, native upload/download dialogs, drag-and-drop uploads, and SSH worktree creation. Remote Git diffs and resumable transfer queues are the next milestone. See [remote work](docs/remote-work.md).
 
 ## Extensions
 

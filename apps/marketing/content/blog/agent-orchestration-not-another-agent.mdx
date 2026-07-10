@@ -75,7 +75,7 @@ Creating a task should automatically create a Git worktree and branch. No manual
 
 ### Session Persistence
 
-Agent sessions should survive crashes, app restarts, and laptop sleep cycles. A background daemon that owns the sessions independently of the UI solves this — the same pattern that tmux uses for terminal multiplexing, applied to agent orchestration.
+Agent sessions should survive crashes, app restarts, and laptop sleep cycles. A background service that owns the sessions independently of the UI solves this — the same pattern that tmux uses for terminal multiplexing, applied to agent orchestration.
 
 ### Agent Agnosticism
 
@@ -98,7 +98,7 @@ We built [Superset](https://superset.sh) because we hit this ceiling ourselves. 
 The architecture is intentionally simple:
 
 - **Git worktrees** for isolation (no containers, no VMs)
-- **Persistent daemon** for session management (Unix domain sockets, survives crashes)
+- **Persistent service** for session management (Unix domain sockets, survives crashes)
 - **Any CLI agent** as a first-class citizen (no SDK integrations to maintain)
 - **Built-in diff viewer** for fast review
 - **Editor integration** for deep inspection (VS Code, Cursor, JetBrains, Xcode)

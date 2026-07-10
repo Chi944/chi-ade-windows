@@ -25,6 +25,7 @@ try {
 		"agent_message_receipts",
 		"agent_messages",
 		"remote_hosts",
+		"remote_workspace_bindings",
 		"shared_memories",
 	];
 	const placeholders = requiredTables.map(() => "?").join(", ");

@@ -1,5 +1,5 @@
 ---
-title: "The Terminal That (Almost) Never Dies: Building a Persistent Terminal Daemon for Electron"
+title: "The Terminal That (Almost) Never Dies: Building a Persistent Terminal Service for Electron"
 description: "How we built a process-isolated terminal host that survives app restarts, handles backpressure gracefully, and enables cold restore from disk."
 author: avi
 date: 2026-01-26
@@ -53,7 +53,7 @@ We also used tmux with headless to make it feel native in xterm.
 
 We needed another way
 
-## Architecture: A detachable Daemon
+## Architecture: A detachable Service
 
 Our solution splits terminal management across three process layers:
 
@@ -61,14 +61,14 @@ Our solution splits terminal management across three process layers:
 ┌─────────────────────────────────────────────────────────────────┐
 │                     ELECTRON MAIN PROCESS                       │
 │  • tRPC router for renderer IPC                                 │
-│  • DaemonTerminalManager (client)                               │
+│  • ServiceTerminalManager (client)                               │
 │  • History persistence to disk                                  │
 │  • Workspace/worktree metadata                                  │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ Unix Domain Socket
                            │ (NDJSON protocol)
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                   TERMINAL HOST DAEMON                          │
+│                   TERMINAL HOST SERVICE                          │
 │  • Long-running Node.js process                                 │
 │  • Owns all PTY sessions                                        │
 │  • Headless xterm emulator per session                          │
@@ -85,18 +85,18 @@ Our solution splits terminal management across three process layers:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-With this architecture, the Electron app becomes just a *client* of the terminal daemon. It can:
+With this architecture, the Electron app becomes just a *client* of the terminal service. It can:
 
 - Restart the app → Reconnect to running sessions
-- Open multiple windows → All attach to the same daemon
+- Open multiple windows → All attach to the same service
 - Crash and recover → Cold restore from disk history
 
-### Spawning the Daemon
+### Spawning the Service
 
-The daemon is a Node.js process spawned with a clever Electron trick:
+The service is a Node.js process spawned with a clever Electron trick:
 
 ```typescript
-const daemon = spawn(process.execPath, [daemonScript], {
+const service = spawn(process.execPath, [serviceScript], {
   env: {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",  // Run as plain Node.js
@@ -104,20 +104,20 @@ const daemon = spawn(process.execPath, [daemonScript], {
   detached: true,
   stdio: "ignore",
 });
-daemon.unref();  // Don't wait for daemon to exit
+service.unref();  // Don't wait for service to exit
 ```
 
 Setting `ELECTRON_RUN_AS_NODE=1` tells Electron to act as a regular Node.js runtime, perfect for a background service that doesn't need Chromium.
 
 ## The Protocol: NDJSON Over Unix Sockets
 
-Communication between the main process and daemon uses newline-delimited JSON over Unix domain sockets:
+Communication between the main process and service uses newline-delimited JSON over Unix domain sockets:
 
 ```typescript
 // Request from main process
 {"id":"req-abc123","type":"createOrAttach","payload":{"sessionId":"pane-1","cols":80,"rows":24}}
 
-// Response from daemon
+// Response from service
 {"id":"req-abc123","ok":true,"payload":{"isNew":true,"snapshot":{...},"pid":12345}}
 
 // Event pushed to clients (stream socket)
@@ -135,7 +135,7 @@ When a terminal produces output faster than the socket can drain, the kernel buf
 Protocol v2 splits communication:
 
 ```
-Main Process                          Daemon
+Main Process                          Service
      │                                   │
      │◄────── Control Socket ──────────►│  RPC only (low latency)
      │        request/response           │
@@ -158,12 +158,12 @@ The magic is in **attachment semantics**:
 
 ```typescript
 async createOrAttach(params: CreateSessionParams) {
-  // 1. Already in daemon? Just attach.
-  if (daemon.hasSession(params.sessionId)) {
-    return daemon.attach(params.sessionId);
+  // 1. Already in service? Just attach.
+  if (service.hasSession(params.sessionId)) {
+    return service.attach(params.sessionId);
   }
 
-  // 2. Not in daemon, but history on disk? Cold restore.
+  // 2. Not in service, but history on disk? Cold restore.
   const metadata = await historyReader.readMetadata(params.sessionId);
   if (metadata && !metadata.endedAt) {
     // Unclean shutdown detected!
@@ -175,13 +175,13 @@ async createOrAttach(params: CreateSessionParams) {
   }
 
   // 3. Truly new session
-  return daemon.createSession(params);
+  return service.createSession(params);
 }
 ```
 
-### Cold Restore: Recovering from Daemon crashes
+### Cold Restore: Recovering from Service crashes
 
-When the daemon dies (machine reboot, crash, kill -9), sessions are lost. But we still have disk history:
+When the service dies (machine reboot, crash, kill -9), sessions are lost. But we still have disk history:
 
 ```
 ~/.superset/terminal-sessions/
@@ -214,11 +214,11 @@ We implement **multi-level backpressure** from PTY to UI:
 ```
 PTY stdout
     │
-    ▼ (if daemon buffer full, pause subprocess reads)
+    ▼ (if service buffer full, pause subprocess reads)
 PTY Subprocess internal buffer (8MB high watermark, 64MB hard limit)
     │
     ▼ (if session buffer full, pause subprocess stdout)
-Daemon session buffer
+Service session buffer
     │
     ▼ (if client socket full, pause session output)
 Main process stream socket
@@ -252,7 +252,7 @@ This avoids the O(n²) string concatenation problem while maintaining ~30fps vis
 
 ## The Headless Emulator: State Without a Screen
 
-Each daemon session runs a headless xterm.js emulator. This might seem redundant—why emulate if there's no screen?
+Each service session runs a headless xterm.js emulator. This might seem redundant—why emulate if there's no screen?
 
 The emulator gives us:
 
@@ -278,13 +278,13 @@ const snapshot = {
 
 ### 1. Protocol Versioning from Day One
 
-When we introduced the two-socket split, existing daemons couldn't speak the new protocol. We handle this gracefully:
+When we introduced the two-socket split, existing services couldn't speak the new protocol. We handle this gracefully:
 
 ```typescript
 // Client detects version mismatch
 if (response.protocolVersion !== EXPECTED_VERSION) {
-  await shutdownStaleDaemon();
-  await startNewDaemon();
+  await shutdownStaleService();
+  await startNewService();
   return retry();
 }
 ```
@@ -319,7 +319,7 @@ ackColdRestore(paneId) {
 
 ### 3. Don't Kill on Disconnect
 
-When the Electron app closes, we *don't* kill daemon sessions:
+When the Electron app closes, we *don't* kill service sessions:
 
 ```typescript
 async cleanup() {
@@ -328,18 +328,18 @@ async cleanup() {
     await writer.close();
   }
 
-  // Disconnect from daemon, but DON'T send kill
+  // Disconnect from service, but DON'T send kill
   this.disposeClient();
 
   // Sessions keep running for next app launch
 }
 ```
 
-This is the whole point of the daemon architecture. The default should be persistence, not cleanup.
+This is the whole point of the service architecture. The default should be persistence, not cleanup.
 
 ### 4. Concurrency Limits Prevent Spawn Storms
 
-Opening a workspace with 10 terminal panes would previously spawn 10 sessions simultaneously, overwhelming the daemon. We added a semaphore with priority:
+Opening a workspace with 10 terminal panes would previously spawn 10 sessions simultaneously, overwhelming the service. We added a semaphore with priority:
 
 ```typescript
 // Max 3 concurrent createOrAttach operations
@@ -368,7 +368,7 @@ interface TerminalRuntime {
 }
 ```
 
-Today, `LocalTerminalRuntime` wraps our daemon. Tomorrow, `CloudTerminalRuntime` could wrap SSH connections or remote tmux sessions—same interface, different backend. The renderer doesn't need to know where the terminal lives.
+Today, `LocalTerminalRuntime` wraps our service. Tomorrow, `CloudTerminalRuntime` could wrap SSH connections or remote tmux sessions—same interface, different backend. The renderer doesn't need to know where the terminal lives.
 
 ---
 

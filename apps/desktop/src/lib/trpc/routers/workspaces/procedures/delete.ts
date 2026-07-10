@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { SelectWorktree } from "@superset/local-db";
 import { isManagedAgentWorktree, removeAgentHome } from "main/lib/agent-home";
 import { track } from "main/lib/analytics";
+import { getSshTunnelManager } from "main/lib/remote/tunnel-manager";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
 import { z } from "zod";
@@ -246,6 +247,15 @@ export const createDeleteProcedures = () => {
 				const terminal = getWorkspaceRuntimeRegistry().getForWorkspaceId(
 					input.id,
 				).terminal;
+				try {
+					await getSshTunnelManager().stop(input.id);
+				} catch (error) {
+					clearWorkspaceDeletingStatus(input.id);
+					return {
+						success: false,
+						error: `Failed to stop the managed SSH tunnel: ${error instanceof Error ? error.message : String(error)}`,
+					};
+				}
 				// Stop processes so worktree teardown is safe, but retain history and
 				// provider homes until every fallible deletion step has succeeded.
 				const terminalPromise = terminal.killByWorkspaceId(input.id, {
@@ -387,6 +397,7 @@ export const createDeleteProcedures = () => {
 
 				markWorkspaceAsDeleting(input.id);
 				try {
+					await getSshTunnelManager().stop(input.id);
 					const terminal = getWorkspaceRuntimeRegistry().getForWorkspaceId(
 						input.id,
 					).terminal;

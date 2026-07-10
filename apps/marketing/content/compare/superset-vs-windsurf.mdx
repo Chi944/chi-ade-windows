@@ -34,7 +34,7 @@ Windsurf is an AI-powered IDE that embeds AI into every part of the editing expe
 
 ## What Is Superset?
 
-Superset is a desktop terminal that orchestrates CLI-based coding agents in parallel across isolated Git worktrees. Each agent — Claude Code, Codex, Aider, OpenCode — gets its own branch and working directory. A persistent daemon manages sessions so they survive crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
+Superset is a desktop terminal that orchestrates CLI-based coding agents in parallel across isolated Git worktrees. Each agent — Claude Code, Codex, Aider, OpenCode — gets its own branch and working directory. A persistent service manages sessions so they survive crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
 
 ---
 
@@ -64,7 +64,7 @@ Superset runs entirely locally — no telemetry, no data collection, code never 
 
 ### Session Persistence
 
-Windsurf's Cascade sessions live within the IDE — close the window and the context resets. Superset's persistent daemon keeps agent sessions alive across crashes and app restarts. Long-running tasks continue even when you close and reopen the app.
+Windsurf's Cascade sessions live within the IDE — close the window and the context resets. Superset's persistent service keeps agent sessions alive across crashes and app restarts. Long-running tasks continue even when you close and reopen the app.
 
 ---
 

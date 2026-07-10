@@ -23,6 +23,10 @@ sqlite.exec(`
 		scope TEXT NOT NULL,
 		workspace_id TEXT NOT NULL
 	);
+	CREATE TABLE remote_workspace_bindings (
+		workspace_id TEXT PRIMARY KEY,
+		remote_host_id TEXT NOT NULL
+	);
 `);
 
 const testDb = drizzle(sqlite);
@@ -43,6 +47,7 @@ beforeEach(() => {
 		"agent_message_receipts",
 		"agent_messages",
 		"shared_memories",
+		"remote_workspace_bindings",
 		"workspaces",
 		"projects",
 	]) {
@@ -71,6 +76,9 @@ describe("coordination cleanup", () => {
 				('memory-project', 'project-1', 'project', ''),
 				('memory-workspace-1', 'project-1', 'workspace', 'workspace-1'),
 				('memory-workspace-2', 'project-1', 'workspace', 'workspace-2');
+			INSERT INTO remote_workspace_bindings VALUES
+				('workspace-1', 'host-1'),
+				('workspace-2', 'host-1');
 		`);
 
 		deleteWorkspace("workspace-1");
@@ -82,6 +90,15 @@ describe("coordination cleanup", () => {
 			"memory-project",
 			"memory-workspace-2",
 		]);
+		expect(
+			(
+				sqlite
+					.query(
+						"SELECT workspace_id FROM remote_workspace_bindings ORDER BY workspace_id",
+					)
+					.all() as Array<{ workspace_id: string }>
+			).map(({ workspace_id }) => workspace_id),
+		).toEqual(["workspace-2"]);
 	});
 
 	test("project deletion removes project coordination rows and receipts", () => {

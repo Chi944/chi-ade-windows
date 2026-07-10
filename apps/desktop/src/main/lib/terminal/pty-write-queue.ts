@@ -3,8 +3,8 @@ import type { IPty } from "node-pty";
 /**
  * A write queue for PTY that reduces event loop starvation.
  *
- * Context: This is used in the non-daemon (in-process) terminal mode.
- * For daemon mode, the real backpressure handling (EAGAIN retry with backoff)
+ * Context: This is used in the non-service (in-process) terminal mode.
+ * For service mode, the real backpressure handling (EAGAIN retry with backoff)
  * is implemented in pty-subprocess.ts.
  *
  * Problem: node-pty's write() is synchronous. While the kernel buffer rarely
@@ -18,7 +18,7 @@ import type { IPty } from "node-pty";
  * Limitations:
  * - Does NOT handle true kernel-level backpressure (EAGAIN/EWOULDBLOCK)
  * - If node-pty.write() blocks, this cannot prevent it
- * - For robust backpressure handling, use daemon mode with subprocess isolation
+ * - For robust backpressure handling, use service mode with subprocess isolation
  *
  * Features:
  * - Chunked writes to reduce event loop starvation

@@ -65,8 +65,8 @@ step_check_dependencies() {
   return 0
 }
 
-step_kill_terminal_daemons() {
-  echo "🔪 Killing terminal daemon processes..."
+step_kill_terminal_services() {
+  echo "🔪 Killing terminal service processes..."
 
   kill_process_tree() {
     local pid="$1"
@@ -111,11 +111,11 @@ step_kill_terminal_daemons() {
   done
 
   if [ "$root_killed" -gt 0 ] && [ "$force_killed" -gt 0 ]; then
-    success "Killed process trees for $root_killed terminal daemon root process(es), force-killed $force_killed stuck root process(es)"
+    success "Killed process trees for $root_killed terminal service root process(es), force-killed $force_killed stuck root process(es)"
   elif [ "$root_killed" -gt 0 ]; then
-    success "Killed process trees for $root_killed terminal daemon root process(es)"
+    success "Killed process trees for $root_killed terminal service root process(es)"
   else
-    success "No terminal daemon processes found"
+    success "No terminal service processes found"
   fi
 
   return 0

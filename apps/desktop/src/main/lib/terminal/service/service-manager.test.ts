@@ -92,17 +92,17 @@ mock.module("@superset/local-db", () => ({
 	workspaces: { id: "id" },
 }));
 
-const { DaemonTerminalManager } = await import("./daemon-manager");
+const { ServiceTerminalManager } = await import("./service-manager");
 
-describe("DaemonTerminalManager kill tracking", () => {
+describe("ServiceTerminalManager kill tracking", () => {
 	beforeEach(() => {
 		mockClient = new MockTerminalHostClient();
 		releasedProviderPanes.length = 0;
 		releasedProviderWorkspaces.length = 0;
 	});
 
-	it("waits for daemon exit and labels killed sessions", async () => {
-		const manager = new DaemonTerminalManager();
+	it("waits for service exit and labels killed sessions", async () => {
+		const manager = new ServiceTerminalManager();
 		const paneId = "pane-kill-1";
 		const sessions = (
 			manager as unknown as { sessions: Map<string, SessionInfo> }
@@ -134,7 +134,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("labels exit as killed even if session is missing", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		const paneId = "pane-kill-2";
 
 		let exitReason: string | undefined;
@@ -148,7 +148,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("deletes retained history with the caller workspace when no session exists", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		const cleanupCalls: Array<[string, string]> = [];
 		const operationOrder: string[] = [];
 		mockClient.kill = async (params) => {
@@ -183,7 +183,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("does not resolve a retained-history kill until the writer is closed", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		let releaseClose: (() => void) | undefined;
 		const closeGate = new Promise<void>((resolve) => {
 			releaseClose = resolve;
@@ -211,7 +211,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("blocks a late provider hook until permanent history deletion finishes", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		let releaseHook: (() => void) | undefined;
 		const hookGate = new Promise<void>((resolve) => {
 			releaseHook = resolve;
@@ -256,7 +256,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("does not reinitialize explicit scrollback clear after terminal exit", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		const paneId = "pane-explicit-clear-exit";
 		const session = {
 			paneId,
@@ -303,7 +303,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("discards a host session created after its pane was permanently killed", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		let releaseCreate: (() => void) | undefined;
 		mockClient.createGate = new Promise<void>((resolve) => {
 			releaseCreate = resolve;
@@ -339,7 +339,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("stops a pending workspace create without deleting data until commit", async () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		let releaseCreate: (() => void) | undefined;
 		mockClient.createGate = new Promise<void>((resolve) => {
 			releaseCreate = resolve;
@@ -384,7 +384,7 @@ describe("DaemonTerminalManager kill tracking", () => {
 	});
 
 	it("defaults exit reason to exited when no kill tombstone exists", () => {
-		const manager = new DaemonTerminalManager();
+		const manager = new ServiceTerminalManager();
 		const paneId = "pane-exit-1";
 
 		let exitReason: string | undefined;

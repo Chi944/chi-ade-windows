@@ -6,12 +6,15 @@ import {
 	ContextMenuSeparator,
 	ContextMenuTrigger,
 } from "@superset/ui/context-menu";
+import { toast } from "@superset/ui/sonner";
 import { cn } from "@superset/ui/utils";
+import { useState } from "react";
 import {
 	LuChevronDown,
 	LuChevronRight,
 	LuClipboard,
 	LuCopy,
+	LuDownload,
 	LuExternalLink,
 	LuFile,
 	LuFolder,
@@ -36,6 +39,17 @@ interface FileTreeItemProps {
 	onNewFolder: (parentPath: string) => void;
 	onRename: (entry: DirectoryEntry) => void;
 	onDelete: (entry: DirectoryEntry) => void;
+	isRemote?: boolean;
+	onDownload?: (entry: DirectoryEntry) => void;
+	onUploadLocalPaths?: (
+		destinationRelativePath: string,
+		localPaths: string[],
+	) => void;
+}
+
+function getRelativeParent(relativePath: string): string {
+	const separator = relativePath.lastIndexOf("/");
+	return separator < 0 ? "" : relativePath.slice(0, separator);
 }
 
 export function FileTreeItem({
@@ -51,25 +65,37 @@ export function FileTreeItem({
 	onNewFolder,
 	onRename,
 	onDelete,
+	isRemote = false,
+	onDownload,
+	onUploadLocalPaths,
 }: FileTreeItemProps) {
+	const [isNativeDragOver, setIsNativeDragOver] = useState(false);
 	const isFolder = entry.isDirectory;
 	const isExpanded = item.isExpanded();
 	const level = item.getItemMeta().level;
 	const { icon: Icon, color } = getFileIcon(entry.name, isFolder, isExpanded);
 
-	const parentPath = isFolder
-		? entry.path
-		: entry.path.split("/").slice(0, -1).join("/") || worktreePath;
+	const parentPath = isRemote
+		? isFolder
+			? entry.relativePath
+			: getRelativeParent(entry.relativePath)
+		: isFolder
+			? entry.path
+			: entry.path.split("/").slice(0, -1).join("/") || worktreePath;
 
-	const { copyPath, copyRelativePath, revealInFinder, openInEditor } =
-		usePathActions({
-			absolutePath: entry.path,
-			relativePath: entry.relativePath,
-			cwd: worktreePath,
-			projectId,
-		});
+	const localPathActions = usePathActions({
+		absolutePath: isRemote ? null : entry.path,
+		relativePath: entry.relativePath,
+		cwd: worktreePath,
+		projectId,
+	});
 
-	const fileDragProps = useFileDrag({ absolutePath: entry.path });
+	const localFileDragProps = useFileDrag({
+		absolutePath: isRemote ? null : entry.path,
+	});
+	const uploadDestination = isFolder
+		? entry.relativePath
+		: getRelativeParent(entry.relativePath);
 
 	const handleClick = (e: React.MouseEvent) => {
 		e.stopPropagation();
@@ -86,7 +112,83 @@ export function FileTreeItem({
 
 	const handleDoubleClick = (e: React.MouseEvent) => {
 		e.stopPropagation();
+		if (isRemote) {
+			if (!isFolder) onActivate(entry);
+			return;
+		}
 		onOpenInEditor(entry);
+	};
+
+	const handleDragOver = (event: React.DragEvent) => {
+		if (!isRemote || !event.dataTransfer.types.includes("Files")) return;
+		event.preventDefault();
+		event.stopPropagation();
+		event.dataTransfer.dropEffect = "copy";
+		setIsNativeDragOver(true);
+	};
+
+	const handleDragStart = (event: React.DragEvent) => {
+		if (!isRemote) {
+			localFileDragProps.onDragStart(event);
+			return;
+		}
+		event.dataTransfer.setData("text/plain", `./${entry.relativePath}`);
+		event.dataTransfer.setData(
+			"application/x-ade-remote-file-path",
+			entry.path,
+		);
+		event.dataTransfer.effectAllowed = "copy";
+	};
+
+	const handleCopyPath = () => {
+		if (isRemote) {
+			navigator.clipboard.writeText(entry.path);
+			return;
+		}
+		localPathActions.copyPath();
+	};
+
+	const handleCopyRelativePath = () => {
+		if (isRemote) {
+			navigator.clipboard.writeText(entry.relativePath);
+			return;
+		}
+		localPathActions.copyRelativePath();
+	};
+
+	const handleDragLeave = (event: React.DragEvent) => {
+		if (!isNativeDragOver) return;
+		const nextTarget = event.relatedTarget;
+		if (
+			nextTarget instanceof Node &&
+			event.currentTarget.contains(nextTarget)
+		) {
+			return;
+		}
+		setIsNativeDragOver(false);
+	};
+
+	const handleDrop = (event: React.DragEvent) => {
+		if (!isRemote || !onUploadLocalPaths) return;
+		const files = Array.from(event.dataTransfer.files);
+		if (files.length === 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		setIsNativeDragOver(false);
+		try {
+			const localPaths = files
+				.map((file) => window.webUtils.getPathForFile(file))
+				.filter(Boolean);
+			if (localPaths.length > 0) {
+				onUploadLocalPaths(uploadDestination, localPaths);
+			}
+		} catch (error) {
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Could not read the dropped file paths",
+			);
+		}
 	};
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -107,7 +209,7 @@ export function FileTreeItem({
 	const itemContent = (
 		<div
 			{...item.getProps()}
-			{...fileDragProps}
+			draggable={isRemote || localFileDragProps.draggable}
 			data-item-id={item.getId()}
 			style={{
 				height: rowHeight,
@@ -120,10 +222,15 @@ export function FileTreeItem({
 				"flex items-center gap-1 px-1 cursor-pointer select-none",
 				"hover:bg-accent/50 transition-colors",
 				item.isSelected() && "bg-accent",
+				isNativeDragOver && "bg-primary/10 ring-1 ring-inset ring-primary/50",
 			)}
 			onClick={handleClick}
 			onDoubleClick={handleDoubleClick}
 			onKeyDown={handleKeyDown}
+			onDragStart={handleDragStart}
+			onDragOver={handleDragOver}
+			onDragLeave={handleDragLeave}
+			onDrop={handleDrop}
 		>
 			<span className="flex items-center justify-center w-4 h-4 shrink-0">
 				{isFolder ? (
@@ -156,25 +263,36 @@ export function FileTreeItem({
 
 				<ContextMenuSeparator />
 
-				<ContextMenuItem onClick={copyPath}>
+				<ContextMenuItem onClick={handleCopyPath}>
 					<LuClipboard className="mr-2 size-4" />
 					Copy Path
 				</ContextMenuItem>
-				<ContextMenuItem onClick={copyRelativePath}>
+				<ContextMenuItem onClick={handleCopyRelativePath}>
 					<LuCopy className="mr-2 size-4" />
 					Copy Relative Path
 				</ContextMenuItem>
 
 				<ContextMenuSeparator />
 
-				<ContextMenuItem onClick={revealInFinder}>
-					<LuFolderOpen className="mr-2 size-4" />
-					Reveal in Finder
-				</ContextMenuItem>
-				<ContextMenuItem onClick={openInEditor}>
-					<LuExternalLink className="mr-2 size-4" />
-					Open in Editor
-				</ContextMenuItem>
+				{isRemote ? (
+					onDownload ? (
+						<ContextMenuItem onClick={() => onDownload(entry)}>
+							<LuDownload className="mr-2 size-4" />
+							Download…
+						</ContextMenuItem>
+					) : null
+				) : (
+					<>
+						<ContextMenuItem onClick={localPathActions.revealInFinder}>
+							<LuFolderOpen className="mr-2 size-4" />
+							Reveal in Finder
+						</ContextMenuItem>
+						<ContextMenuItem onClick={localPathActions.openInEditor}>
+							<LuExternalLink className="mr-2 size-4" />
+							Open in Editor
+						</ContextMenuItem>
+					</>
+				)}
 
 				<ContextMenuSeparator />
 

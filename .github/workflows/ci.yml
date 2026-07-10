@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main, "agent/**"]
+    branches: [main, "agent/**", "codex/**"]
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch:
 
 jobs:
   sherif:
@@ -92,8 +93,8 @@ jobs:
           bun test apps/desktop/src/main/lib/agent-setup/shell-wrappers.test.ts
           bun test apps/desktop/src/lib/trpc/routers/workspaces/utils/teardown.test.ts
           bun test apps/desktop/src/main/lib/terminal-host/headless-emulator.test.ts apps/desktop/src/main/terminal-host/session.test.ts
-          bun test apps/desktop/src/main/lib/terminal/daemon/daemon-manager.test.ts
-          bun test apps/desktop/src/main/terminal-host/daemon.test.ts
+          bun test apps/desktop/src/main/lib/terminal/service/service-manager.test.ts
+          bun test apps/desktop/src/main/terminal-host/service.test.ts
           bun test apps/desktop/src/main/terminal-host/session-lifecycle.test.ts
 
   typecheck:
@@ -180,6 +181,27 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen
+
+      - name: Verify inbox OpenSSH tools on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ssh = Join-Path $env:WINDIR 'System32\OpenSSH\ssh.exe'
+          $sftp = Join-Path $env:WINDIR 'System32\OpenSSH\sftp.exe'
+          if (-not (Test-Path -LiteralPath $ssh)) { throw "Missing system OpenSSH client: $ssh" }
+          if (-not (Test-Path -LiteralPath $sftp)) { throw "Missing system SFTP client: $sftp" }
+
+      - name: Verify inbox OpenSSH tools on macOS
+        if: runner.os == 'macOS'
+        run: |
+          test -x /usr/bin/ssh
+          test -x /usr/bin/sftp
+
+      - name: Assert remote filesystem test discovery
+        run: bun -e "if (!(await Bun.file('apps/desktop/src/main/lib/remote/filesystem.test.ts').exists())) throw new Error('Remote filesystem tests are missing')"
+
+      - name: Test remote filesystem and SSH worktree transport
+        run: bun test apps/desktop/src/main/lib/remote/ssh.test.ts apps/desktop/src/main/lib/remote/filesystem.test.ts
 
       - name: Typecheck desktop
         run: bun run --cwd apps/desktop typecheck

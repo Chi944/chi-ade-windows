@@ -1,20 +1,20 @@
 /**
  * Bounded startup reconcile. Kept in its own dependency-free module (no
- * electron, no daemon singleton) so the timeout logic is unit-testable without
+ * electron, no service singleton) so the timeout logic is unit-testable without
  * importing the electron-heavy terminal/index.ts. index.ts wires the real
- * DaemonTerminalManager into reconcileWithTimeout.
+ * ServiceTerminalManager into reconcileWithTimeout.
  */
 
 /**
- * Hard bound on startup reconcile. reconcileOnStartup awaits a daemon-socket
+ * Hard bound on startup reconcile. reconcileOnStartup awaits a service-socket
  * connection (listSessions) and runs BEFORE the main window is created, so a
- * wedged/unresponsive daemon would otherwise block boot indefinitely. If it
- * exceeds this, we log and let boot proceed; the daemon reconciles lazily on
+ * wedged/unresponsive service would otherwise block boot indefinitely. If it
+ * exceeds this, we log and let boot proceed; the service reconciles lazily on
  * the next terminal use.
  */
 export const RECONCILE_STARTUP_TIMEOUT_MS = 5000;
 
-/** The one thing reconcileWithTimeout needs from the daemon manager. */
+/** The one thing reconcileWithTimeout needs from the service manager. */
 export interface ReconcilableManager {
 	reconcileOnStartup(): Promise<void>;
 }
@@ -57,12 +57,12 @@ export async function reconcileWithTimeout(
 		if (!settled) {
 			console.warn(
 				`[TerminalManager] reconcileOnStartup timed out after ${timeoutMs}ms; ` +
-					"proceeding with boot (daemon reconciles on next terminal use).",
+					"proceeding with boot (service reconciles on next terminal use).",
 			);
 		}
 	} catch (error) {
 		console.warn(
-			"[TerminalManager] Failed to reconcile daemon sessions:",
+			"[TerminalManager] Failed to reconcile service sessions:",
 			error,
 		);
 	}

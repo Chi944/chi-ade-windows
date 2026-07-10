@@ -2,8 +2,8 @@
  * Terminal History Persistence (Phase 4)
  *
  * Provides cold restore capability by persisting terminal scrollback to disk.
- * This enables terminal recovery after app/system restarts when the daemon
- * is not running (unlike warm attach which reconnects to live daemon sessions).
+ * This enables terminal recovery after app/system restarts when the service
+ * is not running (unlike warm attach which reconnects to live service sessions).
  *
  * Storage format:
  * - scrollback.bin: Raw PTY output (append-only during session)
@@ -349,7 +349,7 @@ async function writeMergedMetadata(
  *
  * Usage:
  * 1. Create writer with session params
- * 2. Call init() with optional initial scrollback (from daemon snapshot)
+ * 2. Call init() with optional initial scrollback (from service snapshot)
  * 3. Call write() for each data event from PTY
  * 4. Call close() when session ends (writes endedAt to meta.json)
  */

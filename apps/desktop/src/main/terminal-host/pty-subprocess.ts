@@ -2,7 +2,7 @@
  * PTY Subprocess
  *
  * This runs as a completely separate process, owning a single PTY.
- * Process isolation guarantees that a blocked PTY won't stall the daemon.
+ * Process isolation guarantees that a blocked PTY won't stall the service.
  *
  * Communication via stdin/stdout using a small binary framing protocol
  * to avoid JSON escaping overhead on escape-sequence-heavy PTY output.

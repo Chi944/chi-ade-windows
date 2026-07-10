@@ -92,6 +92,59 @@ describe("Terminal Host Session shell args", () => {
 		);
 	});
 
+	it("passes an exact server-derived SSH executable and argv", () => {
+		const launch = {
+			kind: "ssh" as const,
+			executable: "/usr/bin/ssh",
+			args: ["-F", "none", "--", "chi@example.com"],
+			fingerprint: "fingerprint-one",
+			env: { HOME: "/Users/chi", TERM: "xterm-256color" },
+		};
+		const session = new Session({
+			sessionId: "session-ssh-args",
+			workspaceId: "workspace-1",
+			paneId: "pane-1",
+			tabId: "tab-1",
+			cols: 80,
+			rows: 24,
+			cwd: "/tmp",
+			launch,
+			spawnProcess: (command: string, args: readonly string[], _options) => {
+				spawnCalls.push({ command, args: [...args] });
+				return fakeChildProcess as unknown as ChildProcess;
+			},
+		});
+
+		session.spawn({
+			cwd: "/tmp",
+			cols: 80,
+			rows: 24,
+			env: launch.env,
+		});
+		fakeChildProcess.stdout.emit(
+			"data",
+			createFrameHeader(PtySubprocessIpcType.Ready, 0),
+		);
+
+		const decoder = new PtySubprocessFrameDecoder();
+		const frames = fakeChildProcess.stdin.writes.flatMap((chunk) =>
+			decoder.push(chunk),
+		);
+		const payload = JSON.parse(
+			frames
+				.find((frame) => frame.type === PtySubprocessIpcType.Spawn)
+				?.payload.toString("utf8") ?? "{}",
+		) as { shell?: string; args?: string[] };
+
+		expect(payload.shell).toBe("/usr/bin/ssh");
+		expect(payload.args).toEqual(launch.args);
+		expect(session.isCompatibleLaunch(launch)).toBe(true);
+		expect(
+			session.isCompatibleLaunch({ ...launch, fingerprint: "changed" }),
+		).toBe(false);
+		expect(session.getMeta().transportKind).toBe("ssh");
+	});
+
 	it("does not resend an accepted frame after Windows pipe backpressure", () => {
 		const session = new Session({
 			sessionId: "session-backpressure",

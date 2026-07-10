@@ -1,7 +1,7 @@
 /**
  * Terminal Host Manager
  *
- * Manages all terminal sessions in the daemon.
+ * Manages all terminal sessions in the service.
  * Responsible for:
  * - Session lifecycle (create, attach, detach, kill)
  * - Session lookup and listing
@@ -102,6 +102,12 @@ export class TerminalHost {
 			session = undefined;
 		}
 
+		if (session && !session.isCompatibleLaunch(request.launch)) {
+			throw new Error(
+				`Terminal transport changed for existing session ${sessionId}; stop the session before reconnecting`,
+			);
+		}
+
 		if (!session) {
 			const releaseSpawn = await this.spawnLimiter.acquire();
 
@@ -116,7 +122,7 @@ export class TerminalHost {
 					cwd: request.cwd || process.env.HOME || "/",
 					cols: request.cols,
 					rows: request.rows,
-					env: request.env,
+					env: request.launch?.env ?? request.env,
 				});
 
 				try {
@@ -279,6 +285,8 @@ export class TerminalHost {
 				createdAt: meta.createdAt,
 				lastAttachedAt: meta.lastAttachedAt,
 				shell: meta.shell,
+				transportKind: meta.transportKind,
+				hidden: meta.hidden,
 			};
 		});
 

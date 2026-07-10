@@ -1,5 +1,5 @@
 /**
- * Terminal Host Daemon
+ * Terminal Host Service
  *
  * A persistent background process that owns PTYs and terminal emulator state.
  * This allows terminal sessions to survive app restarts and updates.
@@ -55,7 +55,7 @@ import { TerminalHost } from "./terminal-host";
 // Configuration
 // =============================================================================
 
-const DAEMON_VERSION = "1.0.0";
+const SERVICE_VERSION = "1.0.0";
 
 // =============================================================================
 // Logging
@@ -282,8 +282,8 @@ const handlers: Record<string, RequestHandler> = {
 
 		const response: HelloResponse = {
 			protocolVersion: PROTOCOL_VERSION,
-			daemonVersion: DAEMON_VERSION,
-			daemonPid: process.pid,
+			serviceVersion: SERVICE_VERSION,
+			servicePid: process.pid,
 		};
 
 		sendSuccess(socket, id, response);
@@ -626,7 +626,7 @@ function handleConnection(socket: Socket) {
 }
 
 /**
- * Check if there's an active daemon listening on the socket.
+ * Check if there's an active service listening on the socket.
  * Returns true if socket is live and responding.
  */
 function isSocketLive(): Promise<boolean> {
@@ -676,8 +676,8 @@ async function startServer(): Promise<void> {
 	if (TERMINAL_HOST_USES_NAMED_PIPE || existsSync(SOCKET_PATH)) {
 		const isLive = await isSocketLive();
 		if (isLive) {
-			log("error", "Another daemon is already running and responsive");
-			throw new Error("Another daemon is already running");
+			log("error", "Another service is already running and responsive");
+			throw new Error("Another service is already running");
 		}
 
 		// Socket exists but not responsive - safe to remove
@@ -729,7 +729,7 @@ async function startServer(): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
 		newServer.on("error", (error: NodeJS.ErrnoException) => {
 			if (error.code === "EADDRINUSE") {
-				log("error", "Socket already in use - another daemon may be running");
+				log("error", "Socket already in use - another service may be running");
 				reject(new Error("Socket already in use"));
 			} else {
 				log("error", "Server error", { error: error.message });
@@ -750,7 +750,7 @@ async function startServer(): Promise<void> {
 			// Write PID file
 			writeFileSync(PID_PATH, String(process.pid), { mode: 0o600 });
 
-			log("info", `Daemon started`);
+			log("info", `Service started`);
 			log("info", `Socket: ${SOCKET_PATH}`);
 			log("info", `PID: ${process.pid}`);
 			resolve();
@@ -820,7 +820,7 @@ function setupSignalHandlers() {
 // =============================================================================
 
 async function main() {
-	log("info", "Terminal Host Daemon starting...");
+	log("info", "Terminal Host Service starting...");
 	log("info", `Environment: ${process.env.NODE_ENV || "production"}`);
 	log("info", `Home directory: ${SUPERSET_HOME_DIR}`);
 

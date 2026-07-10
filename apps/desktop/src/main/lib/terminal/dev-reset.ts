@@ -15,7 +15,7 @@ const TERMINAL_STATE_PATHS = [
 	"terminal-host.pid",
 	"terminal-host.spawn.lock",
 	"terminal-host.mtime",
-	"daemon.log",
+	"service.log",
 ] as const;
 
 export async function resetTerminalStateDev(): Promise<void> {
@@ -26,7 +26,7 @@ export async function resetTerminalStateDev(): Promise<void> {
 		await client.shutdownIfRunning({ killSessions: true });
 	} catch (error) {
 		console.warn(
-			"[dev/reset-terminal-state] Failed to shutdown daemon (best-effort):",
+			"[dev/reset-terminal-state] Failed to shutdown service (best-effort):",
 			error,
 		);
 	} finally {

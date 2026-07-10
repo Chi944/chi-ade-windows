@@ -44,7 +44,7 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		permissions: createPermissionsRouter(),
 		ports: createPortsRouter(),
 		resourceMetrics: createResourceMetricsRouter(),
-		remote: createRemoteRouter(),
+		remote: createRemoteRouter(getWindow),
 		menu: createMenuRouter(),
 		hotkeys: createHotkeysRouter(getWindow),
 		external: createExternalRouter(),

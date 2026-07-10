@@ -15,6 +15,7 @@ interface DeleteConfirmDialogProps {
 	onOpenChange: (open: boolean) => void;
 	onConfirm: () => void;
 	isDeleting?: boolean;
+	isPermanent?: boolean;
 }
 
 export function DeleteConfirmDialog({
@@ -23,14 +24,19 @@ export function DeleteConfirmDialog({
 	onOpenChange,
 	onConfirm,
 	isDeleting = false,
+	isPermanent = false,
 }: DeleteConfirmDialogProps) {
 	if (!entry) return null;
 
 	const itemType = entry.isDirectory ? "folder" : "file";
 	const title = `Delete ${itemType} "${entry.name}"?`;
-	const description = entry.isDirectory
-		? "This folder and all its contents will be moved to the trash. This action can be undone from the system trash."
-		: "This file will be moved to the trash. This action can be undone from the system trash.";
+	const description = isPermanent
+		? entry.isDirectory
+			? "This permanently removes the remote folder only when it is empty. This action cannot be undone."
+			: "This remote file will be permanently deleted. This action cannot be undone."
+		: entry.isDirectory
+			? "This folder and all its contents will be moved to the trash. This action can be undone from the system trash."
+			: "This file will be moved to the trash. This action can be undone from the system trash.";
 
 	return (
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
