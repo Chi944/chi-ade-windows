@@ -19,6 +19,7 @@ import {
 	deleteProjectIcon,
 	saveProjectIconFromDataUrl,
 } from "main/lib/project-icons";
+import { getSshTunnelManager } from "main/lib/remote/tunnel-manager";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
 import { PROJECT_COLOR_VALUES } from "shared/constants/project-colors";
 import simpleGit from "simple-git";
@@ -1010,6 +1011,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					let totalFailed = 0;
 					const registry = getWorkspaceRuntimeRegistry();
 					for (const workspace of projectWorkspaces) {
+						await getSshTunnelManager().stop(workspace.id);
 						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
 						const terminalResult = await terminal.killByWorkspaceId(
 							workspace.id,

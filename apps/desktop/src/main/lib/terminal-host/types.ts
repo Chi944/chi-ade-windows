@@ -7,7 +7,7 @@
  */
 
 // Protocol version - increment for breaking changes
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // =============================================================================
 // Mode Tracking
@@ -127,6 +127,25 @@ export interface SessionMeta {
 	createdAt: string;
 	lastAttachedAt: string;
 	shell: string;
+	transportKind?: TerminalTransportKind;
+	transportFingerprint?: string;
+	hidden?: boolean;
+}
+
+export type TerminalTransportKind = "ssh" | "ssh-tunnel";
+
+/**
+ * Server-derived process specification for non-shell terminal transports.
+ * Renderer callers can select a saved binding, but never supply executable
+ * paths, argv, fingerprints, or environment values directly.
+ */
+export interface TerminalLaunchSpec {
+	kind: TerminalTransportKind;
+	executable: string;
+	args: string[];
+	fingerprint: string;
+	env: Record<string, string>;
+	hidden?: boolean;
 }
 
 // =============================================================================
@@ -167,6 +186,7 @@ export interface CreateOrAttachRequest {
 	workspaceName?: string;
 	workspacePath?: string;
 	rootPath?: string;
+	launch?: TerminalLaunchSpec;
 }
 
 export interface CreateOrAttachResponse {
@@ -241,6 +261,8 @@ export interface ListSessionsResponse {
 		/** ISO timestamp */
 		lastAttachedAt?: string;
 		shell?: string;
+		transportKind?: TerminalTransportKind;
+		hidden?: boolean;
 	}>;
 }
 

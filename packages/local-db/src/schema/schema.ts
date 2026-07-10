@@ -195,6 +195,55 @@ export const remoteHosts = sqliteTable(
 export type InsertRemoteHost = typeof remoteHosts.$inferInsert;
 export type SelectRemoteHost = typeof remoteHosts.$inferSelect;
 
+export type RemotePortForwardDirection = "local" | "remote";
+
+export interface RemotePortForward {
+	id: string;
+	direction: RemotePortForwardDirection;
+	listenPort: number;
+	targetHost: string;
+	targetPort: number;
+}
+
+/**
+ * Workspace-scoped SSH transport configuration. Terminal sessions keep using
+ * their stable pane ids; this table only selects the host and connection
+ * options used when a new durable PTY is created.
+ */
+export const remoteWorkspaceBindings = sqliteTable(
+	"remote_workspace_bindings",
+	{
+		workspaceId: text("workspace_id")
+			.primaryKey()
+			.references(() => workspaces.id, { onDelete: "cascade" }),
+		remoteHostId: text("remote_host_id")
+			.notNull()
+			.references(() => remoteHosts.id, { onDelete: "cascade" }),
+		remotePath: text("remote_path"),
+		portForwards: text("port_forwards", { mode: "json" })
+			.$type<RemotePortForward[]>()
+			.notNull()
+			.$defaultFn(() => []),
+		tunnelEnabled: integer("tunnel_enabled", { mode: "boolean" })
+			.notNull()
+			.default(false),
+		createdAt: integer("created_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+		updatedAt: integer("updated_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+	},
+	(table) => [
+		index("remote_workspace_bindings_host_idx").on(table.remoteHostId),
+	],
+);
+
+export type InsertRemoteWorkspaceBinding =
+	typeof remoteWorkspaceBindings.$inferInsert;
+export type SelectRemoteWorkspaceBinding =
+	typeof remoteWorkspaceBindings.$inferSelect;
+
 export const settings = sqliteTable("settings", {
 	id: integer("id").primaryKey().default(1),
 	lastActiveWorkspaceId: text("last_active_workspace_id"),

@@ -7,6 +7,7 @@ import {
 import { LinkBehaviorSetting } from "./components/LinkBehaviorSetting";
 import { PresetsSection } from "./components/PresetsSection";
 import { RemoteHostsSection } from "./components/RemoteHostsSection";
+import { RemoteWorkspaceBindingsSection } from "./components/RemoteWorkspaceBindingsSection";
 import { SessionsSection } from "./components/SessionsSection";
 
 interface TerminalSettingsProps {
@@ -80,6 +81,9 @@ export function TerminalSettings({
 				{showLinkBehavior && <LinkBehaviorSetting key="link-behavior" />}
 				{showSessions && <SessionsSection key="sessions" />}
 				{visibleItems == null && <RemoteHostsSection key="remote-hosts" />}
+				{visibleItems == null && (
+					<RemoteWorkspaceBindingsSection key="remote-workspaces" />
+				)}
 			</SectionList>
 		</div>
 	);

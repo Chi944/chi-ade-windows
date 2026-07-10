@@ -30,6 +30,7 @@ export type CreateOrAttachResult = {
 	agentRuntime?: AgentRuntime;
 	agentSessionId?: string;
 	resumeAvailable?: boolean;
+	transportKind?: "ssh" | "ssh-tunnel";
 	snapshot?: {
 		snapshotAnsi: string;
 		rehydrateSequences: string;

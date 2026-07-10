@@ -21,6 +21,7 @@ import type {
 	TerminalDataEvent,
 	TerminalErrorEvent,
 	TerminalExitEvent,
+	TerminalLaunchSpec,
 	TerminalSnapshot,
 } from "../lib/terminal-host/types";
 import { treeKillAsync } from "../lib/tree-kill";
@@ -67,6 +68,7 @@ export interface SessionOptions {
 	cwd: string;
 	env?: Record<string, string>;
 	shell?: string;
+	launch?: TerminalLaunchSpec;
 	workspaceName?: string;
 	workspacePath?: string;
 	rootPath?: string;
@@ -89,8 +91,12 @@ export class Session {
 	readonly paneId: string;
 	readonly tabId: string;
 	readonly shell: string;
+	readonly transportKind?: TerminalLaunchSpec["kind"];
+	readonly transportFingerprint?: string;
+	readonly hidden: boolean;
 	readonly createdAt: Date;
 	private readonly spawnProcess: SpawnProcess;
+	private readonly shellArgs: string[];
 
 	private subprocess: ChildProcess | null = null;
 	private subprocessReady = false;
@@ -138,7 +144,12 @@ export class Session {
 		this.workspaceId = options.workspaceId;
 		this.paneId = options.paneId;
 		this.tabId = options.tabId;
-		this.shell = options.shell || this.getDefaultShell();
+		this.shell =
+			options.launch?.executable || options.shell || this.getDefaultShell();
+		this.shellArgs = options.launch?.args ?? getShellArgs(this.shell);
+		this.transportKind = options.launch?.kind;
+		this.transportFingerprint = options.launch?.fingerprint;
+		this.hidden = options.launch?.hidden ?? false;
 		this.createdAt = new Date();
 		this.lastAttachedAt = new Date();
 		this.spawnProcess = options.spawnProcess ?? spawn;
@@ -192,7 +203,6 @@ export class Session {
 		const processEnv = buildSafeEnv(envSource);
 		processEnv.TERM = "xterm-256color";
 
-		const shellArgs = getShellArgs(this.shell);
 		const subprocessPath = path.join(__dirname, "pty-subprocess.js");
 
 		// Spawn subprocess with filtered env to prevent leaking NODE_ENV etc.
@@ -236,7 +246,7 @@ export class Session {
 		// Store pending spawn config
 		this.pendingSpawn = {
 			shell: this.shell,
-			args: shellArgs,
+			args: this.shellArgs,
 			cwd,
 			cols,
 			rows,
@@ -768,7 +778,15 @@ export class Session {
 			createdAt: this.createdAt.toISOString(),
 			lastAttachedAt: this.lastAttachedAt.toISOString(),
 			shell: this.shell,
+			transportKind: this.transportKind,
+			transportFingerprint: this.transportFingerprint,
+			hidden: this.hidden,
 		};
+	}
+
+	/** Reject reusing a stable pane id for a different process transport. */
+	isCompatibleLaunch(launch: TerminalLaunchSpec | undefined): boolean {
+		return this.transportFingerprint === launch?.fingerprint;
 	}
 
 	/**
@@ -968,6 +986,7 @@ export function createSession(request: CreateOrAttachRequest): Session {
 		cwd: request.cwd || process.env.HOME || "/",
 		env: request.env,
 		shell: request.shell,
+		launch: request.launch,
 		workspaceName: request.workspaceName,
 		workspacePath: request.workspacePath,
 		rootPath: request.rootPath,

@@ -79,6 +79,11 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	const [exitStatus, setExitStatus] = useState<"killed" | "exited" | null>(
 		null,
 	);
+	const [lastExitCode, setLastExitCode] = useState<number | null>(null);
+	const remoteReconnectAttemptsRef = useRef(0);
+	const remoteStableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+		null,
+	);
 	const wasKilledByUserRef = useRef(false);
 	const pendingEventsRef = useRef<TerminalStreamEvent[]>([]);
 	const commandBufferRef = useRef("");
@@ -141,6 +146,10 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	// URL click handler - opens in app browser or system browser based on setting
 	const { data: openLinksInApp } =
 		electronTrpc.settings.getOpenLinksInApp.useQuery();
+	const { data: remoteBinding } = electronTrpc.remote.binding.useQuery(
+		{ workspaceId },
+		{ staleTime: 30_000 },
+	);
 	const openInBrowserPane = useTabsStore((s) => s.openInBrowserPane);
 	const handleUrlClickRef = useRef<((url: string) => void) | undefined>(
 		undefined,
@@ -268,6 +277,13 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 			setConnectionError,
 			updateModesFromData,
 			updateCwdFromData,
+			onExit: (exitCode) => {
+				if (remoteStableTimerRef.current) {
+					clearTimeout(remoteStableTimerRef.current);
+					remoteStableTimerRef.current = null;
+				}
+				setLastExitCode(exitCode);
+			},
 		});
 
 	// Populate handler refs for flushPendingEvents to use
@@ -277,6 +293,17 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	// Stream subscription
 	electronTrpc.terminal.stream.useSubscription(paneId, {
 		onData: (event) => {
+			if (
+				remoteBinding &&
+				event.type === "data" &&
+				remoteReconnectAttemptsRef.current > 0 &&
+				!remoteStableTimerRef.current
+			) {
+				remoteStableTimerRef.current = setTimeout(() => {
+					remoteReconnectAttemptsRef.current = 0;
+					remoteStableTimerRef.current = null;
+				}, 10_000);
+			}
 			if (connectionErrorRef.current && event.type === "data") {
 				setConnectionError(null);
 				retryCountRef.current = 0;
@@ -374,6 +401,30 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		registerPasteCallbackRef,
 		unregisterPasteCallbackRef,
 	});
+
+	useEffect(() => {
+		if (!remoteBinding || exitStatus !== "exited" || lastExitCode !== 255) {
+			return;
+		}
+		if (remoteReconnectAttemptsRef.current >= 5) return;
+
+		const attempt = ++remoteReconnectAttemptsRef.current;
+		const delay = Math.min(1_000 * 2 ** (attempt - 1), 10_000);
+		xtermRef.current?.writeln(
+			`\r\n\x1b[90m[SSH disconnected. Reconnecting in ${Math.ceil(delay / 1000)}sâ€¦]\x1b[0m`,
+		);
+		const timeout = setTimeout(restartTerminal, delay);
+		return () => clearTimeout(timeout);
+	}, [remoteBinding, exitStatus, lastExitCode, restartTerminal]);
+
+	useEffect(
+		() => () => {
+			if (remoteStableTimerRef.current) {
+				clearTimeout(remoteStableTimerRef.current);
+			}
+		},
+		[],
+	);
 
 	useEffect(() => {
 		const xterm = xtermRef.current;

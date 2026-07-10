@@ -32,6 +32,7 @@ import {
 	ensureWorkspaceIconsDir,
 	getIconPath,
 } from "./lib/project-icons";
+import { reconcileSshTunnels } from "./lib/remote/tunnel-manager";
 import {
 	pruneOrphanedSubscriptionHomes,
 	setSubscriptionProfilesUserDataPathResolver,
@@ -301,6 +302,9 @@ if (!gotTheLock) {
 		// Must happen before renderer restore runs
 		console.log("[main] boot: reconcileDaemonSessions…");
 		await reconcileDaemonSessions();
+		void reconcileSshTunnels().catch((error) => {
+			console.warn("[main] Failed to reconcile managed SSH tunnels:", error);
+		});
 		prewarmTerminalRuntime();
 
 		try {

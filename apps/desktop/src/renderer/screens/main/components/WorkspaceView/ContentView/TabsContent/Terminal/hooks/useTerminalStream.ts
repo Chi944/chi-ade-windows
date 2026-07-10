@@ -16,6 +16,7 @@ export interface UseTerminalStreamOptions {
 	setConnectionError: (error: string | null) => void;
 	updateModesFromData: (data: string) => void;
 	updateCwdFromData: (data: string) => void;
+	onExit?: (exitCode: number, reason?: TerminalExitReason) => void;
 }
 
 export interface UseTerminalStreamReturn {
@@ -42,6 +43,7 @@ export function useTerminalStream({
 	setConnectionError,
 	updateModesFromData,
 	updateCwdFromData,
+	onExit,
 }: UseTerminalStreamOptions): UseTerminalStreamReturn {
 	const setPaneStatus = useTabsStore((s) => s.setPaneStatus);
 	const firstStreamDataReceivedRef = useRef(false);
@@ -54,6 +56,7 @@ export function useTerminalStream({
 
 	const handleTerminalExit = useCallback(
 		(exitCode: number, xterm: XTerm, reason?: TerminalExitReason) => {
+			onExit?.(exitCode, reason);
 			isExitedRef.current = true;
 			isStreamReadyRef.current = false;
 
@@ -85,6 +88,7 @@ export function useTerminalStream({
 			wasKilledByUserRef,
 			setExitStatus,
 			setPaneStatus,
+			onExit,
 		],
 	);
 

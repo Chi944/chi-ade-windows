@@ -7,6 +7,7 @@ import {
 	agentMessageReceipts,
 	agentMessages,
 	projects,
+	remoteWorkspaceBindings,
 	settings,
 	sharedMemories,
 	workspaces,
@@ -299,6 +300,9 @@ export function deleteWorkspaces(workspaceIds: string[]): void {
 					inArray(sharedMemories.workspaceId, workspaceIds),
 				),
 			)
+			.run();
+		tx.delete(remoteWorkspaceBindings)
+			.where(inArray(remoteWorkspaceBindings.workspaceId, workspaceIds))
 			.run();
 		tx.delete(workspaces).where(inArray(workspaces.id, workspaceIds)).run();
 	});

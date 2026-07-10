@@ -3,6 +3,10 @@ import type { SerializeAddon } from "@xterm/addon-serialize";
 import type { Terminal as HeadlessTerminal } from "@xterm/headless";
 import type * as pty from "node-pty";
 import type { DataBatcher } from "../data-batcher";
+import type {
+	TerminalLaunchSpec,
+	TerminalTransportKind,
+} from "../terminal-host/types";
 import type { PtyWriteQueue } from "./pty-write-queue";
 
 export interface TerminalSession {
@@ -75,6 +79,8 @@ export interface SessionResult {
 	agentSessionId?: string;
 	/** True when previous pane metadata exists and a continuation is meaningful. */
 	resumeAvailable?: boolean;
+	/** Non-local transport selected by the main process for this pane. */
+	transportKind?: TerminalTransportKind;
 	/** Snapshot from daemon (if using daemon mode) */
 	snapshot?: {
 		snapshotAnsi: string;
@@ -121,6 +127,8 @@ export interface CreateSessionParams {
 	 * env (e.g. CODEX_HOME for codex). Null/undefined for non-agent workspaces.
 	 */
 	runtime?: AgentRuntime | null;
+	/** Validated server-derived launch details for SSH and other transports. */
+	launch?: TerminalLaunchSpec;
 }
 
 export interface InternalCreateSessionParams extends CreateSessionParams {

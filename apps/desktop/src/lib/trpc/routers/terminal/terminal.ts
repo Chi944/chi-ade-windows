@@ -1,6 +1,8 @@
 import {
 	AGENT_RUNTIMES,
 	projects,
+	remoteHosts,
+	remoteWorkspaceBindings,
 	workspaces,
 	worktrees,
 } from "@superset/local-db";
@@ -12,6 +14,8 @@ import { appState } from "main/lib/app-state";
 import { requestAppleEventsAccessOnce } from "main/lib/apple-events-permission";
 import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
 import { localDb } from "main/lib/local-db";
+import { buildSshTerminalLaunch } from "main/lib/remote/ssh";
+import { reconcileSshTunnels } from "main/lib/remote/tunnel-manager";
 import { restartDaemon as restartDaemonShared } from "main/lib/terminal";
 import {
 	TERMINAL_SESSION_KILLED_MESSAGE,
@@ -146,6 +150,34 @@ export const createTerminalRouter = () => {
 					persistedThemeState: appState.data.themeState,
 				});
 				const runtime = runtimeOverride ?? workspace.runtime ?? null;
+				const remoteBinding = localDb
+					.select()
+					.from(remoteWorkspaceBindings)
+					.where(eq(remoteWorkspaceBindings.workspaceId, workspaceId))
+					.get();
+				const remoteProfile = remoteBinding
+					? localDb
+							.select()
+							.from(remoteHosts)
+							.where(eq(remoteHosts.id, remoteBinding.remoteHostId))
+							.get()
+					: null;
+				if (remoteBinding && !remoteProfile) {
+					throw new TRPCError({
+						code: "PRECONDITION_FAILED",
+						message: "The workspace's remote host no longer exists",
+					});
+				}
+				const launch = remoteProfile
+					? buildSshTerminalLaunch(
+							remoteProfile,
+							{
+								remotePath:
+									remoteBinding?.remotePath ?? remoteProfile.remoteRoot,
+							},
+							paneId,
+						)
+					: undefined;
 
 				// Codex reads its memory bridge from CODEX_HOME/.codex/AGENTS.md.
 				// Regenerate it from the canonical memory files before each spawn so a
@@ -178,6 +210,7 @@ export const createTerminalRouter = () => {
 						allowKilled,
 						themeType: resolvedThemeType,
 						runtime,
+						launch,
 					});
 
 					if (DEBUG_TERMINAL) {
@@ -210,6 +243,7 @@ export const createTerminalRouter = () => {
 						agentRuntime: result.agentRuntime,
 						agentSessionId: result.agentSessionId,
 						resumeAvailable: result.resumeAvailable,
+						transportKind: result.transportKind,
 						// Include snapshot for daemon mode (renderer can use for rehydration)
 						snapshot: result.snapshot,
 					};
@@ -374,7 +408,10 @@ export const createTerminalRouter = () => {
 		killAllDaemonSessions: publicProcedure.mutation(async () => {
 			const client = getTerminalHostClient();
 			const before = await terminal.management.listSessions();
-			const beforeIds = before.sessions.map((s) => s.sessionId);
+			const visibleSessions = before.sessions.filter(
+				(session) => !session.hidden,
+			);
+			const beforeIds = visibleSessions.map((session) => session.sessionId);
 			console.log(
 				"[killAllDaemonSessions] Before kill:",
 				beforeIds.length,
@@ -403,14 +440,14 @@ export const createTerminalRouter = () => {
 			// Poll until sessions are actually dead
 			const MAX_RETRIES = 10;
 			const RETRY_DELAY_MS = 100;
-			let remainingCount = before.sessions.length;
+			let remainingCount = visibleSessions.length;
 			let afterIds: string[] = [];
 
 			for (let i = 0; i < MAX_RETRIES && remainingCount > 0; i++) {
 				await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
 				const after = await client.listSessions();
 				afterIds = after.sessions
-					.filter((s) => s.isAlive)
+					.filter((session) => session.isAlive && !session.hidden)
 					.map((s) => s.sessionId);
 				remainingCount = afterIds.length;
 
@@ -422,7 +459,7 @@ export const createTerminalRouter = () => {
 				}
 			}
 
-			const killedCount = before.sessions.length - remainingCount;
+			const killedCount = visibleSessions.length - remainingCount;
 			console.log(
 				"[killAllDaemonSessions] Complete:",
 				killedCount,
@@ -473,7 +510,9 @@ export const createTerminalRouter = () => {
 
 		/** Restart daemon to recover from stuck state. Kills all sessions. */
 		restartDaemon: publicProcedure.mutation(async () => {
-			return restartDaemonShared();
+			const result = await restartDaemonShared();
+			await reconcileSshTunnels();
+			return result;
 		}),
 
 		getSession: publicProcedure

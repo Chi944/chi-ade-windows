@@ -202,6 +202,7 @@ export class DaemonTerminalManager extends EventEmitter {
 
 			// Enable port scanning before user opens terminal tabs
 			for (const session of preservedSessions) {
+				if (session.hidden) continue;
 				portManager.upsertDaemonSession(
 					session.paneId,
 					session.workspaceId,
@@ -255,10 +256,12 @@ export class DaemonTerminalManager extends EventEmitter {
 				session.lastActive = Date.now();
 			}
 
-			portManager.checkOutputForHint(data, paneId);
-			this.historyManager.writeToHistory(paneId, data, () =>
-				this.sessions.get(paneId),
-			);
+			if (!session?.hidden) {
+				portManager.checkOutputForHint(data, paneId);
+				this.historyManager.writeToHistory(paneId, data, () =>
+					this.sessions.get(paneId),
+				);
+			}
 			this.emit(`data:${paneId}`, data);
 		});
 
@@ -416,6 +419,7 @@ export class DaemonTerminalManager extends EventEmitter {
 			skipColdRestore,
 			themeType,
 			runtime,
+			launch,
 		} = params;
 
 		try {
@@ -436,6 +440,7 @@ export class DaemonTerminalManager extends EventEmitter {
 							stickyRestore.agentRuntime,
 							stickyRestore.agentSessionId,
 						),
+						transportKind: launch?.kind,
 						snapshot: {
 							snapshotAnsi: stickyRestore.scrollback,
 							rehydrateSequences: "",
@@ -464,6 +469,7 @@ export class DaemonTerminalManager extends EventEmitter {
 					cols,
 					rows,
 					runtime,
+					transportKind: launch?.kind,
 				});
 				this.assertPaneLifecycleCurrent(paneId, generation);
 				if (coldRestoreResult) {
@@ -476,24 +482,25 @@ export class DaemonTerminalManager extends EventEmitter {
 				this.assertPaneLifecycleCurrent(paneId, generation);
 			}
 
-			const previousMetadataCandidate = await new HistoryReader(
-				workspaceId,
-				paneId,
-			).readMetadata();
+			const previousMetadataCandidate = launch?.hidden
+				? null
+				: await new HistoryReader(workspaceId, paneId).readMetadata();
 			this.assertPaneLifecycleCurrent(paneId, generation);
 
-			const shell = getDefaultShell();
-			const env = buildTerminalEnv({
-				shell,
-				paneId,
-				tabId,
-				workspaceId,
-				workspaceName,
-				workspacePath,
-				rootPath,
-				themeType,
-				runtime,
-			});
+			const shell = launch?.executable ?? getDefaultShell();
+			const env =
+				launch?.env ??
+				buildTerminalEnv({
+					shell,
+					paneId,
+					tabId,
+					workspaceId,
+					workspaceName,
+					workspacePath,
+					rootPath,
+					themeType,
+					runtime,
+				});
 
 			if (DEBUG_TERMINAL) {
 				console.log("[DaemonTerminalManager] Calling daemon createOrAttach:", {
@@ -518,6 +525,7 @@ export class DaemonTerminalManager extends EventEmitter {
 				cwd,
 				env,
 				shell,
+				launch,
 			});
 			if (!this.isPaneLifecycleCurrent(paneId, generation)) {
 				await this.discardStaleCreatedSession(paneId, workspaceId);
@@ -554,9 +562,12 @@ export class DaemonTerminalManager extends EventEmitter {
 				cols: effectiveCols,
 				rows: effectiveRows,
 				runtime: effectiveRuntime,
+				hidden: launch?.hidden,
 			});
 
-			portManager.upsertDaemonSession(paneId, workspaceId, response.pid);
+			if (!launch?.hidden) {
+				portManager.upsertDaemonSession(paneId, workspaceId, response.pid);
+			}
 
 			const snapshotAnsi = response.snapshot.snapshotAnsi || "";
 			const snapshotAnsiBytes = Buffer.byteLength(snapshotAnsi, "utf8");
@@ -565,7 +576,7 @@ export class DaemonTerminalManager extends EventEmitter {
 					? truncateUtf8ToLastBytes(snapshotAnsi, MAX_SCROLLBACK_BYTES)
 					: snapshotAnsi;
 
-			if (effectiveCols >= 1 && effectiveRows >= 1) {
+			if (!launch?.hidden && effectiveCols >= 1 && effectiveRows >= 1) {
 				await this.historyManager
 					.initHistoryWriter({
 						paneId,
@@ -619,6 +630,7 @@ export class DaemonTerminalManager extends EventEmitter {
 				resumeAvailable:
 					response.isNew &&
 					isValidAgentSessionId(effectiveRuntime, previousSessionId),
+				transportKind: launch?.kind,
 				snapshot: {
 					snapshotAnsi: response.snapshot.snapshotAnsi,
 					rehydrateSequences: response.snapshot.rehydrateSequences,
@@ -641,12 +653,14 @@ export class DaemonTerminalManager extends EventEmitter {
 		cols,
 		rows,
 		runtime,
+		transportKind,
 	}: {
 		paneId: string;
 		workspaceId: string;
 		cols: number;
 		rows: number;
 		runtime?: AgentRuntime | null;
+		transportKind?: "ssh" | "ssh-tunnel";
 	}): Promise<SessionResult | null> {
 		const historyReader = new HistoryReader(workspaceId, paneId);
 		const metadata = await historyReader.readMetadata();
@@ -712,6 +726,7 @@ export class DaemonTerminalManager extends EventEmitter {
 			agentRuntime,
 			agentSessionId,
 			resumeAvailable: isValidAgentSessionId(agentRuntime, agentSessionId),
+			transportKind,
 			snapshot: {
 				snapshotAnsi: scrollback,
 				rehydrateSequences: "",
