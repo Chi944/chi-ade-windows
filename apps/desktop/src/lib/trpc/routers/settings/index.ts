@@ -20,6 +20,7 @@ import { localDb } from "main/lib/local-db";
 import { probeSubscriptionConnections } from "main/lib/provider-connections";
 import {
 	clearProviderKey,
+	clearProviderModelProfile,
 	getProviderKeyStatus,
 	PROVIDER_IDS,
 	setProviderKey,
@@ -724,6 +725,13 @@ export const createSettingsRouter = () => {
 		// lives in main/lib/provider-keys (electron safeStorage + local sqlite).
 		providerKeys: router({
 			status: publicProcedure.query(() => getProviderKeyStatus()),
+
+			clearModelProfile: publicProcedure
+				.input(z.object({ provider: z.enum(["huggingface", "ollama"]) }))
+				.mutation(({ input }) => {
+					clearProviderModelProfile(input.provider);
+					return { success: true };
+				}),
 
 			setModelProfile: publicProcedure
 				.input(

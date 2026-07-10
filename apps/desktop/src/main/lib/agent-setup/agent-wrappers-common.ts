@@ -10,15 +10,15 @@ export const WRAPPER_MARKER = "# ADE agent-wrapper v2";
 
 /**
  * Marker substring present in every agent-wrapper header (ADE's own wrappers and
- * the user's Damon install both use "... agent-wrapper ..."). find_real_binary
+ * legacy local wrappers both use "... agent-wrapper ..."). find_real_binary
  * skips any candidate whose header contains it, so a wrapper never resolves to
  * another wrapper.
  */
 const WRAPPER_HEADER_NEEDLE = "agent-wrapper";
 
 // Matches ADE-managed hook paths under the app home dir (~/.ade or
-// ~/.ade-<workspace>). MUST be ADE's own dir, not ~/.damon — otherwise ADE would
-// treat the user's real Damon install's hooks as its own and clobber them, and
+// ~/.ade-<workspace>). MUST be ADE's own dir, not another app's home — otherwise
+// ADE would treat a legacy install's hooks as its own and clobber them, and
 // fail to recognize (so would duplicate) its own hooks in shared agent settings.
 const SUPERSET_MANAGED_HOOK_PATH_PATTERN = /\/\.ade(?:-[^/'"\s\\]+)?\//;
 
@@ -74,8 +74,8 @@ function buildRealBinaryResolver(): string {
     esac
     local candidate="$dir/$name"
     if [ -x "$candidate" ] && [ ! -d "$candidate" ]; then
-      # Skip other agent-wrapper shims (another ADE wrapper on PATH, or the
-      # user's Damon install) so we resolve the real binary directly. Chaining
+      # Skip other agent-wrapper shims (another ADE wrapper on PATH, or a
+      # legacy local wrapper) so we resolve the real binary directly. Chaining
       # wrappers ping-pongs and keeps prepending --settings, which breaks the
       # CLI's interactive TUI.
       if head -c 512 "$candidate" 2>/dev/null | grep -qa "${WRAPPER_HEADER_NEEDLE}"; then

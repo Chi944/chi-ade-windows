@@ -1,7 +1,8 @@
 /**
  * Models offered in the ModelBar launch row. `runtime` maps to the agent
  * runtime / launch command (see AGENT_PRESET_COMMANDS); `iconName` is the
- * getPresetIcon key. Display labels are a product decision and live here rather
+ * getPresetIcon key when a provider-specific React icon is not used. Display
+ * labels are a product decision and live here rather
  * than deriving from AGENT_LABELS so the row reads the way the user asked
  * (e.g. the OpenAI mark for the Codex runtime).
  *

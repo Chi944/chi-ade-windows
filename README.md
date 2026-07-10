@@ -10,7 +10,7 @@ Chi ADE Windows is a local-first, single-user desktop app for running coding age
 - **Customizable true black:** the system dark theme uses `#000000`, and the Appearance screen includes a visual editor for background, surfaces, text, accent, borders, and terminal colors.
 - **Claude and Codex subscriptions:** connect through the official `claude auth login` and `codex login` flows. ADE checks only whether the CLI is installed and authenticated; it never receives the subscription credentials.
 - **Durable sessions:** ADE keeps bounded terminal history and provider session metadata, then resumes Claude, Codex, Hugging Face/Codex, Ollama/Codex, and OpenCode sessions after a clean exit, app restart, or system restart when the CLI supports it.
-- **Cloud and local models:** use Hugging Face Inference Providers remotely without downloading model weights, OpenRouter models, or models you already serve with Ollama.
+- **Your cloud and local models:** save, select, launch, and remove multiple Hugging Face Inference Provider model IDs or models you already serve with Ollama. Hugging Face weights stay in the cloud, and ADE never pulls Ollama models automatically.
 - **Provider isolation:** API tokens are encrypted with Electron secure storage and injected only into matching provider sessions.
 - **Safer custom-model defaults:** Hugging Face and Ollama sessions use workspace-write isolation and ask before elevated actions.
 - **Windows-aware health checks:** ADE executes each discovered CLI's `--version` command, so an inaccessible Windows Store alias is not mistaken for a working runtime.
@@ -26,7 +26,11 @@ ADE preserves your work and lets you resume or switch providers; it does not byp
 
 ### Provider Hub
 
-![Provider Hub with Claude and Codex subscription connections plus cloud-provider settings](docs/screenshots/provider-hub.png)
+![Provider Hub with Claude and Codex subscription connections plus selectable Hugging Face and Ollama model lists](docs/screenshots/provider-hub.png)
+
+### Your model library
+
+![Saved Hugging Face cloud and Ollama model lists with provider icons, default selection, launch, and removal controls](docs/screenshots/provider-models.png)
 
 ### Theme color editor
 
@@ -50,6 +54,8 @@ ADE-<version>-x64.exe
 
 The installer is the only release artifact most users need. Agent CLIs and model weights are not bundled.
 
+The community installer is currently unsigned, so Windows SmartScreen may show **Unknown publisher**. Before running it, verify the installer against the `ADE-<version>-x64.exe.sha256` checksum attached to the same GitHub release.
+
 ## Prerequisites
 
 You need [Git for Windows](https://git-scm.com/download/win) and at least one coding-agent CLI:
@@ -69,8 +75,8 @@ Use the **+** button in the model bar to open Provider Hub:
 
 - **Claude:** sign in with an eligible Claude subscription through the official CLI.
 - **Codex:** sign in with an eligible ChatGPT/Codex subscription through the official CLI.
-- **Hugging Face:** enter a Hugging Face token and a remotely available model ID. Requests go to Hugging Face Inference Providers; ADE does not download the model.
-- **Ollama:** enter the name of a model already served at `127.0.0.1:11434`. ADE never pulls an Ollama model automatically.
+- **Hugging Face:** enter one token, then add up to 20 remotely available model IDs. Choose a default or launch any saved model directly; ADE does not download the weights.
+- **Ollama:** add up to 20 model names already served at `127.0.0.1:11434`, choose a default, or launch one directly. ADE never pulls an Ollama model automatically.
 - **OpenRouter:** enter one key for Kimi, MiniMax, and GLM sessions.
 
 ## Build from source
@@ -89,7 +95,7 @@ The script:
 2. keeps Bun and npm caches inside `.tmp/windows-build`;
 3. uses published Electron native prebuilds instead of installing Visual Studio build tools;
 4. smoke-tests native modules before and after packaging;
-5. copies the installer, update manifest, and measured footprint to `artifacts/`; and
+5. copies the installer, checksum, update manifest, and measured footprint to `artifacts/`; and
 6. deletes temporary staging after a successful build.
 
 Use `-KeepStaging` only for diagnostics.

@@ -145,6 +145,15 @@ describe("provider-keys", () => {
 		);
 	});
 
+	it("clears an encrypted model profile when its final saved model is removed", () => {
+		setProviderModelProfile("ollama", "qwen3-coder:30b");
+		expect(settingsRow?.providerApiKeys?.["model:ollama"]).toBeTruthy();
+
+		clearProviderModelProfile("ollama");
+
+		expect(settingsRow?.providerApiKeys?.["model:ollama"]).toBeUndefined();
+	});
+
 	it("rejects unsafe model IDs before they reach a shell or config", () => {
 		expect(() =>
 			setProviderModelProfile("ollama", "qwen && calc.exe"),

@@ -23,11 +23,10 @@ Run everything from `apps/desktop/`.
   <https://appleid.apple.com> → Sign-In and Security → App-Specific Passwords).
   This is NOT your normal Apple ID password.
 
-> Note: this is different from the ad-hoc "Damon Local" self-signed identity in
-> `~/fix-damon-signing.sh` / `~/sign-damon.sh`. Those give a *stable local*
-> signature so macOS TCC permissions survive rebuilds — they are **not** a
-> Developer ID and cannot be notarized. For a public download you need a real
-> Developer ID Application cert as above.
+> Note: this is different from an ad-hoc self-signed identity used for local
+> development. A *stable local* signature can preserve macOS TCC permissions
+> across rebuilds, but it is **not** a Developer ID and cannot be notarized. For
+> a public download you need a real Developer ID Application cert as above.
 
 ---
 

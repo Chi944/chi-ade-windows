@@ -188,10 +188,14 @@ try {
 	}
 
 	$afterBuildBytes = (Get-PSDrive -Name $driveName).Free
+	$installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash
+	$checksumPath = Join-Path $output ($installer.Name + ".sha256")
+	"$installerSha256 *$($installer.Name)" |
+		Set-Content -LiteralPath $checksumPath -Encoding ASCII
 	$measurement = [ordered]@{
 		installer = $installer.Name
 		installerBytes = $installer.Length
-		installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer.FullName).Hash
+		installerSha256 = $installerSha256
 		temporaryPhysicalBytes = $beforeBytes - $afterBuildBytes
 		bunVersion = (& bun --version | Select-Object -First 1)
 		measuredAt = (Get-Date).ToUniversalTime().ToString("o")

@@ -20,6 +20,7 @@ export interface ProviderKeysHandle {
 		provider: "huggingface" | "ollama",
 		modelId: string,
 	) => Promise<void>;
+	clearModelProfile: (provider: "huggingface" | "ollama") => Promise<void>;
 	isSaving: boolean;
 	isClearing: boolean;
 }
@@ -34,6 +35,8 @@ export function useProviderKeys(): ProviderKeysHandle {
 	});
 	const profileMutation =
 		electronTrpc.settings.providerKeys.setModelProfile.useMutation();
+	const clearProfileMutation =
+		electronTrpc.settings.providerKeys.clearModelProfile.useMutation();
 
 	return {
 		openrouterConfigured: statusQuery.data?.openrouter,
@@ -50,6 +53,9 @@ export function useProviderKeys(): ProviderKeysHandle {
 		},
 		saveModelProfile: async (provider, modelId) => {
 			await profileMutation.mutateAsync({ provider, modelId });
+		},
+		clearModelProfile: async (provider) => {
+			await clearProfileMutation.mutateAsync({ provider });
 		},
 		isSaving: setMutation.isPending,
 		isClearing: clearMutation.isPending,

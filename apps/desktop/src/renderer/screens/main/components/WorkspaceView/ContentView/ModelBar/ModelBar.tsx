@@ -26,6 +26,7 @@ import { useProviderProfiles } from "renderer/stores/model-bar/useProviderProfil
 import { useRuntimeAvailability } from "renderer/stores/model-bar/useRuntimeAvailability";
 import { useAgentSession } from "renderer/stores/tabs/useAgentSession";
 import { MODEL_BAR_MODELS, type ModelDescriptor } from "./models";
+import { ProviderIcon } from "./ProviderIcon";
 import {
 	ProviderKeyDialog,
 	type ProviderKeyDialogMode,
@@ -130,7 +131,7 @@ export function ModelBar() {
 			if (model.provider === "huggingface" || model.provider === "ollama") {
 				const profile = profiles[model.provider];
 				if (
-					!isValidOpenCodeModelId(profile.modelId) ||
+					!isValidOpenCodeModelId(profile.selectedModelId) ||
 					(model.provider === "huggingface" && !huggingfaceConfigured)
 				) {
 					setDialog({ mode: "launch", model });
@@ -138,7 +139,7 @@ export function ModelBar() {
 				}
 				await launchProviderModel({
 					provider: model.provider,
-					modelId: profile.modelId,
+					modelId: profile.selectedModelId,
 				});
 				return;
 			}
@@ -175,11 +176,17 @@ export function ModelBar() {
 			>
 				{MODEL_BAR_MODELS.map((model) => {
 					const icon = getPresetIcon(model.iconName, isDark);
-					const binary =
+					const modelProvider =
 						model.provider === "huggingface" || model.provider === "ollama"
-							? "codex"
-							: RUNTIME_BINARY[model.runtime];
+							? model.provider
+							: null;
+					const binary = modelProvider
+						? "codex"
+						: RUNTIME_BINARY[model.runtime];
 					const missing = !isAvailable(binary as CheckedBinary);
+					const selectedModel = modelProvider
+						? profiles[modelProvider].selectedModelId
+						: "";
 					return (
 						<Tooltip key={model.runtime}>
 							<TooltipTrigger asChild>
@@ -194,7 +201,16 @@ export function ModelBar() {
 									onClick={() => handleModelClick(model)}
 									className="group relative flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted"
 								>
-									{icon ? (
+									{modelProvider ? (
+										<ProviderIcon
+											provider={modelProvider}
+											className={`h-4 w-4 transition-opacity group-hover:opacity-100 ${
+												missing
+													? "opacity-30 grayscale group-hover:opacity-60"
+													: "opacity-70"
+											}`}
+										/>
+									) : icon ? (
 										<img
 											src={icon}
 											alt=""
@@ -223,6 +239,11 @@ export function ModelBar() {
 								{missing
 									? `${model.label} not detected — click to install`
 									: `${model.label}${model.isDefault ? " · default" : ""}`}
+								{selectedModel && !missing && (
+									<span className="block max-w-72 truncate text-muted-foreground">
+										{selectedModel}
+									</span>
+								)}
 							</TooltipContent>
 						</Tooltip>
 					);
@@ -235,7 +256,7 @@ export function ModelBar() {
 				<TooltipTrigger asChild>
 					<button
 						type="button"
-						aria-label="Add provider"
+						aria-label="Add or manage models"
 						onClick={() => setDialog({ mode: "manage" })}
 						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
 					>
@@ -243,7 +264,7 @@ export function ModelBar() {
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="bottom" showArrow={false}>
-					Add provider
+					Add or manage models
 				</TooltipContent>
 			</Tooltip>
 

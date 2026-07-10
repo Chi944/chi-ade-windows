@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { VscTerminalPowershell } from "react-icons/vsc";
 import type { MosaicBranch } from "react-mosaic-component";
 import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
 import { useRenamePaneStore } from "renderer/stores/rename-pane-store";
@@ -64,6 +65,9 @@ export function TabPane({
 	);
 	const stopRenamingPane = useRenamePaneStore((s) => s.stopRenamingPane);
 	const displayName = paneUserTitle?.trim() || paneName || "Terminal";
+	const isPowerShell =
+		process.platform === "win32" ||
+		/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(displayName);
 	const [draftName, setDraftName] = useState(displayName);
 	const renameInputRef = useRef<HTMLInputElement>(null);
 
@@ -142,9 +146,17 @@ export function TabPane({
 								className="min-w-0 border-b border-muted-foreground/40 bg-transparent text-sm text-muted-foreground outline-none"
 							/>
 						) : (
-							<span className="truncate text-sm text-muted-foreground">
-								{displayName}
-							</span>
+							<>
+								{isPowerShell && (
+									<VscTerminalPowershell
+										aria-hidden="true"
+										className="size-4 shrink-0 text-[#5391fe]"
+									/>
+								)}
+								<span className="truncate text-sm text-muted-foreground">
+									{displayName}
+								</span>
+							</>
 						)}
 						{paneStatus && paneStatus !== "idle" && (
 							<StatusIndicator status={paneStatus} />
