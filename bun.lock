@@ -108,7 +108,7 @@
     },
     "apps/desktop": {
       "name": "@ade/desktop",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@ai-sdk/react": "^3.0.0",
         "@ast-grep/napi": "^0.41.0",

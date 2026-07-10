@@ -5,7 +5,11 @@ import {
 	notificationsEmitter,
 } from "main/lib/notifications/server";
 import { NOTIFICATION_EVENTS } from "shared/constants";
-import type { AgentInvokeEvent } from "shared/notification-types";
+import type {
+	AgentInvokeEvent,
+	AgentMessageEvent,
+	CoordinationChangedEvent,
+} from "shared/notification-types";
 import { publicProcedure, router } from "..";
 
 type TerminalExitNotification = NotificationIds & {
@@ -27,6 +31,14 @@ type NotificationEvent =
 	| {
 			type: typeof NOTIFICATION_EVENTS.AGENT_INVOKE;
 			data?: AgentInvokeEvent;
+	  }
+	| {
+			type: typeof NOTIFICATION_EVENTS.AGENT_MESSAGE;
+			data?: AgentMessageEvent;
+	  }
+	| {
+			type: typeof NOTIFICATION_EVENTS.COORDINATION_CHANGED;
+			data?: CoordinationChangedEvent;
 	  };
 
 export const createNotificationsRouter = () => {
@@ -48,6 +60,15 @@ export const createNotificationsRouter = () => {
 				const onAgentInvoke = (data: AgentInvokeEvent) => {
 					emit.next({ type: NOTIFICATION_EVENTS.AGENT_INVOKE, data });
 				};
+				const onAgentMessage = (data: AgentMessageEvent) => {
+					emit.next({ type: NOTIFICATION_EVENTS.AGENT_MESSAGE, data });
+				};
+				const onCoordinationChanged = (data: CoordinationChangedEvent) => {
+					emit.next({
+						type: NOTIFICATION_EVENTS.COORDINATION_CHANGED,
+						data,
+					});
+				};
 
 				notificationsEmitter.on(
 					NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
@@ -61,6 +82,14 @@ export const createNotificationsRouter = () => {
 				notificationsEmitter.on(
 					NOTIFICATION_EVENTS.AGENT_INVOKE,
 					onAgentInvoke,
+				);
+				notificationsEmitter.on(
+					NOTIFICATION_EVENTS.AGENT_MESSAGE,
+					onAgentMessage,
+				);
+				notificationsEmitter.on(
+					NOTIFICATION_EVENTS.COORDINATION_CHANGED,
+					onCoordinationChanged,
 				);
 
 				return () => {
@@ -76,6 +105,14 @@ export const createNotificationsRouter = () => {
 					notificationsEmitter.off(
 						NOTIFICATION_EVENTS.AGENT_INVOKE,
 						onAgentInvoke,
+					);
+					notificationsEmitter.off(
+						NOTIFICATION_EVENTS.AGENT_MESSAGE,
+						onAgentMessage,
+					);
+					notificationsEmitter.off(
+						NOTIFICATION_EVENTS.COORDINATION_CHANGED,
+						onCoordinationChanged,
 					);
 				};
 			});

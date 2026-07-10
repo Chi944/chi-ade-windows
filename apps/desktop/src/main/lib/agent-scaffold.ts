@@ -147,6 +147,34 @@ const MEMORY_MD = `# Memory — {{agent_name}}
 - (e.g. \`- debugging → memory/debugging.md\`)
 `;
 
+// One compact, ADE-owned policy avoids stacking Ponytail/Caveman-style hooks on
+// every prompt. The full write-back protocol stays available on disk and is
+// loaded only when an agent needs the detail.
+const CONTEXT_POLICY = `# ADE context and coordination
+
+## Context budget
+- Prefer the smallest correct change. Reuse existing code, the standard library,
+  and installed dependencies before adding abstractions or packages.
+- Report outcomes, evidence, files, tests, blockers, and the next action. Omit
+  repetition, but never abbreviate security guidance, approvals, exact commands,
+  paths, identifiers, or error text whose wording matters.
+- Do not replay raw chat transcripts into another agent.
+
+## Shared work
+- Run \`ade-coord inbox\` when resuming shared work and acknowledge items once
+  incorporated. After context compaction or a restart, run
+  \`ade-coord context "<objective>"\` for a bounded resume packet.
+- Send structured handoffs with \`ade-coord send <workspace-id|all> "<summary>"\`.
+  Include the outcome, changed files, verification, blockers, and next step.
+- Use \`ade-coord remember <key> "<fact>"\` only for stable project facts or
+  decisions. Never store secrets, credentials, raw transcripts, or temporary logs.
+- Provider sessions remain separate: share explicit summaries and artifacts, not
+  Claude/Codex session identifiers or provider authentication state.
+
+For detailed memory maintenance rules, read {{writeback_protocol_path}} only when
+editing persistent memory.
+`;
+
 // Ported from Hermes' `memory` tool description (tools/memory_tool.py
 // MEMORY_SCHEMA — the "WHEN / TARGETS / SKIP / IF FULL" self-curation guidance)
 // and its background-review prompts (agent/background_review.py), adapted to
@@ -281,6 +309,7 @@ A single command or check that proves the skill worked.
 
 const CLAUDE_BRIDGE = `@{{agent_md_path}}
 @{{user_md_path}}
+@{{context_policy_path}}
 <!-- MEMORY.md is loaded via Claude Code native auto-memory (autoMemoryDirectory). -->
 `;
 
@@ -338,7 +367,7 @@ export function regenerateCodexAgentsMd(agentId: string): void {
 		"AGENT.md",
 		"USER.md",
 		"MEMORY.md",
-		".writeback-protocol.md",
+		".context-policy.md",
 	]) {
 		const p = join(memoryDir, file);
 		if (existsSync(p)) {
@@ -393,6 +422,8 @@ export function scaffoldAgentMemory({
 		agent_md_path: join(memoryDir, "AGENT.md"),
 		user_md_path: join(memoryDir, "USER.md"),
 		memory_md_path: join(memoryDir, "MEMORY.md"),
+		context_policy_path: join(memoryDir, ".context-policy.md"),
+		writeback_protocol_path: join(memoryDir, ".writeback-protocol.md"),
 		skills_dir: skillsDir,
 		user_name: resolvedUserName,
 		role_section: roleSection(role, resolvedUserName),
@@ -413,12 +444,25 @@ export function scaffoldAgentMemory({
 		join(memoryDir, ".writeback-protocol.md"),
 		sub(WRITEBACK_PROTOCOL, vars),
 	);
+	writeIfEmpty(
+		join(memoryDir, ".context-policy.md"),
+		sub(CONTEXT_POLICY, vars),
+	);
 	writeIfEmpty(join(skillsDir, "README.md"), sub(SKILLS_README, vars));
 	writeIfEmpty(join(skillsDir, "SKILL.template.md"), sub(SKILL_TEMPLATE, vars));
 
 	// Per-runtime bridge files in the worktree (point each CLI at canonical
 	// memory). Idempotent so we never clobber a bridge the user customized.
-	writeIfEmpty(join(worktreePath, "CLAUDE.md"), sub(CLAUDE_BRIDGE, vars));
+	const claudeBridgePath = join(worktreePath, "CLAUDE.md");
+	writeIfEmpty(claudeBridgePath, sub(CLAUDE_BRIDGE, vars));
+	const contextPolicyImport = `@${vars.context_policy_path}`;
+	const claudeBridge = readFileSync(claudeBridgePath, "utf8");
+	const isManagedBridge =
+		claudeBridge.includes(`@${vars.agent_md_path}`) &&
+		claudeBridge.includes(`@${vars.user_md_path}`);
+	if (isManagedBridge && !claudeBridge.includes(contextPolicyImport)) {
+		appendFileSync(claudeBridgePath, `\n${contextPolicyImport}\n`, "utf8");
+	}
 	const claudeDir = join(worktreePath, ".claude");
 	mkdirSync(claudeDir, { recursive: true });
 	// Session-reflection hook script + settings that wire it as a Stop hook and
@@ -460,7 +504,7 @@ export function scaffoldAgentMemory({
 					join(memoryDir, "AGENT.md"),
 					join(memoryDir, "USER.md"),
 					join(memoryDir, "MEMORY.md"),
-					join(memoryDir, ".writeback-protocol.md"),
+					join(memoryDir, ".context-policy.md"),
 				],
 			},
 			null,

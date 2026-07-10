@@ -23,6 +23,7 @@ import {
 	SETTING_ITEM_ID,
 	type SettingItemId,
 } from "../../../utils/settings-search";
+import { LocalExtensionsSection } from "../LocalExtensionsSection";
 
 interface IntegrationsSettingsProps {
 	visibleItems?: SettingItemId[] | null;
@@ -119,8 +120,9 @@ export function IntegrationsSettings({
 						Connect external services to sync data
 					</p>
 				</div>
-				<p className="text-muted-foreground">
-					You need to be part of an organization to use integrations.
+				<LocalExtensionsSection />
+				<p className="text-sm text-muted-foreground">
+					Join an organization to use cloud-managed integrations.
 				</p>
 			</div>
 		);
@@ -134,6 +136,8 @@ export function IntegrationsSettings({
 					Connect external services to sync data with your organization
 				</p>
 			</div>
+
+			<LocalExtensionsSection />
 
 			<div className="grid gap-4">
 				{showLinear && (

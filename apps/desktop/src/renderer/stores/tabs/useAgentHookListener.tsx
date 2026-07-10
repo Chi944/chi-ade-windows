@@ -54,6 +54,24 @@ export function useAgentHookListener() {
 	electronTrpc.notifications.subscribe.useSubscription(undefined, {
 		onData: (event) => {
 			if (!event.data) return;
+			if (event.type === NOTIFICATION_EVENTS.AGENT_MESSAGE) {
+				void utils.coordination.inbox.invalidate();
+				void utils.coordination.contextPacket.invalidate();
+				return;
+			}
+			if (event.type === NOTIFICATION_EVENTS.COORDINATION_CHANGED) {
+				const input = { workspaceId: event.data.workspaceId };
+				if (event.data.resources.includes("inbox")) {
+					void utils.coordination.inbox.invalidate(input);
+				}
+				if (event.data.resources.includes("memories")) {
+					void utils.coordination.memories.invalidate(input);
+				}
+				if (event.data.resources.includes("context")) {
+					void utils.coordination.contextPacket.invalidate(input);
+				}
+				return;
+			}
 
 			const state = useTabsStore.getState();
 

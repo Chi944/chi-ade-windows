@@ -54,9 +54,20 @@ export interface AgentMessageEvent extends NotificationIds {
 	/** Feed channel (e.g. a Space slug). Defaults to "main". */
 	conversationId: string;
 	agentName: string;
+	projectId?: string;
+	recipientWorkspaceId?: string;
+	kind?: "message" | "handoff" | "decision" | "artifact" | "context";
+	status?: "queued" | "acknowledged";
 	content: string;
+	summary?: string;
+	tokenEstimate?: number;
 	role: "assistant" | "user";
 	metadata?: Record<string, unknown>;
 	/** Epoch ms when the message was created. */
 	createdAt: number;
+}
+
+export interface CoordinationChangedEvent {
+	workspaceId: string;
+	resources: Array<"inbox" | "memories" | "context">;
 }

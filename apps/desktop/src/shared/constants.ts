@@ -30,6 +30,7 @@ export const NOTIFICATION_EVENTS = {
 	TERMINAL_EXIT: "terminal-exit",
 	AGENT_INVOKE: "agent-invoke",
 	AGENT_MESSAGE: "agent-message",
+	COORDINATION_CHANGED: "coordination-changed",
 } as const;
 
 // Development/testing mock values (used when SKIP_ENV_VALIDATION is set)

@@ -16,6 +16,7 @@ import {
 	createOpenCodePlugin,
 	createOpenCodeWrapper,
 } from "./agent-wrappers";
+import { createCoordinationCli } from "./coordination-cli";
 import { createNotifyScript } from "./notify-hook";
 import {
 	BASH_DIR,
@@ -44,6 +45,7 @@ export function setupAgentHooks(): void {
 	cleanupGlobalOpenCodePlugin();
 
 	createNotifyScript();
+	createCoordinationCli();
 	createClaudeWrapper();
 	createCodexWrapper();
 	createOpenCodePlugin();

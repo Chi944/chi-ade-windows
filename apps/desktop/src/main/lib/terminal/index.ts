@@ -1,3 +1,4 @@
+import { getWorkspaceCoordinationToken } from "main/lib/coordination/auth";
 import {
 	getProviderRuntimeEnvironment,
 	setSubscriptionProfileEnvironmentResolver,
@@ -9,7 +10,11 @@ import {
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { ListSessionsResponse } from "main/lib/terminal-host/types";
 import { DaemonTerminalManager, getDaemonTerminalManager } from "./daemon";
-import { prewarmTerminalEnv, setProviderEnvironmentResolver } from "./env";
+import {
+	prewarmTerminalEnv,
+	setCoordinationTokenResolver,
+	setProviderEnvironmentResolver,
+} from "./env";
 import {
 	RECONCILE_STARTUP_TIMEOUT_MS,
 	reconcileWithTimeout,
@@ -21,6 +26,7 @@ import {
 setProviderEnvironmentResolver((context) =>
 	getProviderRuntimeEnvironment(context),
 );
+setCoordinationTokenResolver(getWorkspaceCoordinationToken);
 setSubscriptionProfileEnvironmentResolver((provider, paneId, workspaceId) =>
 	paneId
 		? getSubscriptionProfileEnvironmentForPane(provider, paneId, workspaceId)

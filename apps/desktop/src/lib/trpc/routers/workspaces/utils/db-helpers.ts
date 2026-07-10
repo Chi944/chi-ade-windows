@@ -1,13 +1,18 @@
+import type {
+	SelectProject,
+	SelectWorkspace,
+	SelectWorktree,
+} from "@superset/local-db";
 import {
+	agentMessageReceipts,
+	agentMessages,
 	projects,
-	type SelectProject,
-	type SelectWorkspace,
-	type SelectWorktree,
 	settings,
+	sharedMemories,
 	workspaces,
 	worktrees,
-} from "@superset/local-db";
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+} from "@superset/local-db/schema/tables";
+import { and, desc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 
 import { localDb } from "main/lib/local-db";
 
@@ -260,7 +265,72 @@ export function clearWorkspaceDeletingStatus(workspaceId: string): void {
  * Delete a workspace record from the database.
  */
 export function deleteWorkspace(workspaceId: string): void {
-	localDb.delete(workspaces).where(eq(workspaces.id, workspaceId)).run();
+	deleteWorkspaces([workspaceId]);
+}
+
+/** Delete workspace records and their private coordination data atomically. */
+export function deleteWorkspaces(workspaceIds: string[]): void {
+	if (workspaceIds.length === 0) return;
+
+	localDb.transaction((tx) => {
+		const targetedMessageIds = tx
+			.select({ id: agentMessages.id })
+			.from(agentMessages)
+			.where(inArray(agentMessages.recipientWorkspaceId, workspaceIds))
+			.all()
+			.map(({ id }) => id);
+
+		if (targetedMessageIds.length > 0) {
+			tx.delete(agentMessageReceipts)
+				.where(inArray(agentMessageReceipts.messageId, targetedMessageIds))
+				.run();
+		}
+
+		tx.delete(agentMessageReceipts)
+			.where(inArray(agentMessageReceipts.workspaceId, workspaceIds))
+			.run();
+		tx.delete(agentMessages)
+			.where(inArray(agentMessages.recipientWorkspaceId, workspaceIds))
+			.run();
+		tx.delete(sharedMemories)
+			.where(
+				and(
+					eq(sharedMemories.scope, "workspace"),
+					inArray(sharedMemories.workspaceId, workspaceIds),
+				),
+			)
+			.run();
+		tx.delete(workspaces).where(inArray(workspaces.id, workspaceIds)).run();
+	});
+}
+
+/**
+ * Delete a project record and its coordination data. Foreign keys are disabled
+ * in the local database, so message receipts must be removed explicitly.
+ */
+export function deleteProjectRecord(projectId: string): void {
+	localDb.transaction((tx) => {
+		const projectMessageIds = tx
+			.select({ id: agentMessages.id })
+			.from(agentMessages)
+			.where(eq(agentMessages.projectId, projectId))
+			.all()
+			.map(({ id }) => id);
+
+		if (projectMessageIds.length > 0) {
+			tx.delete(agentMessageReceipts)
+				.where(inArray(agentMessageReceipts.messageId, projectMessageIds))
+				.run();
+		}
+
+		tx.delete(sharedMemories)
+			.where(eq(sharedMemories.projectId, projectId))
+			.run();
+		tx.delete(agentMessages)
+			.where(eq(agentMessages.projectId, projectId))
+			.run();
+		tx.delete(projects).where(eq(projects.id, projectId)).run();
+	});
 }
 
 /**

@@ -12,6 +12,10 @@
 			"types": "./src/schema/index.ts",
 			"default": "./src/schema/index.ts"
 		},
+		"./schema/tables": {
+			"types": "./src/schema/schema.ts",
+			"default": "./src/schema/schema.ts"
+		},
 		"./schema/zod": {
 			"types": "./src/schema/zod.ts",
 			"default": "./src/schema/zod.ts"

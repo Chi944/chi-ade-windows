@@ -114,7 +114,9 @@ function dispatch(eventType, sessionId = "") {
     console.error(\`[notify-hook] event=\${eventType} sessionId=\${sessionId} paneId=\${process.env.SUPERSET_PANE_ID || ""} tabId=\${process.env.SUPERSET_TAB_ID || ""} workspaceId=\${process.env.SUPERSET_WORKSPACE_ID || ""}\`);
   }
 
-  const request = http.get(url, (response) => {
+  const request = http.get(url, {
+    headers: { "X-ADE-Token": process.env.ADE_COORDINATION_TOKEN || "" },
+  }, (response) => {
     response.resume();
     response.on("end", () => {
       if (debug) console.error(\`[notify-hook] dispatched status=\${response.statusCode || 0}\`);

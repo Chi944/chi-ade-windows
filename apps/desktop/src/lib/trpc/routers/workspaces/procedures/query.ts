@@ -64,6 +64,7 @@ function collectAgentFiles(agentId: string): AgentFileEntry[] {
 		"AGENT.md",
 		"USER.md",
 		"MEMORY.md",
+		".context-policy.md",
 		".writeback-protocol.md",
 	]) {
 		const abs = join(memoryDir, name);

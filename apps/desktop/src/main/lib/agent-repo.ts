@@ -56,6 +56,13 @@ export async function resolveExistingAgentRepo(
 	try {
 		const gitRoot = (await git.revparse(["--show-toplevel"])).trim();
 		worktreePath = realpathSync(gitRoot);
+		const normalizedSelected =
+			process.platform === "win32" ? selectedPath.toLowerCase() : selectedPath;
+		const normalizedRoot =
+			process.platform === "win32" ? worktreePath.toLowerCase() : worktreePath;
+		if (normalizedRoot !== normalizedSelected) {
+			throw new Error("Selected path is only inside a repository");
+		}
 	} catch {
 		throw new Error(
 			`Path is not a Git repository or worktree: ${selectedPath}`,

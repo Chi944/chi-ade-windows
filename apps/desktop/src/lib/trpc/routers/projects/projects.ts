@@ -10,7 +10,7 @@ import {
 	workspaces,
 } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, isNull, not } from "drizzle-orm";
+import { and, desc, eq, isNull, not } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { track } from "main/lib/analytics";
@@ -28,6 +28,8 @@ import { resolveDefaultEditor } from "../external";
 import {
 	activateProject,
 	clearWorkspaceDeletingStatus,
+	deleteProjectRecord,
+	deleteWorkspaces,
 	getBranchWorkspace,
 	markWorkspaceAsDeleting,
 	setLastActiveWorkspace,
@@ -712,10 +714,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 							};
 						} catch {
 							// Directory is missing - remove the stale project record and continue with clone
-							localDb
-								.delete(projects)
-								.where(eq(projects.id, existingProject.id))
-								.run();
+							deleteProjectRecord(existingProject.id);
 						}
 					}
 
@@ -1023,12 +1022,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 					const closedWorkspaceIds = projectWorkspaces.map((w) => w.id);
 
-					if (closedWorkspaceIds.length > 0) {
-						localDb
-							.delete(workspaces)
-							.where(inArray(workspaces.id, closedWorkspaceIds))
-							.run();
-					}
+					deleteWorkspaces(closedWorkspaceIds);
 					for (const workspace of projectWorkspaces) {
 						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
 						const cleanupResult = await terminal.killByWorkspaceId(
