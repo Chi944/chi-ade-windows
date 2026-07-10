@@ -158,7 +158,7 @@ export function useTerminalStream({
 				handleTerminalExit(event.exitCode, xterm, event.reason);
 			} else if (event.type === "disconnect") {
 				setConnectionError(
-					event.reason || "Connection to terminal daemon lost",
+					event.reason || "Connection to terminal service lost",
 				);
 			} else if (event.type === "error") {
 				handleStreamError(event, xterm);

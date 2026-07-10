@@ -18,7 +18,7 @@ import {
 	getSshTunnelManager,
 	type SshTunnelStatus,
 } from "main/lib/remote/tunnel-manager";
-import { getDaemonTerminalManager } from "main/lib/terminal";
+import { getServiceTerminalManager } from "main/lib/terminal";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 
@@ -151,7 +151,7 @@ async function assertNoLiveWorkspaceTerminals(
 ): Promise<void> {
 	if (workspaceIds.length === 0) return;
 	const workspaceIdSet = new Set(workspaceIds);
-	const { sessions } = await getDaemonTerminalManager().listDaemonSessions();
+	const { sessions } = await getServiceTerminalManager().listServiceSessions();
 	if (
 		sessions.some(
 			(session) =>

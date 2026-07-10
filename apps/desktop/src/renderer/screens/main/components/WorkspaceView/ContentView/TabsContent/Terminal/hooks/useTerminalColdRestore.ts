@@ -48,7 +48,7 @@ export interface UseTerminalColdRestoreReturn {
  * Hook to manage cold restore (reboot recovery) functionality.
  *
  * Handles:
- * - Retry connection after daemon loss
+ * - Retry connection after service loss
  * - Starting new shell from restored scrollback
  * - Managing cold restore overlay state
  */

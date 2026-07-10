@@ -1,13 +1,13 @@
 /**
- * Terminal Host Daemon Protocol Types
+ * Terminal Host Service Protocol Types
  *
  * This file defines the IPC protocol between the Electron main process
- * and the terminal host daemon. Changes must be additive-only for
+ * and the terminal host service. Changes must be additive-only for
  * backwards compatibility.
  */
 
 // Protocol version - increment for breaking changes
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 // =============================================================================
 // Mode Tracking
@@ -153,7 +153,7 @@ export interface TerminalLaunchSpec {
 // =============================================================================
 
 /**
- * Hello request - initial handshake with daemon
+ * Hello request - initial handshake with service
  */
 export interface HelloRequest {
 	token: string;
@@ -166,8 +166,8 @@ export interface HelloRequest {
 
 export interface HelloResponse {
 	protocolVersion: number;
-	daemonVersion: string;
-	daemonPid: number;
+	serviceVersion: string;
+	servicePid: number;
 }
 
 /**
@@ -274,7 +274,7 @@ export interface ClearScrollbackRequest {
 }
 
 /**
- * Shutdown the daemon gracefully
+ * Shutdown the service gracefully
  */
 export interface ShutdownRequest {
 	/** Optional: Kill all sessions before shutdown (default: false) */
@@ -286,7 +286,7 @@ export interface ShutdownRequest {
 // =============================================================================
 
 /**
- * Request message format (client -> daemon)
+ * Request message format (client -> service)
  */
 export interface IpcRequest {
 	id: string;
@@ -295,7 +295,7 @@ export interface IpcRequest {
 }
 
 /**
- * Success response format (daemon -> client)
+ * Success response format (service -> client)
  */
 export interface IpcSuccessResponse {
 	id: string;
@@ -304,7 +304,7 @@ export interface IpcSuccessResponse {
 }
 
 /**
- * Error response format (daemon -> client)
+ * Error response format (service -> client)
  */
 export interface IpcErrorResponse {
 	id: string;
@@ -318,7 +318,7 @@ export interface IpcErrorResponse {
 export type IpcResponse = IpcSuccessResponse | IpcErrorResponse;
 
 /**
- * Event message format (daemon -> client, unsolicited)
+ * Event message format (service -> client, unsolicited)
  */
 export interface IpcEvent {
 	type: "event";

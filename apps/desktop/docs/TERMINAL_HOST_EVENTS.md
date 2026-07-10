@@ -1,10 +1,10 @@
 # Terminal Host Event Semantics
 
-This document describes the event delivery model for the Terminal Host daemon protocol.
+This document describes the event delivery model for the Terminal Host service protocol.
 
 ## Event Types
 
-The daemon emits three event types to attached clients:
+The service emits three event types to attached clients:
 
 | Event   | Payload                             | Description                              |
 |---------|-------------------------------------|------------------------------------------|
@@ -98,7 +98,7 @@ The subprocess flushes all buffered output before sending the exit frame, so cli
 
 ## Renderer Integration Notes (tRPC)
 
-The renderer does **not** talk to the daemon directly. It consumes terminal output via the `terminal.stream` tRPC subscription (`apps/desktop/src/lib/trpc/routers/terminal/terminal.ts`), which bridges the main-process `TerminalManager`/`DaemonTerminalManager` EventEmitter.
+The renderer does **not** talk to the service directly. It consumes terminal output via the `terminal.stream` tRPC subscription (`apps/desktop/src/lib/trpc/routers/terminal/terminal.ts`), which bridges the main-process `TerminalManager`/`ServiceTerminalManager` EventEmitter.
 
 ### `exit` must not complete the subscription
 
@@ -108,7 +108,7 @@ Treat `exit` as a **state transition**, not a terminal end-of-stream:
 - `@trpc/react-query` does **not** auto-resubscribe after a subscription completes unless the input/key changes.
 - We reuse the same `paneId` across restarts / cold restore (new session, same pane).
 
-So the server-side observable must **not** call `emit.complete()` on `exit`, otherwise the pane becomes permanently detached from output (`listeners=0` in `DaemonTerminalManager` logs) even after a new shell is started.
+So the server-side observable must **not** call `emit.complete()` on `exit`, otherwise the pane becomes permanently detached from output (`listeners=0` in `ServiceTerminalManager` logs) even after a new shell is started.
 
 ### Cold restore overlay: drop stale queued events
 

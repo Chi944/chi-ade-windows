@@ -13,11 +13,11 @@ Superset Desktop is an Electron app that provides:
 - “Changes” UX (diff/status/staging) tied to those workspaces.
 - Agent/CLI integrations that surface lifecycle/status in the UI (e.g. completion events, indicators).
 
-Today, terminals can run locally and (optionally) persist via a background “terminal host” daemon. In the future, we want to support executing terminals in the cloud / on a remote runner while keeping the same “Superset UX primitives” (worktrees, changes/diff, agent status, etc.).
+Today, terminals can run locally and (optionally) persist via a background “terminal host” service. In the future, we want to support executing terminals in the cloud / on a remote runner while keeping the same “Superset UX primitives” (worktrees, changes/diff, agent status, etc.).
 
 ## Why we’re asking for review now
 
-We have a working implementation of terminal persistence, but it adds a lot of complexity and “mode branching” (daemon vs in-process) across layers (main process, tRPC router, renderer).
+We have a working implementation of terminal persistence, but it adds a lot of complexity and “mode branching” (service vs in-process) across layers (main process, tRPC router, renderer).
 
 We’re planning a rewrite/refactor to:
 
@@ -29,9 +29,9 @@ We’re planning a rewrite/refactor to:
 
 - Electron main process owns terminal backends:
   - **In-process backend:** PTYs owned directly in main process.
-  - **Daemon backend:** PTYs owned by a separate “terminal host” process; main connects via a local socket.
+  - **Service backend:** PTYs owned by a separate “terminal host” process; main connects via a local socket.
 - Renderer talks to main via tRPC (IPC), including a terminal stream subscription.
-- Terminals have “attach/detach” semantics and “cold restore” (disk-backed scrollback restore) for daemon persistence.
+- Terminals have “attach/detach” semantics and “cold restore” (disk-backed scrollback restore) for service persistence.
 
 ## Known constraints (technical + product)
 
@@ -73,7 +73,7 @@ We have a separate cloud plan doc that describes the intended product direction 
 
 - If you were designing this from scratch, what are the natural layers/modules you would define?
 - Where should backend selection happen so it doesn’t leak across the codebase?
-- How would you structure the “terminal runtime” so it can support local + daemon + future remote backends without constant branching?
+- How would you structure the “terminal runtime” so it can support local + service + future remote backends without constant branching?
 - Should “terminal runtime” be its own concept, or should it be a sub-component of a broader “workspace runtime/provider”? Where should the seam be?
 
 ### 2) Contracts, identity, and lifecycle
@@ -83,7 +83,7 @@ We have a separate cloud plan doc that describes the intended product direction 
   - multi-client / multi-pane viewing the same backend session
 - What lifecycle state machine would you define for a session (running/exited/disposed/etc.) and for the output stream?
 - How would you make operations idempotent and race-safe (double-create, attach-after-exit, exit-vs-tail-output, detach/reattach ordering)?
-- What does a “clean” detach/reattach contract look like across local/daemon/remote backends?
+- What does a “clean” detach/reattach contract look like across local/service/remote backends?
 
 ### 3) Event delivery model (streaming)
 
@@ -119,7 +119,7 @@ We have a separate cloud plan doc that describes the intended product direction 
 
 ## Reference docs + files to attach (copy/paste)
 
-Below is a curated set of files you can paste into Slack for context. If you only read a few, start with the plan + the terminal router + the daemon manager.
+Below is a curated set of files you can paste into Slack for context. If you only read a few, start with the plan + the terminal router + the service manager.
 
 ### Primary
 
@@ -128,16 +128,16 @@ Below is a curated set of files you can paste into Slack for context. If you onl
 2. `docs/CLOUD_WORKSPACE_PLAN.md`
    - Product direction for cloud workspaces / remote execution (high level).
 
-### Terminal runtime + daemon backend
+### Terminal runtime + service backend
 
 3. `apps/desktop/src/main/lib/terminal/manager.ts`
    - In-process PTY backend (local).
-4. `apps/desktop/src/main/lib/terminal/daemon-manager.ts`
-   - Daemon-backed backend + cold restore logic (local persistence).
+4. `apps/desktop/src/main/lib/terminal/service/service-manager.ts`
+   - Service-backed backend + cold restore logic (local persistence).
 5. `apps/desktop/src/main/lib/terminal-host/client.ts`
-   - Main-process client that talks to the terminal host daemon.
+   - Main-process client that talks to the terminal host service.
 6. `apps/desktop/src/main/terminal-host/index.ts`
-   - Terminal host daemon entry point.
+   - Terminal host service entry point.
 7. `apps/desktop/docs/TERMINAL_HOST_EVENTS.md`
    - Event/protocol notes for terminal host interactions.
 

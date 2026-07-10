@@ -757,7 +757,7 @@ describe("env", () => {
 				const expected = getAgentCodexHome(baseParams.workspaceId);
 				expect(result.CODEX_HOME).toBe(expected);
 				expect(result.CODEX_HOME).toMatch(/[\\/]\.codex/);
-				// The terminal-host daemon re-applies buildSafeEnv before the pty
+				// The terminal-host service re-applies buildSafeEnv before the pty
 				// spawn; CODEX_HOME must survive it to reach the codex process.
 				expect(buildSafeEnv(result).CODEX_HOME).toBe(expected);
 			});

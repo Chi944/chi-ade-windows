@@ -14,8 +14,8 @@ import {
 import { localDb } from "main/lib/local-db";
 import { menuEmitter } from "main/lib/menu-events";
 import {
-	restartDaemon as restartDaemonShared,
-	tryListExistingDaemonSessions,
+	restartService as restartServiceShared,
+	tryListExistingServiceSessions,
 } from "main/lib/terminal";
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { ListSessionsResponse } from "main/lib/terminal-host/types";
@@ -210,7 +210,7 @@ function buildSessionsSubmenu(
 }
 
 async function quitApp(): Promise<void> {
-	const { sessions } = await tryListExistingDaemonSessions();
+	const { sessions } = await tryListExistingServiceSessions();
 	const hasActiveSessions = sessions.some((s) => s.isAlive);
 
 	if (!hasActiveSessions) {
@@ -226,7 +226,7 @@ async function quitApp(): Promise<void> {
 		title: "Quit ADE?",
 		message: "Quit ADE?",
 		detail:
-			"Keep sessions running in the background, or kill all sessions and shut down the daemon?",
+			"Keep sessions running in the background, or kill all sessions and shut down the service?",
 	});
 
 	if (response === 0) {
@@ -234,7 +234,7 @@ async function quitApp(): Promise<void> {
 	}
 
 	if (response === 2) {
-		await restartDaemonShared();
+		await restartServiceShared();
 	}
 
 	app.quit();
@@ -243,7 +243,7 @@ async function quitApp(): Promise<void> {
 async function updateTrayMenu(): Promise<void> {
 	if (!tray) return;
 
-	const { sessions } = await tryListExistingDaemonSessions();
+	const { sessions } = await tryListExistingServiceSessions();
 	const sessionCount = sessions.filter((s) => s.isAlive).length;
 
 	const sessionsSubmenu = buildSessionsSubmenu(sessions);

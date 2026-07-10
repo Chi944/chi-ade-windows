@@ -35,7 +35,7 @@ Codex CLI is OpenAI's terminal-based coding agent. Superset is an orchestration 
 
 ## What Is Superset?
 
-Superset is a desktop terminal that orchestrates CLI-based coding agents in parallel across isolated Git worktrees. Each agent — Codex, Claude Code, Aider, OpenCode, or any CLI process — gets its own branch and working directory. A persistent daemon manages sessions so they survive app restarts and crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
+Superset is a desktop terminal that orchestrates CLI-based coding agents in parallel across isolated Git worktrees. Each agent — Codex, Claude Code, Aider, OpenCode, or any CLI process — gets its own branch and working directory. A persistent service manages sessions so they survive app restarts and crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
 
 ---
 
@@ -65,7 +65,7 @@ Codex CLI only works with OpenAI's models. Superset doesn't care which agent you
 
 ### Session Persistence
 
-Codex CLI sessions end when the terminal closes. Superset's persistent daemon keeps sessions alive across crashes and restarts. Start a long-running Codex task, close your laptop, and it's still running when you come back.
+Codex CLI sessions end when the terminal closes. Superset's persistent service keeps sessions alive across crashes and restarts. Start a long-running Codex task, close your laptop, and it's still running when you come back.
 
 ---
 

@@ -16,7 +16,7 @@ import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
 import { localDb } from "main/lib/local-db";
 import { buildSshTerminalLaunch } from "main/lib/remote/ssh";
 import { reconcileSshTunnels } from "main/lib/remote/tunnel-manager";
-import { restartDaemon as restartDaemonShared } from "main/lib/terminal";
+import { restartService as restartServiceShared } from "main/lib/terminal";
 import {
 	TERMINAL_SESSION_KILLED_MESSAGE,
 	TerminalKilledError,
@@ -45,7 +45,7 @@ const SAFE_ID = z
 	);
 
 /**
- * Terminal router using daemon-backed terminal runtime
+ * Terminal router using service-backed terminal runtime
  * Sessions are keyed by paneId and linked to workspaces for cwd resolution
  *
  * Environment variables set for terminal sessions:
@@ -244,7 +244,7 @@ export const createTerminalRouter = () => {
 						agentSessionId: result.agentSessionId,
 						resumeAvailable: result.resumeAvailable,
 						transportKind: result.transportKind,
-						// Include snapshot for daemon mode (renderer can use for rehydration)
+						// Include snapshot for service mode (renderer can use for rehydration)
 						snapshot: result.snapshot,
 					};
 				} catch (error) {
@@ -400,12 +400,12 @@ export const createTerminalRouter = () => {
 				await terminal.clearScrollback(input);
 			}),
 
-		listDaemonSessions: publicProcedure.query(async () => {
+		listServiceSessions: publicProcedure.query(async () => {
 			const { sessions } = await terminal.management.listSessions();
 			return { sessions };
 		}),
 
-		killAllDaemonSessions: publicProcedure.mutation(async () => {
+		killAllServiceSessions: publicProcedure.mutation(async () => {
 			const client = getTerminalHostClient();
 			const before = await terminal.management.listSessions();
 			const visibleSessions = before.sessions.filter(
@@ -413,7 +413,7 @@ export const createTerminalRouter = () => {
 			);
 			const beforeIds = visibleSessions.map((session) => session.sessionId);
 			console.log(
-				"[killAllDaemonSessions] Before kill:",
+				"[killAllServiceSessions] Before kill:",
 				beforeIds.length,
 				"sessions",
 				beforeIds,
@@ -427,7 +427,7 @@ export const createTerminalRouter = () => {
 					if (result.status === "rejected") {
 						const paneId = beforeIds[index];
 						logger.error(
-							`[killAllDaemonSessions] terminal.kill failed for paneId=${paneId}`,
+							`[killAllServiceSessions] terminal.kill failed for paneId=${paneId}`,
 							{
 								paneId,
 								reason: result.reason,
@@ -453,7 +453,7 @@ export const createTerminalRouter = () => {
 
 				if (remainingCount > 0) {
 					console.log(
-						`[killAllDaemonSessions] Retry ${i + 1}/${MAX_RETRIES}: ${remainingCount} sessions still alive`,
+						`[killAllServiceSessions] Retry ${i + 1}/${MAX_RETRIES}: ${remainingCount} sessions still alive`,
 						afterIds,
 					);
 				}
@@ -461,7 +461,7 @@ export const createTerminalRouter = () => {
 
 			const killedCount = visibleSessions.length - remainingCount;
 			console.log(
-				"[killAllDaemonSessions] Complete:",
+				"[killAllServiceSessions] Complete:",
 				killedCount,
 				"killed,",
 				remainingCount,
@@ -472,7 +472,7 @@ export const createTerminalRouter = () => {
 			return { killedCount, remainingCount };
 		}),
 
-		killDaemonSessionsForWorkspace: publicProcedure
+		killServiceSessionsForWorkspace: publicProcedure
 			.input(z.object({ workspaceId: z.string() }))
 			.mutation(async ({ input }) => {
 				const { sessions } = await terminal.management.listSessions();
@@ -489,7 +489,7 @@ export const createTerminalRouter = () => {
 						if (result.status === "rejected") {
 							const paneId = paneIds[index];
 							logger.error(
-								`[killDaemonSessionsForWorkspace] terminal.kill failed for paneId=${paneId}`,
+								`[killServiceSessionsForWorkspace] terminal.kill failed for paneId=${paneId}`,
 								{
 									paneId,
 									workspaceId: input.workspaceId,
@@ -508,9 +508,9 @@ export const createTerminalRouter = () => {
 			return { success: true };
 		}),
 
-		/** Restart daemon to recover from stuck state. Kills all sessions. */
-		restartDaemon: publicProcedure.mutation(async () => {
-			const result = await restartDaemonShared();
+		/** Restart service to recover from stuck state. Kills all sessions. */
+		restartService: publicProcedure.mutation(async () => {
+			const result = await restartServiceShared();
 			await reconcileSshTunnels();
 			return result;
 		}),

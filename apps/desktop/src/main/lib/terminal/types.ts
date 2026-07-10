@@ -51,14 +51,14 @@ export interface SessionResult {
 	isNew: boolean;
 	/**
 	 * Initial terminal content (ANSI).
-	 * In daemon mode, this is empty - prefer `snapshot.snapshotAnsi` when available.
-	 * In non-daemon mode, this contains the recovered scrollback content.
+	 * In service mode, this is empty - prefer `snapshot.snapshotAnsi` when available.
+	 * In non-service mode, this contains the recovered scrollback content.
 	 */
 	scrollback: string;
 	wasRecovered: boolean;
 	/**
 	 * True if this is a cold restore from disk after reboot/crash.
-	 * The daemon didn't have this session, but we found scrollback on disk
+	 * The service didn't have this session, but we found scrollback on disk
 	 * with an unclean shutdown (meta.json has no endedAt).
 	 * UI should show "Session Restored" banner and "Start Shell" action.
 	 */
@@ -81,7 +81,7 @@ export interface SessionResult {
 	resumeAvailable?: boolean;
 	/** Non-local transport selected by the main process for this pane. */
 	transportKind?: TerminalTransportKind;
-	/** Snapshot from daemon (if using daemon mode) */
+	/** Snapshot from service (if using service mode) */
 	snapshot?: {
 		snapshotAnsi: string;
 		rehydrateSequences: string;

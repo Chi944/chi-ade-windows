@@ -25,8 +25,8 @@ import {
 	sendCoordinationMessage,
 	upsertSharedMemory,
 } from "../coordination/service";
-import { getDaemonTerminalManager } from "../terminal/daemon";
 import { HOOK_PROTOCOL_VERSION } from "../terminal/env";
+import { getServiceTerminalManager } from "../terminal/service";
 import { mapEventType } from "./map-event-type";
 import {
 	isWorkspaceTargetAllowed,
@@ -278,7 +278,7 @@ app.get("/hook/complete", (req, res) => {
 		runtime &&
 		isValidAgentSessionId(runtime, normalizedSessionId)
 	) {
-		void getDaemonTerminalManager()
+		void getServiceTerminalManager()
 			.persistAgentSessionFromHook({
 				workspaceId: authorizationWorkspaceId,
 				paneId: resolvedPaneId,

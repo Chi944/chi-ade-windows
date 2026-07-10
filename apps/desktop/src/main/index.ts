@@ -39,7 +39,7 @@ import {
 } from "./lib/subscription-profiles";
 import {
 	prewarmTerminalRuntime,
-	reconcileDaemonSessions,
+	reconcileServiceSessions,
 } from "./lib/terminal";
 import { disposeTray, initTray } from "./lib/tray";
 import { MainWindow } from "./windows/main";
@@ -300,8 +300,8 @@ if (!gotTheLock) {
 		await loadWebviewBrowserExtension();
 
 		// Must happen before renderer restore runs
-		console.log("[main] boot: reconcileDaemonSessions…");
-		await reconcileDaemonSessions();
+		console.log("[main] boot: reconcileServiceSessions…");
+		await reconcileServiceSessions();
 		void reconcileSshTunnels().catch((error) => {
 			console.warn("[main] Failed to reconcile managed SSH tunnels:", error);
 		});

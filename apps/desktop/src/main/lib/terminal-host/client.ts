@@ -1,9 +1,9 @@
 /**
- * Terminal Host Daemon Client
+ * Terminal Host Service Client
  *
  * Client library for the Electron main process to communicate with
- * the terminal host daemon. Handles:
- * - Daemon lifecycle (spawning if not running)
+ * the terminal host service. Handles:
+ * - Service lifecycle (spawning if not running)
  * - Socket connection and reconnection
  * - Request/response framing
  * - Event streaming
@@ -81,7 +81,7 @@ const SPAWN_LOCK_TIMEOUT_MS = 10000; // Max time to hold spawn lock
 
 // Queue limits
 const MAX_NOTIFY_QUEUE_BYTES = 2_000_000; // 2MB cap to prevent OOM
-const MAX_DAEMON_LOG_BYTES = 5 * 1024 * 1024; // 5MB cap for daemon.log
+const MAX_SERVICE_LOG_BYTES = 5 * 1024 * 1024; // 5MB cap for service.log
 
 function socketEndpointMayExist(): boolean {
 	return TERMINAL_HOST_USES_NAMED_PIPE || existsSync(SOCKET_PATH);
@@ -153,7 +153,7 @@ export interface TerminalHostClientEvents {
 }
 
 /**
- * Client for communicating with the terminal host daemon.
+ * Client for communicating with the terminal host service.
  * Emits events for terminal data and exit.
  */
 export class TerminalHostClient extends EventEmitter {
@@ -190,7 +190,7 @@ export class TerminalHostClient extends EventEmitter {
 
 	/**
 	 * Ensure we have a connected, authenticated socket.
-	 * Spawns daemon if needed.
+	 * Spawns service if needed.
 	 */
 	async ensureConnected(): Promise<void> {
 		// Already connected - fast path (no logging to avoid noise on every API call)
@@ -229,7 +229,7 @@ export class TerminalHostClient extends EventEmitter {
 					} else if (Date.now() - startTime > WAIT_TIMEOUT_MS) {
 						reject(
 							new Error(
-								"Timeout waiting for connection - daemon may be unresponsive",
+								"Timeout waiting for connection - service may be unresponsive",
 							),
 						);
 					} else {
@@ -243,7 +243,7 @@ export class TerminalHostClient extends EventEmitter {
 		this.connectionState = ConnectionState.CONNECTING;
 		this.disconnectArmed = false;
 		if (DEBUG_CLIENT) {
-			console.log("[TerminalHostClient] Connecting to daemon...");
+			console.log("[TerminalHostClient] Connecting to service...");
 		}
 
 		try {
@@ -259,9 +259,9 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Try to connect and authenticate to an existing daemon without spawning.
-	 * Returns true if successfully connected and authenticated, false if no daemon running.
-	 * This is useful for cleanup operations that should only act on existing daemons.
+	 * Try to connect and authenticate to an existing service without spawning.
+	 * Returns true if successfully connected and authenticated, false if no service running.
+	 * This is useful for cleanup operations that should only act on existing services.
 	 */
 	async tryConnectAndAuthenticate(): Promise<boolean> {
 		// Already connected and authenticated (control socket is sufficient here)
@@ -293,25 +293,25 @@ export class TerminalHostClient extends EventEmitter {
 
 	/**
 	 * Connect and authenticate both control + stream sockets.
-	 * Handles protocol mismatch by shutting down a legacy daemon and retrying once.
+	 * Handles protocol mismatch by shutting down a legacy service and retrying once.
 	 */
 	private async connectAndAuthenticate(): Promise<void> {
 		for (let attempt = 0; attempt < 2; attempt++) {
 			if (attempt === 0 && process.env.NODE_ENV === "development") {
-				if (this.isDaemonScriptStale()) {
+				if (this.isServiceScriptStale()) {
 					if (DEBUG_CLIENT) {
 						console.log(
-							"[TerminalHostClient] Daemon script rebuilt, restarting...",
+							"[TerminalHostClient] Service script rebuilt, restarting...",
 						);
 					}
-					this.killDaemonFromPidFile();
-					await this.waitForDaemonShutdown();
+					this.killServiceFromPidFile();
+					await this.waitForServiceShutdown();
 				}
 			}
 
 			let controlConnected = await this.tryConnectControl();
 			if (!controlConnected) {
-				await this.spawnDaemon();
+				await this.spawnService();
 				controlConnected = await this.tryConnectControl();
 				if (!controlConnected) {
 					throw new Error("Failed to connect control socket after spawn");
@@ -325,13 +325,13 @@ export class TerminalHostClient extends EventEmitter {
 				if (attempt === 0) {
 					if (DEBUG_CLIENT) {
 						console.log(
-							"[TerminalHostClient] Auth token missing, restarting daemon...",
+							"[TerminalHostClient] Auth token missing, restarting service...",
 						);
 					}
 					this.resetConnectionState({ emitDisconnected: false });
-					this.killDaemonFromPidFile();
-					await this.waitForDaemonShutdown();
-					await this.spawnDaemon();
+					this.killServiceFromPidFile();
+					await this.waitForServiceShutdown();
+					await this.spawnService();
 					continue;
 				}
 				throw error;
@@ -343,13 +343,13 @@ export class TerminalHostClient extends EventEmitter {
 				if (attempt === 0 && this.isProtocolMismatchError(error)) {
 					if (DEBUG_CLIENT) {
 						console.log(
-							"[TerminalHostClient] Protocol mismatch detected, shutting down legacy daemon...",
+							"[TerminalHostClient] Protocol mismatch detected, shutting down legacy service...",
 						);
 					}
 					this.resetConnectionState({ emitDisconnected: false });
-					await this.shutdownLegacyDaemon();
-					await this.waitForDaemonShutdown();
-					await this.spawnDaemon();
+					await this.shutdownLegacyService();
+					await this.waitForServiceShutdown();
+					await this.spawnService();
 					continue;
 				}
 				throw error;
@@ -369,17 +369,17 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Check if the daemon script has been rebuilt since the daemon was spawned.
-	 * Only used in development mode to detect stale daemons.
+	 * Check if the service script has been rebuilt since the service was spawned.
+	 * Only used in development mode to detect stale services.
 	 */
-	private isDaemonScriptStale(): boolean {
+	private isServiceScriptStale(): boolean {
 		try {
 			if (!existsSync(SCRIPT_MTIME_PATH)) {
 				return false; // No mtime file = first run or manual cleanup
 			}
 
 			const savedMtime = readFileSync(SCRIPT_MTIME_PATH, "utf-8").trim();
-			const scriptPath = this.getDaemonScriptPath();
+			const scriptPath = this.getServiceScriptPath();
 
 			if (!existsSync(scriptPath)) {
 				return false;
@@ -393,11 +393,11 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Save the daemon script's mtime to detect rebuilds.
+	 * Save the service script's mtime to detect rebuilds.
 	 */
-	private saveDaemonScriptMtime(): void {
+	private saveServiceScriptMtime(): void {
 		try {
-			const scriptPath = this.getDaemonScriptPath();
+			const scriptPath = this.getServiceScriptPath();
 			if (!existsSync(scriptPath)) {
 				return;
 			}
@@ -409,7 +409,7 @@ export class TerminalHostClient extends EventEmitter {
 		}
 	}
 
-	private killDaemonFromPidFile(): void {
+	private killServiceFromPidFile(): void {
 		if (!existsSync(PID_PATH)) return;
 
 		try {
@@ -450,7 +450,7 @@ export class TerminalHostClient extends EventEmitter {
 					resolved = true;
 					clearTimeout(timeout);
 					this.controlSocket = socket;
-					// Don't keep Electron alive just for daemon connection
+					// Don't keep Electron alive just for service connection
 					socket.unref();
 					this.setupControlSocketHandlers();
 					resolve(true);
@@ -503,7 +503,7 @@ export class TerminalHostClient extends EventEmitter {
 						this.handleDisconnect();
 					});
 					this.streamSocket = socket;
-					// Don't keep Electron alive just for daemon connection
+					// Don't keep Electron alive just for service connection
 					socket.unref();
 					resolve(true);
 				}
@@ -585,7 +585,7 @@ export class TerminalHostClient extends EventEmitter {
 				}
 			}
 		} else if (message.type === "event") {
-			// Event from daemon - narrow payload based on type field
+			// Event from service - narrow payload based on type field
 			const { sessionId, payload } = message;
 			const eventPayload = payload as
 				| TerminalDataEvent
@@ -675,7 +675,7 @@ export class TerminalHostClient extends EventEmitter {
 
 	private readAuthToken(): string {
 		if (!existsSync(TOKEN_PATH)) {
-			throw new Error("Auth token not found - daemon may not be running");
+			throw new Error("Auth token not found - service may not be running");
 		}
 
 		return readFileSync(TOKEN_PATH, "utf-8").trim();
@@ -701,7 +701,7 @@ export class TerminalHostClient extends EventEmitter {
 
 		if (response.protocolVersion !== PROTOCOL_VERSION) {
 			throw new Error(
-				`Protocol version mismatch: client=${PROTOCOL_VERSION}, daemon=${response.protocolVersion}`,
+				`Protocol version mismatch: client=${PROTOCOL_VERSION}, service=${response.protocolVersion}`,
 			);
 		}
 
@@ -725,7 +725,7 @@ export class TerminalHostClient extends EventEmitter {
 
 		if (response.protocolVersion !== PROTOCOL_VERSION) {
 			throw new Error(
-				`Protocol version mismatch: client=${PROTOCOL_VERSION}, daemon=${response.protocolVersion}`,
+				`Protocol version mismatch: client=${PROTOCOL_VERSION}, service=${response.protocolVersion}`,
 			);
 		}
 
@@ -735,12 +735,12 @@ export class TerminalHostClient extends EventEmitter {
 	/**
 	 * Send a request on the stream socket and wait for response.
 	 *
-	 * ORDERING ASSUMPTION: The daemon's hello handler writes the response synchronously
+	 * ORDERING ASSUMPTION: The service's hello handler writes the response synchronously
 	 * and only broadcasts to authenticated/registered stream sockets, so the response
 	 * is guaranteed to be the first frame. Any additional data in the same TCP read
 	 * (e.g., events that arrive immediately after auth) is fed to streamParser.
 	 *
-	 * If the daemon ever changes to emit events before the hello response, this method
+	 * If the service ever changes to emit events before the hello response, this method
 	 * would need to parse NDJSON frames in a loop until the matching id is found.
 	 */
 	private async sendRequestOnStream<T>({
@@ -809,7 +809,7 @@ export class TerminalHostClient extends EventEmitter {
 		});
 	}
 
-	private async shutdownLegacyDaemon({
+	private async shutdownLegacyService({
 		killSessions = true,
 	}: {
 		killSessions?: boolean;
@@ -826,7 +826,7 @@ export class TerminalHostClient extends EventEmitter {
 				if (settled) return;
 				settled = true;
 				socket.destroy();
-				reject(new Error("Legacy daemon connect timeout"));
+				reject(new Error("Legacy service connect timeout"));
 			}, CONNECT_TIMEOUT_MS);
 
 			socket.on("connect", () => {
@@ -904,7 +904,7 @@ export class TerminalHostClient extends EventEmitter {
 		});
 	}
 
-	private async waitForDaemonShutdown(): Promise<void> {
+	private async waitForServiceShutdown(): Promise<void> {
 		const startTime = Date.now();
 		const timeoutMs = 2000;
 
@@ -916,11 +916,11 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	// ===========================================================================
-	// Daemon Spawning
+	// Service Spawning
 	// ===========================================================================
 
 	/**
-	 * Check if there's an active daemon listening on the socket.
+	 * Check if there's an active service listening on the socket.
 	 * Returns true if socket is live and responding.
 	 */
 	private isSocketLive(): Promise<boolean> {
@@ -950,7 +950,7 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Acquire spawn lock to prevent concurrent daemon spawns.
+	 * Acquire spawn lock to prevent concurrent service spawns.
 	 * Returns true if lock acquired, false if another spawn is in progress.
 	 */
 	private acquireSpawnLock(): boolean {
@@ -1002,16 +1002,18 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Spawn the daemon process if not running
+	 * Spawn the service process if not running
 	 */
-	private async spawnDaemon(): Promise<void> {
+	private async spawnService(): Promise<void> {
 		// Check if socket is live first - this is the authoritative check
-		// PID file can be stale if daemon crashed and PID was reused by another process
+		// PID file can be stale if service crashed and PID was reused by another process
 		if (socketEndpointMayExist()) {
 			const isLive = await this.isSocketLive();
 			if (isLive) {
 				if (DEBUG_CLIENT) {
-					console.log("[TerminalHostClient] Socket is live, daemon is running");
+					console.log(
+						"[TerminalHostClient] Socket is live, service is running",
+					);
 				}
 				return;
 			}
@@ -1030,7 +1032,7 @@ export class TerminalHostClient extends EventEmitter {
 		}
 
 		// Also clean up stale PID file if socket was not live
-		// This handles the case where daemon crashed and PID was reused
+		// This handles the case where service crashed and PID was reused
 		if (existsSync(PID_PATH)) {
 			if (DEBUG_CLIENT) {
 				console.log("[TerminalHostClient] Removing stale PID file");
@@ -1050,38 +1052,40 @@ export class TerminalHostClient extends EventEmitter {
 				);
 			}
 			// Wait for the other spawn to complete
-			await this.waitForDaemon();
+			await this.waitForService();
 			return;
 		}
 
 		try {
-			// Get path to daemon script
-			const daemonScript = this.getDaemonScriptPath();
+			// Get path to service script
+			const serviceScript = this.getServiceScriptPath();
 			if (DEBUG_CLIENT) {
-				console.log(`[TerminalHostClient] Daemon script path: ${daemonScript}`);
 				console.log(
-					`[TerminalHostClient] Script exists: ${existsSync(daemonScript)}`,
+					`[TerminalHostClient] Service script path: ${serviceScript}`,
+				);
+				console.log(
+					`[TerminalHostClient] Script exists: ${existsSync(serviceScript)}`,
 				);
 			}
 
-			if (!existsSync(daemonScript)) {
-				throw new Error(`Daemon script not found: ${daemonScript}`);
+			if (!existsSync(serviceScript)) {
+				throw new Error(`Service script not found: ${serviceScript}`);
 			}
 
 			if (DEBUG_CLIENT) {
 				console.log(
-					`[TerminalHostClient] Spawning daemon with execPath: ${process.execPath}`,
+					`[TerminalHostClient] Spawning service with execPath: ${process.execPath}`,
 				);
 			}
 
-			// Open log file for daemon output (helps debug daemon-side issues)
-			const logPath = join(SUPERSET_HOME_DIR, "daemon.log");
+			// Open log file for service output (helps debug service-side issues)
+			const logPath = join(SUPERSET_HOME_DIR, "service.log");
 			let logFd: number;
 			try {
 				if (existsSync(logPath)) {
 					try {
 						const { size } = statSync(logPath);
-						if (size > MAX_DAEMON_LOG_BYTES) {
+						if (size > MAX_SERVICE_LOG_BYTES) {
 							writeFileSync(logPath, "", { mode: 0o600 });
 						}
 					} catch {
@@ -1096,16 +1100,16 @@ export class TerminalHostClient extends EventEmitter {
 				}
 			} catch (error) {
 				console.warn(
-					`[TerminalHostClient] Failed to open daemon log file: ${error}`,
+					`[TerminalHostClient] Failed to open service log file: ${error}`,
 				);
 				// Fall back to ignoring output if we can't open log file
 				logFd = -1;
 			}
 
-			// Spawn daemon as detached process
+			// Spawn service as detached process
 			let child: ReturnType<typeof spawn> | null = null;
 			try {
-				child = spawn(process.execPath, [daemonScript], {
+				child = spawn(process.execPath, [serviceScript], {
 					detached: true,
 					stdio: logFd >= 0 ? ["ignore", logFd, logFd] : "ignore",
 					env: {
@@ -1125,31 +1129,31 @@ export class TerminalHostClient extends EventEmitter {
 			}
 
 			if (!child) {
-				throw new Error("Failed to spawn daemon");
+				throw new Error("Failed to spawn service");
 			}
 
 			if (DEBUG_CLIENT) {
 				console.log(
-					`[TerminalHostClient] Daemon spawned with PID: ${child.pid}`,
+					`[TerminalHostClient] Service spawned with PID: ${child.pid}`,
 				);
 			}
 
 			// Unref to allow parent to exit independently
 			child.unref();
 
-			// Wait for daemon to start
+			// Wait for service to start
 			if (DEBUG_CLIENT) {
-				console.log("[TerminalHostClient] Waiting for daemon to start...");
+				console.log("[TerminalHostClient] Waiting for service to start...");
 			}
-			await this.waitForDaemon();
+			await this.waitForService();
 
 			// In development mode, save the script mtime to detect rebuilds
 			if (process.env.NODE_ENV === "development") {
-				this.saveDaemonScriptMtime();
+				this.saveServiceScriptMtime();
 			}
 
 			if (DEBUG_CLIENT) {
-				console.log("[TerminalHostClient] Daemon started successfully");
+				console.log("[TerminalHostClient] Service started successfully");
 			}
 		} finally {
 			this.releaseSpawnLock();
@@ -1157,9 +1161,9 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Get path to daemon script
+	 * Get path to service script
 	 */
-	private getDaemonScriptPath(): string {
+	private getServiceScriptPath(): string {
 		if (app.isPackaged) {
 			// Production: script is in app resources
 			return join(app.getAppPath(), "dist", "main", "terminal-host.js");
@@ -1171,9 +1175,9 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Wait for daemon to be ready
+	 * Wait for service to be ready
 	 */
-	private async waitForDaemon(): Promise<void> {
+	private async waitForService(): Promise<void> {
 		const startTime = Date.now();
 
 		while (Date.now() - startTime < SPAWN_WAIT_MS) {
@@ -1183,7 +1187,7 @@ export class TerminalHostClient extends EventEmitter {
 			await this.sleep(100);
 		}
 
-		throw new Error("Daemon failed to start in time");
+		throw new Error("Service failed to start in time");
 	}
 
 	private sleep(ms: number): Promise<void> {
@@ -1195,7 +1199,7 @@ export class TerminalHostClient extends EventEmitter {
 	// ===========================================================================
 
 	/**
-	 * Send a request to the daemon and wait for response
+	 * Send a request to the service and wait for response
 	 */
 	private sendRequest<T>(type: string, payload: unknown): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
@@ -1227,7 +1231,7 @@ export class TerminalHostClient extends EventEmitter {
 	 * Send a notification (no pending request / no timeout).
 	 *
 	 * Used for high-frequency messages like terminal input, where request/response
-	 * overhead can cause timeouts under load and drop data. The daemon may still
+	 * overhead can cause timeouts under load and drop data. The service may still
 	 * send a response for compatibility, but this client will ignore it.
 	 *
 	 * Returns false if queue is full (caller should handle).
@@ -1294,7 +1298,7 @@ export class TerminalHostClient extends EventEmitter {
 			"createOrAttach",
 			request,
 		);
-		// Version skew: older daemons may not return pid - normalize undefined → null
+		// Version skew: older services may not return pid - normalize undefined → null
 		return { ...response, pid: response.pid ?? null };
 	}
 
@@ -1308,7 +1312,7 @@ export class TerminalHostClient extends EventEmitter {
 
 	/**
 	 * Write data without waiting for a response (best-effort, backpressured).
-	 * Prevents large pastes from timing out and dropping chunks when the daemon
+	 * Prevents large pastes from timing out and dropping chunks when the service
 	 * is busy processing output.
 	 */
 	writeNoAck(request: WriteRequest): void {
@@ -1382,7 +1386,7 @@ export class TerminalHostClient extends EventEmitter {
 			"listSessions",
 			undefined,
 		);
-		// Version skew: older daemons may not return pid - normalize undefined → null
+		// Version skew: older services may not return pid - normalize undefined → null
 		return {
 			sessions: response.sessions.map((s) => ({ ...s, pid: s.pid ?? null })),
 		};
@@ -1399,8 +1403,8 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Shutdown the daemon gracefully.
-	 * After calling this, the client should be disposed and a new daemon
+	 * Shutdown the service gracefully.
+	 * After calling this, the client should be disposed and a new service
 	 * will be spawned on the next getTerminalHostClient() call.
 	 */
 	async shutdown(request: ShutdownRequest = {}): Promise<EmptyResponse> {
@@ -1412,14 +1416,14 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Shutdown the daemon if it's currently running, without spawning a new one.
-	 * Returns true if daemon was running and shutdown was sent, false if no daemon was running.
-	 * This is useful for cleanup operations that should only affect existing daemons.
+	 * Shutdown the service if it's currently running, without spawning a new one.
+	 * Returns true if service was running and shutdown was sent, false if no service was running.
+	 * This is useful for cleanup operations that should only affect existing services.
 	 */
 	async shutdownIfRunning(
 		request: ShutdownRequest = {},
 	): Promise<{ wasRunning: boolean }> {
-		// Avoid spawning a daemon if none exists.
+		// Avoid spawning a service if none exists.
 		const connected = await this.tryConnectControl();
 		if (!connected) return { wasRunning: false };
 
@@ -1430,7 +1434,7 @@ export class TerminalHostClient extends EventEmitter {
 			} catch (error) {
 				if (this.isProtocolMismatchError(error)) {
 					this.resetConnectionState({ emitDisconnected: false });
-					await this.shutdownLegacyDaemon({
+					await this.shutdownLegacyService({
 						killSessions: request.killSessions ?? false,
 					});
 					return { wasRunning: true };
@@ -1446,7 +1450,7 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	/**
-	 * Disconnect from daemon (but don't stop it)
+	 * Disconnect from service (but don't stop it)
 	 */
 	disconnect(): void {
 		// Explicit disconnect should not emit a disconnected event (caller controls UX)

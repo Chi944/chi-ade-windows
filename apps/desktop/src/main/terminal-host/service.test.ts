@@ -1,7 +1,7 @@
 /**
- * Terminal Host Daemon Integration Tests
+ * Terminal Host Service Integration Tests
  *
- * These tests verify the daemon can:
+ * These tests verify the service can:
  * 1. Start and listen on a local socket/named pipe
  * 2. Accept connections and handle NDJSON protocol
  * 3. Authenticate clients with token
@@ -32,23 +32,23 @@ const SOCKET_PATH =
 const TOKEN_PATH = join(SUPERSET_HOME_DIR, "terminal-host.token");
 const PID_PATH = join(SUPERSET_HOME_DIR, "terminal-host.pid");
 
-// Path to the daemon source file
-const DAEMON_PATH = resolve(__dirname, "index.ts");
+// Path to the service source file
+const SERVICE_PATH = resolve(__dirname, "index.ts");
 // Polyfill for @xterm/headless in Bun (see xterm-env-polyfill.ts for details)
 const XTERM_POLYFILL_PATH = resolve(__dirname, "xterm-env-polyfill.ts");
 
-// Timeout for daemon operations
-const DAEMON_TIMEOUT = 10000;
+// Timeout for service operations
+const SERVICE_TIMEOUT = 10000;
 const CONNECT_TIMEOUT = 5000;
 
-describe("Terminal Host Daemon", () => {
-	let daemonProcess: ChildProcess | null = null;
+describe("Terminal Host Service", () => {
+	let serviceProcess: ChildProcess | null = null;
 
 	/**
-	 * Clean up any existing daemon artifacts
+	 * Clean up any existing service artifacts
 	 */
 	function cleanup() {
-		// Kill any existing daemon
+		// Kill any existing service
 		if (existsSync(PID_PATH)) {
 			try {
 				const pid = Number.parseInt(readFileSync(PID_PATH, "utf-8").trim(), 10);
@@ -89,19 +89,19 @@ describe("Terminal Host Daemon", () => {
 	}
 
 	/**
-	 * Start the daemon process
+	 * Start the service process
 	 */
-	async function startDaemon(): Promise<void> {
+	async function startService(): Promise<void> {
 		return new Promise((resolve, reject) => {
 			// Ensure home directory exists
 			if (!existsSync(SUPERSET_HOME_DIR)) {
 				mkdirSync(SUPERSET_HOME_DIR, { recursive: true, mode: 0o700 });
 			}
 
-			// Start daemon with --preload to polyfill window for @xterm/headless in Bun
-			daemonProcess = spawn(
+			// Start service with --preload to polyfill window for @xterm/headless in Bun
+			serviceProcess = spawn(
 				process.execPath,
-				["run", "--preload", XTERM_POLYFILL_PATH, DAEMON_PATH],
+				["run", "--preload", XTERM_POLYFILL_PATH, SERVICE_PATH],
 				{
 					env: {
 						...process.env,
@@ -118,10 +118,10 @@ describe("Terminal Host Daemon", () => {
 			let settled = false;
 			let timeoutId: ReturnType<typeof setTimeout>;
 
-			daemonProcess.stdout?.on("data", (data) => {
+			serviceProcess.stdout?.on("data", (data) => {
 				output += data.toString();
-				// Check if daemon is ready
-				if (output.includes("Daemon started")) {
+				// Check if service is ready
+				if (output.includes("Service started")) {
 					if (settled) return;
 					settled = true;
 					clearTimeout(timeoutId);
@@ -129,58 +129,58 @@ describe("Terminal Host Daemon", () => {
 				}
 			});
 
-			daemonProcess.stderr?.on("data", (data) => {
-				console.error("Daemon stderr:", data.toString());
+			serviceProcess.stderr?.on("data", (data) => {
+				console.error("Service stderr:", data.toString());
 			});
 
-			daemonProcess.on("error", (error) => {
+			serviceProcess.on("error", (error) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timeoutId);
-				reject(new Error(`Failed to start daemon: ${error.message}`));
+				reject(new Error(`Failed to start service: ${error.message}`));
 			});
 
-			daemonProcess.on("exit", (code, signal) => {
+			serviceProcess.on("exit", (code, signal) => {
 				if (!settled && code !== 0 && code !== null) {
 					settled = true;
 					clearTimeout(timeoutId);
 					reject(
-						new Error(`Daemon exited with code ${code}, signal ${signal}`),
+						new Error(`Service exited with code ${code}, signal ${signal}`),
 					);
 				}
 			});
 
-			// Timeout if daemon doesn't start
+			// Timeout if service doesn't start
 			timeoutId = setTimeout(() => {
 				if (settled) return;
 				settled = true;
 				reject(
 					new Error(
-						`Daemon failed to start within ${DAEMON_TIMEOUT}ms. Output: ${output}`,
+						`Service failed to start within ${SERVICE_TIMEOUT}ms. Output: ${output}`,
 					),
 				);
-			}, DAEMON_TIMEOUT);
+			}, SERVICE_TIMEOUT);
 		});
 	}
 
 	/**
-	 * Stop the daemon process
+	 * Stop the service process
 	 */
-	async function stopDaemon(): Promise<void> {
-		if (daemonProcess) {
+	async function stopService(): Promise<void> {
+		if (serviceProcess) {
 			return new Promise((resolve) => {
-				daemonProcess?.on("exit", () => {
-					daemonProcess = null;
+				serviceProcess?.on("exit", () => {
+					serviceProcess = null;
 					resolve();
 				});
 
-				daemonProcess?.kill("SIGTERM");
+				serviceProcess?.kill("SIGTERM");
 
 				// Force kill if it doesn't exit gracefully
 				setTimeout(() => {
-					if (daemonProcess) {
-						daemonProcess.kill("SIGKILL");
-						daemonProcess = null;
+					if (serviceProcess) {
+						serviceProcess.kill("SIGKILL");
+						serviceProcess = null;
 						resolve();
 					}
 				}, 2000);
@@ -189,9 +189,9 @@ describe("Terminal Host Daemon", () => {
 	}
 
 	/**
-	 * Connect to the daemon socket
+	 * Connect to the service socket
 	 */
-	function connectToDaemon(): Promise<Socket> {
+	function connectToService(): Promise<Socket> {
 		return new Promise((resolve, reject) => {
 			const socket = connect(SOCKET_PATH);
 
@@ -200,7 +200,7 @@ describe("Terminal Host Daemon", () => {
 			});
 
 			socket.on("error", (error) => {
-				reject(new Error(`Failed to connect to daemon: ${error.message}`));
+				reject(new Error(`Failed to connect to service: ${error.message}`));
 			});
 
 			setTimeout(() => {
@@ -246,20 +246,20 @@ describe("Terminal Host Daemon", () => {
 
 	beforeAll(async () => {
 		cleanup();
-		await startDaemon();
+		await startService();
 	});
 
 	afterAll(async () => {
-		await stopDaemon();
+		await stopService();
 		cleanup();
 	});
 
 	describe("hello handshake", () => {
 		it("should accept valid hello request with correct token", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
-				// Read the token that the daemon generated
+				// Read the token that the service generated
 				const token = readFileSync(TOKEN_PATH, "utf-8").trim();
 				expect(token).toHaveLength(64); // 32 bytes = 64 hex chars
 
@@ -283,8 +283,8 @@ describe("Terminal Host Daemon", () => {
 				if (response.ok) {
 					const payload = response.payload as HelloResponse;
 					expect(payload.protocolVersion).toBe(PROTOCOL_VERSION);
-					expect(payload.daemonVersion).toBe("1.0.0");
-					expect(payload.daemonPid).toBeGreaterThan(0);
+					expect(payload.serviceVersion).toBe("1.0.0");
+					expect(payload.servicePid).toBeGreaterThan(0);
 				}
 			} finally {
 				socket.destroy();
@@ -292,7 +292,7 @@ describe("Terminal Host Daemon", () => {
 		});
 
 		it("should reject hello request with invalid token", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
 				const request: IpcRequest = {
@@ -320,7 +320,7 @@ describe("Terminal Host Daemon", () => {
 		});
 
 		it("should reject hello request with wrong protocol version", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
 				const token = readFileSync(TOKEN_PATH, "utf-8").trim();
@@ -352,7 +352,7 @@ describe("Terminal Host Daemon", () => {
 
 	describe("authentication requirement", () => {
 		it("should reject requests before authentication", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
 				// Try to list sessions without authenticating first
@@ -376,7 +376,7 @@ describe("Terminal Host Daemon", () => {
 		});
 
 		it("should allow listSessions after authentication", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
 				const token = readFileSync(TOKEN_PATH, "utf-8").trim();
@@ -420,7 +420,7 @@ describe("Terminal Host Daemon", () => {
 
 	describe("unknown requests", () => {
 		it("should return error for unknown request type", async () => {
-			const socket = await connectToDaemon();
+			const socket = await connectToService();
 
 			try {
 				const token = readFileSync(TOKEN_PATH, "utf-8").trim();

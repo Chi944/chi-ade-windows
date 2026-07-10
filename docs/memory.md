@@ -6,7 +6,7 @@ The system is adapted from the [Hermes agent](https://github.com/NousResearch/he
 
 ## Principles
 
-- **Plain files are the source of truth.** Each agent owns a `memory/` directory of markdown. No database, no daemon, no injected tool.
+- **Plain files are the source of truth.** Each agent owns a `memory/` directory of markdown. No database, no service, no injected tool.
 - **Memory lives outside the git worktree.** It is a sibling of the worktree, so it is never committed to your code and survives branch and worktree changes.
 - **Budgets are guidance, not gates.** Memory is injected into every turn and costs tokens forever, so the files carry soft size targets and the agent is told to consolidate rather than grow without bound.
 - **One canonical set of files, thin per-runtime bridges.** The same files feed Claude Code, Codex, and OpenCode through small generated bridge files, so switching an agent's runtime never loses its memory.

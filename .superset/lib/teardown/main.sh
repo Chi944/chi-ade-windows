@@ -24,9 +24,9 @@ teardown_main() {
   # Step 2: Check dependencies (informational only)
   step_check_dependencies
 
-  # Step 3: Kill terminal daemons
-  if ! step_kill_terminal_daemons; then
-    step_failed "Kill terminal daemons"
+  # Step 3: Kill terminal services
+  if ! step_kill_terminal_services; then
+    step_failed "Kill terminal services"
   fi
 
   # Step 4: Stop Electric SQL

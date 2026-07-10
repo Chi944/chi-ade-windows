@@ -1,7 +1,7 @@
 /**
  * Terminal Host Manager
  *
- * Manages all terminal sessions in the daemon.
+ * Manages all terminal sessions in the service.
  * Responsible for:
  * - Session lifecycle (create, attach, detach, kill)
  * - Session lookup and listing

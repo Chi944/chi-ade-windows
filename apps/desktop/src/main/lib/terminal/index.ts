@@ -9,7 +9,6 @@ import {
 } from "main/lib/subscription-profiles";
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { ListSessionsResponse } from "main/lib/terminal-host/types";
-import { DaemonTerminalManager, getDaemonTerminalManager } from "./daemon";
 import {
 	prewarmTerminalEnv,
 	setCoordinationTokenResolver,
@@ -19,6 +18,7 @@ import {
 	RECONCILE_STARTUP_TIMEOUT_MS,
 	reconcileWithTimeout,
 } from "./reconcile";
+import { getServiceTerminalManager, ServiceTerminalManager } from "./service";
 
 // Wire the encrypted key store into buildTerminalEnv from the main process. This
 // import lives here (main-only) rather than in env.ts, which is also loaded by
@@ -33,7 +33,7 @@ setSubscriptionProfileEnvironmentResolver((provider, paneId, workspaceId) =>
 		: getSubscriptionProfileEnvironment(provider),
 );
 
-export { DaemonTerminalManager, getDaemonTerminalManager };
+export { ServiceTerminalManager, getServiceTerminalManager };
 export type {
 	CreateSessionParams,
 	SessionResult,
@@ -46,24 +46,24 @@ const DEBUG_TERMINAL = process.env.SUPERSET_TERMINAL_DEBUG === "1";
 let prewarmInFlight: Promise<void> | null = null;
 
 /**
- * Reconcile daemon sessions on app startup.
+ * Reconcile service sessions on app startup.
  * Cleans up stale sessions from previous app runs and preserves sessions
- * that can be retained. Bounded by a hard timeout so a wedged daemon can never
+ * that can be retained. Bounded by a hard timeout so a wedged service can never
  * brick boot — reconcileOnStartup runs before the main window is created (see
  * reconcileWithTimeout). `timeoutMs` is injectable for tests.
  */
-export async function reconcileDaemonSessions(
+export async function reconcileServiceSessions(
 	timeoutMs: number = RECONCILE_STARTUP_TIMEOUT_MS,
 ): Promise<void> {
-	await reconcileWithTimeout(getDaemonTerminalManager(), timeoutMs);
+	await reconcileWithTimeout(getServiceTerminalManager(), timeoutMs);
 }
 
 /**
- * Restart the terminal daemon. Kills all sessions, shuts down the daemon,
- * and resets the manager so a fresh daemon spawns on next use.
+ * Restart the terminal service. Kills all sessions, shuts down the service,
+ * and resets the manager so a fresh service spawns on next use.
  */
-export async function restartDaemon(): Promise<{ success: boolean }> {
-	console.log("[restartDaemon] Starting daemon restart...");
+export async function restartService(): Promise<{ success: boolean }> {
+	console.log("[restartService] Starting service restart...");
 
 	try {
 		const client = getTerminalHostClient();
@@ -73,26 +73,26 @@ export async function restartDaemon(): Promise<{ success: boolean }> {
 			const { sessions } = await client.listSessions();
 			const aliveCount = sessions.filter((s) => s.isAlive).length;
 			console.log(
-				`[restartDaemon] Shutting down daemon with ${aliveCount} alive sessions`,
+				`[restartService] Shutting down service with ${aliveCount} alive sessions`,
 			);
 
 			await client.shutdownIfRunning({ killSessions: true });
 		} else {
-			console.log("[restartDaemon] Daemon was not running");
+			console.log("[restartService] Service was not running");
 		}
 	} catch (error) {
-		console.warn("[restartDaemon] Error during shutdown (continuing):", error);
+		console.warn("[restartService] Error during shutdown (continuing):", error);
 	}
 
-	const manager = getDaemonTerminalManager();
+	const manager = getServiceTerminalManager();
 	manager.reset();
 
-	console.log("[restartDaemon] Complete");
+	console.log("[restartService] Complete");
 
 	return { success: true };
 }
 
-export async function tryListExistingDaemonSessions(): Promise<{
+export async function tryListExistingServiceSessions(): Promise<{
 	sessions: ListSessionsResponse["sessions"];
 }> {
 	try {
@@ -101,12 +101,12 @@ export async function tryListExistingDaemonSessions(): Promise<{
 		return { sessions: result.sessions };
 	} catch (error) {
 		console.warn(
-			"[TerminalManager] Failed to list existing daemon sessions (getTerminalHostClient/client.listSessions):",
+			"[TerminalManager] Failed to list existing service sessions (getTerminalHostClient/client.listSessions):",
 			error,
 		);
 		if (DEBUG_TERMINAL) {
 			console.log(
-				"[TerminalManager] Failed to list existing daemon sessions:",
+				"[TerminalManager] Failed to list existing service sessions:",
 				error,
 			);
 		}
@@ -118,7 +118,7 @@ export async function tryListExistingDaemonSessions(): Promise<{
  * Best-effort terminal runtime warmup.
  * Runs in the background to reduce latency for the first user-opened terminal:
  * - precomputes locale/env fallback
- * - ensures daemon control/stream channels are established
+ * - ensures service control/stream channels are established
  */
 export function prewarmTerminalRuntime(): void {
 	if (prewarmInFlight) return;
@@ -140,7 +140,7 @@ export function prewarmTerminalRuntime(): void {
 		} catch (error) {
 			if (DEBUG_TERMINAL) {
 				console.warn(
-					"[TerminalManager] Failed to prewarm terminal daemon connection:",
+					"[TerminalManager] Failed to prewarm terminal service connection:",
 					error,
 				);
 			}

@@ -8,7 +8,7 @@ import {
 } from "@superset/local-db";
 import { eq } from "drizzle-orm";
 import { localDb } from "../local-db";
-import { getDaemonTerminalManager } from "../terminal";
+import { getServiceTerminalManager } from "../terminal";
 import { buildSshTunnelLaunch } from "./ssh";
 
 export type SshTunnelState =
@@ -38,7 +38,7 @@ export function sshTunnelPaneId(workspaceId: string): string {
 }
 
 class SshTunnelManager extends EventEmitter {
-	private readonly terminal = getDaemonTerminalManager();
+	private readonly terminal = getServiceTerminalManager();
 	private readonly statuses = new Map<string, SshTunnelStatus>();
 	private readonly paneWorkspaces = new Map<string, string>();
 	private readonly retries = new Map<string, number>();
@@ -120,7 +120,7 @@ class SshTunnelManager extends EventEmitter {
 			enabled.map(({ workspaceId }) => sshTunnelPaneId(workspaceId)),
 		);
 		try {
-			const { sessions } = await this.terminal.listDaemonSessions();
+			const { sessions } = await this.terminal.listServiceSessions();
 			const orphaned = sessions.filter(
 				(session) =>
 					session.isAlive &&

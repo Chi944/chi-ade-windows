@@ -222,7 +222,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 			handleTerminalExitRef.current(exitCode, xterm, reason),
 		onErrorEvent: (event, xterm) => handleStreamErrorRef.current(event, xterm),
 		onDisconnectEvent: (reason) =>
-			setConnectionError(reason || "Connection to terminal daemon lost"),
+			setConnectionError(reason || "Connection to terminal service lost"),
 	});
 
 	// Cold restore handling

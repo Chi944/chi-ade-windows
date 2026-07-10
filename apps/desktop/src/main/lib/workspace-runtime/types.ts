@@ -3,7 +3,7 @@
  *
  * This module defines the contracts for workspace-scoped runtime providers.
  * The WorkspaceRuntime boundary encapsulates backend-specific behavior
- * (local daemon today, or cloud/SSH in the future).
+ * (local service today, or cloud/SSH in the future).
  *
  * Key invariants:
  * 1. Stream subscriptions MUST NOT complete on session exit (exit is a state transition)
@@ -37,7 +37,7 @@ export type WorkspaceRuntimeId = string;
  * These flags indicate what features are available for this backend.
  */
 export interface TerminalCapabilities {
-	/** Sessions can survive app restarts (daemon mode) */
+	/** Sessions can survive app restarts (service mode) */
 	persistent: boolean;
 	/** Cold restore from disk is supported after unclean shutdown */
 	coldRestore: boolean;
@@ -49,12 +49,12 @@ export interface TerminalCapabilities {
 
 /**
  * Terminal management capabilities for listing and killing sessions.
- * These are available for daemon-backed runtimes.
+ * These are available for service-backed runtimes.
  */
 export interface TerminalManagement {
-	/** List all sessions in the daemon */
+	/** List all sessions in the service */
 	listSessions(): Promise<ListSessionsResponse>;
-	/** Kill all sessions in the daemon */
+	/** Kill all sessions in the service */
 	killAllSessions(): Promise<void>;
 	/** Reset history persistence (reinitialize all history writers) */
 	resetHistoryPersistence(): Promise<void>;
@@ -135,8 +135,8 @@ export interface TerminalWorkspaceOperations {
  * The underlying implementation uses EventEmitter with events like:
  * - `data:${paneId}` - terminal output
  * - `exit:${paneId}` - session exited (exitCode, signal?)
- * - `disconnect:${paneId}` - daemon connection lost (daemon mode only)
- * - `error:${paneId}` - terminal error (daemon mode only)
+ * - `disconnect:${paneId}` - service connection lost (service mode only)
+ * - `error:${paneId}` - terminal error (service mode only)
  * - `terminalExit` - global exit event for cleanup
  *
  * CRITICAL INVARIANT: Subscriptions MUST NOT complete on exit.
@@ -158,13 +158,13 @@ export interface TerminalEventSource extends EventEmitter {
  * and optional management capabilities into a single interface.
  *
  * Implementation:
- * - Daemon: DaemonTerminalManager (persistent, management available)
+ * - Service: ServiceTerminalManager (persistent, management available)
  */
 export interface TerminalRuntime
 	extends TerminalSessionOperations,
 		TerminalWorkspaceOperations,
 		TerminalEventSource {
-	/** Session management capabilities (daemon-backed). */
+	/** Session management capabilities (service-backed). */
 	management: TerminalManagement;
 
 	/** Terminal capabilities for this backend */
@@ -181,7 +181,7 @@ export interface TerminalRuntime
 /**
  * Workspace runtime interface - the workspace-scoped provider boundary.
  *
- * This is the primary abstraction for local vs daemon vs cloud backends.
+ * This is the primary abstraction for local vs service vs cloud backends.
  * The terminal runtime is a sub-component; future work will add
  * changes/files/agentEvents to this same boundary for cloud workspaces.
  */

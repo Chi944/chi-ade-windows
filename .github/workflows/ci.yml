@@ -92,8 +92,8 @@ jobs:
           bun test apps/desktop/src/main/lib/agent-setup/shell-wrappers.test.ts
           bun test apps/desktop/src/lib/trpc/routers/workspaces/utils/teardown.test.ts
           bun test apps/desktop/src/main/lib/terminal-host/headless-emulator.test.ts apps/desktop/src/main/terminal-host/session.test.ts
-          bun test apps/desktop/src/main/lib/terminal/daemon/daemon-manager.test.ts
-          bun test apps/desktop/src/main/terminal-host/daemon.test.ts
+          bun test apps/desktop/src/main/lib/terminal/service/service-manager.test.ts
+          bun test apps/desktop/src/main/terminal-host/service.test.ts
           bun test apps/desktop/src/main/terminal-host/session-lifecycle.test.ts
 
   typecheck:

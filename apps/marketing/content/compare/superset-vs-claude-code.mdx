@@ -35,7 +35,7 @@ Claude Code is Anthropic's terminal-based AI coding agent. Superset is an orches
 
 ## What Is Superset?
 
-Superset is a desktop terminal that orchestrates CLI-based coding agents — Claude Code, Codex, Aider, OpenCode — in parallel across isolated Git worktrees. Each agent gets its own branch and working directory. A persistent daemon manages sessions via Unix domain sockets, so they survive app restarts and crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
+Superset is a desktop terminal that orchestrates CLI-based coding agents — Claude Code, Codex, Aider, OpenCode — in parallel across isolated Git worktrees. Each agent gets its own branch and working directory. A persistent service manages sessions via Unix domain sockets, so they survive app restarts and crashes. Includes a built-in diff viewer and integrates with VS Code, Cursor, JetBrains, and Xcode. Open source (Apache 2.0) with zero telemetry.
 
 ---
 
@@ -65,7 +65,7 @@ Claude Code only works with Anthropic's models. Superset doesn't care which agen
 
 ### Session Persistence
 
-If your terminal crashes while Claude Code is running, you lose the session. Superset's daemon architecture means agent sessions persist across crashes and app restarts. Close your laptop, open it tomorrow, and your agents are still running.
+If your terminal crashes while Claude Code is running, you lose the session. Superset's service architecture means agent sessions persist across crashes and app restarts. Close your laptop, open it tomorrow, and your agents are still running.
 
 ---
 
@@ -106,7 +106,7 @@ Yes. Claude Code works perfectly in any terminal. Superset adds value when you w
 
 ### How many Claude Code instances can I run in Superset?
 
-As many as your machine and API rate limits allow. Most developers run 5-10 concurrent agents. Superset's daemon handles concurrency, and its priority-based scheduling ensures the focused task gets full resources.
+As many as your machine and API rate limits allow. Most developers run 5-10 concurrent agents. Superset's service handles concurrency, and its priority-based scheduling ensures the focused task gets full resources.
 
 ### Does Superset modify how Claude Code works?
 

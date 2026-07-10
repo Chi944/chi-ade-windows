@@ -2,7 +2,7 @@
  * Terminal Host Session
  *
  * A session owns:
- * - A PTY subprocess (isolates blocking writes from main daemon)
+ * - A PTY subprocess (isolates blocking writes from main service)
  * - A HeadlessEmulator instance for state tracking
  * - A set of attached clients
  * - Output capture to disk
@@ -539,7 +539,7 @@ export class Session {
 		const hasClients = this.attachedClients.size > 0;
 		const backlogBytes = this.emulatorWriteQueuedBytes;
 
-		// Keep the daemon responsive while still ensuring the emulator catches up eventually.
+		// Keep the service responsive while still ensuring the emulator catches up eventually.
 		const baseBudgetMs = hasClients ? 5 : 25;
 		const budgetMs =
 			backlogBytes > 1024 * 1024 ? Math.max(baseBudgetMs, 25) : baseBudgetMs;

@@ -8,7 +8,7 @@ ADE 0.4 uses the OpenSSH client already supplied by Windows or macOS. It adds no
 - Choose **Trust & test** to add a previously unseen host key and verify the connection. Changed host keys still fail. Managed terminals and tunnels always require an existing matching key.
 - Bind any ADE workspace to a saved host and an optional remote path from **Settings â†’ Terminal**.
 - Launch every terminal pane in that workspace as a direct OpenSSH PTY using an exact main-process-generated executable and argument list.
-- Keep terminal panes alive in ADE's detached daemon when the app closes. A stable per-pane `tmux` session also preserves the remote process across SSH reconnects when `tmux` is installed on the host.
+- Keep terminal panes alive in ADE's detached service when the app closes. A stable per-pane `tmux` session also preserves the remote process across SSH reconnects when `tmux` is installed on the host.
 - Retry an interactive SSH connection up to five times with exponential backoff after OpenSSH reports a network disconnect.
 - Configure up to 16 local or remote port forwards per workspace. ADE runs them once in a hidden managed tunnel so split panes never compete for the same listen port.
 - Restart enabled tunnels automatically while ADE is open and reconcile them after the app restarts.

@@ -35,20 +35,20 @@ const SOCKET_PATH =
 const TOKEN_PATH = join(SUPERSET_HOME_DIR, "terminal-host.token");
 const PID_PATH = join(SUPERSET_HOME_DIR, "terminal-host.pid");
 
-// Path to the daemon source file
-const DAEMON_PATH = resolve(__dirname, "index.ts");
+// Path to the service source file
+const SERVICE_PATH = resolve(__dirname, "index.ts");
 // Polyfill for @xterm/headless in Bun (see xterm-env-polyfill.ts for details)
 const XTERM_POLYFILL_PATH = resolve(__dirname, "xterm-env-polyfill.ts");
 
 // Timeouts
-const DAEMON_TIMEOUT = 10000;
+const SERVICE_TIMEOUT = 10000;
 const CONNECT_TIMEOUT = 5000;
 
 describe("Terminal Host Session Lifecycle", () => {
-	let daemonProcess: ChildProcess | null = null;
+	let serviceProcess: ChildProcess | null = null;
 
 	/**
-	 * Clean up any existing daemon artifacts
+	 * Clean up any existing service artifacts
 	 */
 	function cleanup() {
 		if (existsSync(PID_PATH)) {
@@ -88,17 +88,17 @@ describe("Terminal Host Session Lifecycle", () => {
 	}
 
 	/**
-	 * Start the daemon process
+	 * Start the service process
 	 */
-	async function startDaemon(): Promise<void> {
+	async function startService(): Promise<void> {
 		return new Promise((resolve, reject) => {
 			if (!existsSync(SUPERSET_HOME_DIR)) {
 				mkdirSync(SUPERSET_HOME_DIR, { recursive: true, mode: 0o700 });
 			}
 
-			daemonProcess = spawn(
+			serviceProcess = spawn(
 				"bun",
-				["run", "--preload", XTERM_POLYFILL_PATH, DAEMON_PATH],
+				["run", "--preload", XTERM_POLYFILL_PATH, SERVICE_PATH],
 				{
 					env: {
 						...process.env,
@@ -115,9 +115,9 @@ describe("Terminal Host Session Lifecycle", () => {
 			let settled = false;
 			let timeoutId: ReturnType<typeof setTimeout>;
 
-			daemonProcess.stdout?.on("data", (data) => {
+			serviceProcess.stdout?.on("data", (data) => {
 				output += data.toString();
-				if (output.includes("Daemon started")) {
+				if (output.includes("Service started")) {
 					if (settled) return;
 					settled = true;
 					clearTimeout(timeoutId);
@@ -125,23 +125,23 @@ describe("Terminal Host Session Lifecycle", () => {
 				}
 			});
 
-			daemonProcess.stderr?.on("data", (data) => {
-				console.error("Daemon stderr:", data.toString());
+			serviceProcess.stderr?.on("data", (data) => {
+				console.error("Service stderr:", data.toString());
 			});
 
-			daemonProcess.on("error", (error) => {
+			serviceProcess.on("error", (error) => {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timeoutId);
-				reject(new Error(`Failed to start daemon: ${error.message}`));
+				reject(new Error(`Failed to start service: ${error.message}`));
 			});
 
-			daemonProcess.on("exit", (code, signal) => {
+			serviceProcess.on("exit", (code, signal) => {
 				if (!settled && code !== 0 && code !== null) {
 					settled = true;
 					clearTimeout(timeoutId);
 					reject(
-						new Error(`Daemon exited with code ${code}, signal ${signal}`),
+						new Error(`Service exited with code ${code}, signal ${signal}`),
 					);
 				}
 			});
@@ -151,30 +151,30 @@ describe("Terminal Host Session Lifecycle", () => {
 				settled = true;
 				reject(
 					new Error(
-						`Daemon failed to start within ${DAEMON_TIMEOUT}ms. Output: ${output}`,
+						`Service failed to start within ${SERVICE_TIMEOUT}ms. Output: ${output}`,
 					),
 				);
-			}, DAEMON_TIMEOUT);
+			}, SERVICE_TIMEOUT);
 		});
 	}
 
 	/**
-	 * Stop the daemon process
+	 * Stop the service process
 	 */
-	async function stopDaemon(): Promise<void> {
-		if (daemonProcess) {
+	async function stopService(): Promise<void> {
+		if (serviceProcess) {
 			return new Promise((resolve) => {
-				daemonProcess?.on("exit", () => {
-					daemonProcess = null;
+				serviceProcess?.on("exit", () => {
+					serviceProcess = null;
 					resolve();
 				});
 
-				daemonProcess?.kill("SIGTERM");
+				serviceProcess?.kill("SIGTERM");
 
 				setTimeout(() => {
-					if (daemonProcess) {
-						daemonProcess.kill("SIGKILL");
-						daemonProcess = null;
+					if (serviceProcess) {
+						serviceProcess.kill("SIGKILL");
+						serviceProcess = null;
 						resolve();
 					}
 				}, 2000);
@@ -183,9 +183,9 @@ describe("Terminal Host Session Lifecycle", () => {
 	}
 
 	/**
-	 * Connect to the daemon socket
+	 * Connect to the service socket
 	 */
-	function connectToDaemon(): Promise<Socket> {
+	function connectToService(): Promise<Socket> {
 		return new Promise((resolve, reject) => {
 			const socket = connect(SOCKET_PATH);
 
@@ -194,7 +194,7 @@ describe("Terminal Host Session Lifecycle", () => {
 			});
 
 			socket.on("error", (error) => {
-				reject(new Error(`Failed to connect to daemon: ${error.message}`));
+				reject(new Error(`Failed to connect to service: ${error.message}`));
 			});
 
 			setTimeout(() => {
@@ -241,7 +241,7 @@ describe("Terminal Host Session Lifecycle", () => {
 	}
 
 	/**
-	 * Authenticate with the daemon
+	 * Authenticate with the service
 	 */
 	async function authenticate({
 		socket,
@@ -276,8 +276,8 @@ describe("Terminal Host Session Lifecycle", () => {
 		stream: Socket;
 		clientId: string;
 	}> {
-		const control = await connectToDaemon();
-		const stream = await connectToDaemon();
+		const control = await connectToService();
+		const stream = await connectToService();
 		const clientId = `test-client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 		await authenticate({ socket: control, clientId, role: "control" });
 		await authenticate({ socket: stream, clientId, role: "stream" });
@@ -286,11 +286,11 @@ describe("Terminal Host Session Lifecycle", () => {
 
 	beforeAll(async () => {
 		cleanup();
-		await startDaemon();
+		await startService();
 	});
 
 	afterAll(async () => {
-		await stopDaemon();
+		await stopService();
 		cleanup();
 	});
 

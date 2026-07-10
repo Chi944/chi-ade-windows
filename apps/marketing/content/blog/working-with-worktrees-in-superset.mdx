@@ -98,7 +98,7 @@ Each task has its own worktree and branch. Agent 1 can't accidentally break Agen
 
 ### How Superset Manages Concurrency
 
-Superset's persistent daemon manages all agent sessions via Unix domain sockets. This architecture means:
+Superset's persistent service manages all agent sessions via Unix domain sockets. This architecture means:
 
 - **Sessions survive crashes** — close and reopen Superset, your agents are still running
 - **Priority-based scheduling** — the focused pane gets full resources, background tabs hydrate gradually
