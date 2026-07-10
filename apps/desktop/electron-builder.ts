@@ -4,6 +4,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AfterPackContext, Configuration } from "electron-builder";
 import rcedit from "rcedit";
@@ -90,6 +91,39 @@ async function editUnsignedWindowsExecutable(context: AfterPackContext) {
 	});
 }
 
+async function restoreMacNodePtyHelperMode(context: AfterPackContext) {
+	if (context.electronPlatformName !== "darwin") return;
+
+	const arch = process.arch;
+	if (arch !== "arm64" && arch !== "x64") {
+		throw new Error(`Unsupported macOS node-pty architecture: ${arch}`);
+	}
+
+	const appInfo = context.packager.appInfo;
+	const helperPath = join(
+		context.appOutDir,
+		`${appInfo.productFilename}.app`,
+		"Contents",
+		"Resources",
+		"app.asar.unpacked",
+		"node_modules",
+		"node-pty",
+		"prebuilds",
+		`darwin-${arch}`,
+		"spawn-helper",
+	);
+
+	// ASAR preserves executable metadata only for recognized binary extensions.
+	// node-pty's extensionless helper otherwise becomes 0644 and posix_spawnp
+	// fails in the packaged app. Restore it before electron-builder signs the app.
+	await chmod(helperPath, 0o755);
+}
+
+async function preparePackagedApp(context: AfterPackContext) {
+	await restoreMacNodePtyHelperMode(context);
+	await editUnsignedWindowsExecutable(context);
+}
+
 const config: Configuration = {
 	appId: "io.github.chi944.ade",
 	productName,
@@ -101,7 +135,7 @@ const config: Configuration = {
 	// Generate update manifests for all channels (latest.yml, canary.yml, etc.)
 	// This enables proper channel-based auto-updates following electron-builder conventions
 	generateUpdatesFilesForAllChannels: true,
-	afterPack: editUnsignedWindowsExecutable,
+	afterPack: preparePackagedApp,
 
 	// Publish target for update manifests (latest-mac.yml, etc.). The release
 	// workflow uploads artifacts itself (--publish never), but this makes the
