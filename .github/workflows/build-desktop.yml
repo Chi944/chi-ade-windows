@@ -134,6 +134,7 @@ jobs:
         run: |
           APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
           test -n "$APP_DIR" || { echo "::error::Packaged .app not found"; exit 1; }
+          APP_DIR=$(cd "$APP_DIR" && pwd -P)
           EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")
           test -n "$EXECUTABLE" || { echo "::error::CFBundleExecutable is missing"; exit 1; }
           export ELECTRON_RUN_AS_NODE=1
