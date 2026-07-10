@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { agentMessages } from "@superset/local-db";
-import { BrowserWindow } from "electron";
 import express from "express";
+import { isValidAgentSessionId } from "shared/agent-session-recovery";
 import { NOTIFICATION_EVENTS } from "shared/constants";
 import { env } from "shared/env.shared";
 import type {
@@ -10,8 +10,9 @@ import type {
 	AgentMessageEvent,
 } from "shared/notification-types";
 import { getAgentEntry } from "../agent-config/registry";
-import { localDb } from "../local-db";
 import { appState } from "../app-state";
+import { localDb } from "../local-db";
+import { getDaemonTerminalManager } from "../terminal/daemon";
 import { HOOK_PROTOCOL_VERSION } from "../terminal/env";
 import { mapEventType } from "./map-event-type";
 
@@ -62,7 +63,6 @@ function resolvePaneId(
 	paneId: string | undefined,
 	tabId: string | undefined,
 	workspaceId: string | undefined,
-	sessionId: string | undefined,
 ): string | undefined {
 	try {
 		const tabsState = appState.data.tabsState;
@@ -143,7 +143,6 @@ app.get("/hook/complete", (req, res) => {
 		paneId as string | undefined,
 		tabId as string | undefined,
 		workspaceId as string | undefined,
-		sessionId as string | undefined,
 	);
 
 	const event: AgentLifecycleEvent = {
@@ -152,6 +151,35 @@ app.get("/hook/complete", (req, res) => {
 		workspaceId: workspaceId as string | undefined,
 		eventType: mappedEventType,
 	};
+
+	const normalizedSessionId =
+		typeof sessionId === "string" ? sessionId.trim() : "";
+	const normalizedWorkspaceId =
+		typeof workspaceId === "string" ? workspaceId.trim() : "";
+	const runtime = resolvedPaneId
+		? appState.data.tabsState.panes?.[resolvedPaneId]?.agentRuntime
+		: undefined;
+	if (
+		resolvedPaneId &&
+		normalizedWorkspaceId &&
+		normalizedSessionId &&
+		runtime &&
+		isValidAgentSessionId(runtime, normalizedSessionId)
+	) {
+		void getDaemonTerminalManager()
+			.persistAgentSessionFromHook({
+				workspaceId: normalizedWorkspaceId,
+				paneId: resolvedPaneId,
+				runtime,
+				sessionId: normalizedSessionId,
+			})
+			.catch((error) => {
+				console.warn(
+					"[notifications] Failed to persist agent session id:",
+					error,
+				);
+			});
+	}
 
 	if (DEBUG_HOOKS_ENABLED) {
 		console.log("[notifications] hook event received", {
@@ -241,13 +269,7 @@ app.post("/agent/invoke", async (req, res) => {
  *   POST /agent/message  { agent, content, conversation?, role?, metadata? }
  */
 app.post("/agent/message", (req, res) => {
-	const {
-		agent,
-		content,
-		conversation,
-		role,
-		metadata,
-	} = (req.body ?? {}) as {
+	const { agent, content, conversation, role, metadata } = (req.body ?? {}) as {
 		agent?: string;
 		content?: string;
 		conversation?: string;

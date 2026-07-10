@@ -1,19 +1,24 @@
-import { projects, workspaces, worktrees } from "@superset/local-db";
+import {
+	AGENT_RUNTIMES,
+	projects,
+	workspaces,
+	worktrees,
+} from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { eq } from "drizzle-orm";
 import { regenerateCodexAgentsMd } from "main/lib/agent-scaffold";
+import { appState } from "main/lib/app-state";
 import { requestAppleEventsAccessOnce } from "main/lib/apple-events-permission";
 import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
-import { appState } from "main/lib/app-state";
 import { localDb } from "main/lib/local-db";
 import { restartDaemon as restartDaemonShared } from "main/lib/terminal";
 import {
 	TERMINAL_SESSION_KILLED_MESSAGE,
 	TerminalKilledError,
 } from "main/lib/terminal/errors";
-import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import { writeClaudeSessionIdToHistory } from "main/lib/terminal-history";
+import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
@@ -72,6 +77,7 @@ export const createTerminalRouter = () => {
 					skipColdRestore: z.boolean().optional(),
 					allowKilled: z.boolean().optional(),
 					themeType: z.enum(["dark", "light"]).optional(),
+					runtime: z.enum(AGENT_RUNTIMES).optional(),
 				}),
 			)
 			.mutation(async ({ input }) => {
@@ -92,6 +98,7 @@ export const createTerminalRouter = () => {
 					skipColdRestore,
 					allowKilled,
 					themeType,
+					runtime: runtimeOverride,
 				} = input;
 
 				const workspace = localDb
@@ -130,6 +137,7 @@ export const createTerminalRouter = () => {
 					requestedThemeType: themeType,
 					persistedThemeState: appState.data.themeState,
 				});
+				const runtime = runtimeOverride ?? workspace?.runtime ?? null;
 
 				// Codex reads its memory bridge from CODEX_HOME/.codex/AGENTS.md.
 				// Regenerate it from the canonical memory files before each spawn so a
@@ -138,7 +146,12 @@ export const createTerminalRouter = () => {
 				// held back (the default, ADE_MEMORY_SCAFFOLD unset), we don't touch
 				// the bridge from the absent memory files. regenerateCodexAgentsMd is
 				// also self-guarding: it no-ops when no canonical memory exists.
-				if (workspace?.runtime === "codex" && MEMORY_SCAFFOLD_ENABLED) {
+				if (
+					(runtime === "codex" ||
+						runtime === "huggingface" ||
+						runtime === "ollama") &&
+					MEMORY_SCAFFOLD_ENABLED
+				) {
 					regenerateCodexAgentsMd(workspaceId);
 				}
 
@@ -156,7 +169,7 @@ export const createTerminalRouter = () => {
 						skipColdRestore,
 						allowKilled,
 						themeType: resolvedThemeType,
-						runtime: workspace?.runtime ?? null,
+						runtime,
 					});
 
 					if (DEBUG_TERMINAL) {
@@ -186,6 +199,9 @@ export const createTerminalRouter = () => {
 						isColdRestore: result.isColdRestore,
 						previousCwd: result.previousCwd,
 						claudeSessionId: result.claudeSessionId,
+						agentRuntime: result.agentRuntime,
+						agentSessionId: result.agentSessionId,
+						resumeAvailable: result.resumeAvailable,
 						// Include snapshot for daemon mode (renderer can use for rehydration)
 						snapshot: result.snapshot,
 					};
@@ -314,6 +330,8 @@ export const createTerminalRouter = () => {
 			.input(
 				z.object({
 					paneId: z.string(),
+					deleteHistory: z.boolean().optional(),
+					workspaceId: z.string().optional(),
 				}),
 			)
 			.mutation(async ({ input }) => {

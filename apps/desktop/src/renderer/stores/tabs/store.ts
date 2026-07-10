@@ -96,6 +96,10 @@ const deriveTabName = (
 	return `Multiple panes (${tabPanes.length})`;
 };
 
+const MAX_CLOSED_TABS = 20;
+const closedTabKillBarriers = new Map<string, Promise<void>>();
+const pendingClosedTabReopens = new Set<string>();
+
 export const useTabsStore = create<TabsStore>()(
 	devtools(
 		persist(
@@ -162,6 +166,7 @@ export const useTabsStore = create<TabsStore>()(
 						(_command) =>
 							createPane(tabId, "terminal", {
 								initialCwd: options.initialCwd,
+								agentRuntime: options.agentRuntime,
 							}),
 					);
 
@@ -237,16 +242,36 @@ export const useTabsStore = create<TabsStore>()(
 						panes: closedPanes,
 						closedAt: Date.now(),
 					};
-					const closedTabsStack = [closedEntry, ...state.closedTabsStack].slice(
-						0,
-						20,
-					);
+					const allClosedTabs = [closedEntry, ...state.closedTabsStack];
+					const closedTabsStack = allClosedTabs.slice(0, MAX_CLOSED_TABS);
+					const evictedClosedTabs = allClosedTabs.slice(MAX_CLOSED_TABS);
 
+					const closeKillPromises: Promise<void>[] = [];
 					for (const paneId of paneIds) {
 						// Only kill terminal sessions for terminal panes (avoids unnecessary IPC for file-viewers)
 						const pane = state.panes[paneId];
 						if (pane?.type === "terminal") {
-							killTerminalForPane(paneId);
+							closeKillPromises.push(killTerminalForPane(paneId));
+						}
+					}
+					const closeBarrier = Promise.all(closeKillPromises).then(() => {});
+					closedTabKillBarriers.set(tabId, closeBarrier);
+					void closeBarrier.finally(() => {
+						if (closedTabKillBarriers.get(tabId) === closeBarrier) {
+							closedTabKillBarriers.delete(tabId);
+						}
+					});
+
+					// Histories remain available only while their tab is reopenable. Once
+					// the bounded stack evicts an entry, its pane IDs are unreachable.
+					for (const evicted of evictedClosedTabs) {
+						for (const pane of evicted.panes) {
+							if (pane.type === "terminal") {
+								killTerminalForPane(pane.id, {
+									deleteHistory: true,
+									workspaceId: evicted.tab.workspaceId,
+								});
+							}
 						}
 					}
 
@@ -420,7 +445,10 @@ export const useTabsStore = create<TabsStore>()(
 						// in layouts - we must not delete those when they're "removed"
 						if (pane && pane.tabId === tabId) {
 							if (pane.type === "terminal") {
-								killTerminalForPane(paneId);
+								killTerminalForPane(paneId, {
+									deleteHistory: true,
+									workspaceId: tab.workspaceId,
+								});
 							}
 							delete newPanes[paneId];
 						}
@@ -498,6 +526,7 @@ export const useTabsStore = create<TabsStore>()(
 						(_command) =>
 							createPane(tabId, "terminal", {
 								initialCwd: options.initialCwd,
+								agentRuntime: options.agentRuntime,
 							}),
 					);
 
@@ -812,7 +841,10 @@ export const useTabsStore = create<TabsStore>()(
 					// Kill terminal sessions for terminal panes
 					for (const id of paneIdsToRemove) {
 						if (state.panes[id]?.type === "terminal") {
-							killTerminalForPane(id);
+							killTerminalForPane(id, {
+								deleteHistory: true,
+								workspaceId: tab.workspaceId,
+							});
 						}
 					}
 
@@ -1022,7 +1054,10 @@ export const useTabsStore = create<TabsStore>()(
 					set((state) => {
 						const pane = state.panes[paneId];
 						if (!pane) return state;
-						if (pane.initialCwd === undefined) {
+						if (
+							pane.initialCwd === undefined &&
+							pane.allowKilledRestore === undefined
+						) {
 							return state;
 						}
 						return {
@@ -1031,6 +1066,7 @@ export const useTabsStore = create<TabsStore>()(
 								[paneId]: {
 									...pane,
 									initialCwd: undefined,
+									allowKilledRestore: undefined,
 								},
 							},
 						};
@@ -1639,77 +1675,83 @@ export const useTabsStore = create<TabsStore>()(
 					if (idx === -1) return false;
 
 					const entry = state.closedTabsStack[idx];
-					const newStack = [
-						...state.closedTabsStack.slice(0, idx),
-						...state.closedTabsStack.slice(idx + 1),
-					];
+					if (pendingClosedTabReopens.has(entry.tab.id)) return true;
+					pendingClosedTabReopens.add(entry.tab.id);
 
-					// Restore the tab with a new ID to avoid collisions
-					const newTabId = generateId("tab");
-					const restoredTab = {
-						...entry.tab,
-						id: newTabId,
-					};
+					const restoreAfterClose = () => {
+						const latest = get();
+						const latestIndex = latest.closedTabsStack.findIndex(
+							(candidate) => candidate.tab.id === entry.tab.id,
+						);
+						if (latestIndex === -1) return;
+						const latestEntry = latest.closedTabsStack[latestIndex];
 
-					// Restore panes with updated tabId references
-					const idMap = new Map<string, string>();
-					const restoredPanes: Record<string, (typeof entry.panes)[number]> =
-						{};
-					for (const pane of entry.panes) {
-						const newPaneId = generateId("pane");
-						idMap.set(pane.id, newPaneId);
-						restoredPanes[newPaneId] = {
-							...pane,
-							id: newPaneId,
-							tabId: newTabId,
-							status: "idle",
-						};
-					}
-
-					// Remap layout leaf IDs
-					const remapLayout = (
-						node: MosaicNode<string>,
-					): MosaicNode<string> => {
-						if (typeof node === "string") {
-							return idMap.get(node) ?? node;
+						// Reuse the original IDs so bounded history and exact provider
+						// session metadata stay attached. The close barrier prevents a late
+						// kill from terminating the revived pane.
+						if (
+							latest.tabs.some((tab) => tab.id === latestEntry.tab.id) ||
+							latestEntry.panes.some((pane) => latest.panes[pane.id])
+						) {
+							console.warn(
+								"Cannot reopen tab because its IDs are already active",
+							);
+							return;
 						}
-						return {
-							...node,
-							first: remapLayout(node.first),
-							second: remapLayout(node.second),
-						};
+
+						const restoredTab = { ...latestEntry.tab };
+						const restoredPanes: Record<
+							string,
+							(typeof latestEntry.panes)[number]
+						> = {};
+						for (const pane of latestEntry.panes) {
+							restoredPanes[pane.id] = {
+								...pane,
+								status: "idle",
+								allowKilledRestore: pane.type === "terminal" ? true : undefined,
+							};
+						}
+
+						const currentActiveId = latest.activeTabIds[workspaceId];
+						const historyStack = latest.tabHistoryStacks[workspaceId] || [];
+						const newHistoryStack = currentActiveId
+							? [
+									currentActiveId,
+									...historyStack.filter((id) => id !== currentActiveId),
+								]
+							: historyStack;
+						const newStack = [
+							...latest.closedTabsStack.slice(0, latestIndex),
+							...latest.closedTabsStack.slice(latestIndex + 1),
+						];
+						const firstPaneId = getFirstPaneId(restoredTab.layout);
+
+						set({
+							tabs: [...latest.tabs, restoredTab],
+							panes: { ...latest.panes, ...restoredPanes },
+							activeTabIds: {
+								...latest.activeTabIds,
+								[workspaceId]: restoredTab.id,
+							},
+							focusedPaneIds: {
+								...latest.focusedPaneIds,
+								[restoredTab.id]: firstPaneId,
+							},
+							closedTabsStack: newStack,
+							tabHistoryStacks: {
+								...latest.tabHistoryStacks,
+								[workspaceId]: newHistoryStack,
+							},
+						});
 					};
-					restoredTab.layout = remapLayout(restoredTab.layout);
 
-					const currentActiveId = state.activeTabIds[workspaceId];
-					const historyStack = state.tabHistoryStacks[workspaceId] || [];
-					const newHistoryStack = currentActiveId
-						? [
-								currentActiveId,
-								...historyStack.filter((id) => id !== currentActiveId),
-							]
-						: historyStack;
-
-					const firstPaneId = getFirstPaneId(restoredTab.layout);
-
-					set({
-						tabs: [...state.tabs, restoredTab],
-						panes: { ...state.panes, ...restoredPanes },
-						activeTabIds: {
-							...state.activeTabIds,
-							[workspaceId]: newTabId,
-						},
-						focusedPaneIds: {
-							...state.focusedPaneIds,
-							[newTabId]: firstPaneId,
-						},
-						closedTabsStack: newStack,
-						tabHistoryStacks: {
-							...state.tabHistoryStacks,
-							[workspaceId]: newHistoryStack,
-						},
-					});
-
+					const closeBarrier = closedTabKillBarriers.get(entry.tab.id);
+					void (closeBarrier ?? Promise.resolve())
+						.then(restoreAfterClose)
+						.catch((error) => {
+							console.warn("Failed to reopen closed tab:", error);
+						})
+						.finally(() => pendingClosedTabReopens.delete(entry.tab.id));
 					return true;
 				},
 

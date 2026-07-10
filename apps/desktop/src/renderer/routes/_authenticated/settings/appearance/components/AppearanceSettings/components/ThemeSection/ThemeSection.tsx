@@ -20,6 +20,7 @@ import {
 } from "shared/themes";
 import { SystemThemeCard } from "../SystemThemeCard";
 import { ThemeCard } from "../ThemeCard";
+import { ThemeColorEditor } from "./components/ThemeColorEditor";
 
 const MAX_THEME_FILE_SIZE = 256 * 1024; // 256 KB
 
@@ -33,6 +34,7 @@ export function ThemeSection() {
 	const upsertCustomThemes = useThemeStore((state) => state.upsertCustomThemes);
 
 	const allThemes = [...builtInThemes, ...customThemes];
+	const editableBaseTheme = activeTheme ?? builtInThemes[0];
 
 	const handleImport = async (event: ChangeEvent<HTMLInputElement>) => {
 		const file = event.target.files?.[0];
@@ -117,7 +119,7 @@ export function ThemeSection() {
 		const url = URL.createObjectURL(blob);
 		const link = document.createElement("a");
 		link.href = url;
-		link.download = "superset-theme-base.json";
+		link.download = "ade-theme-base.json";
 		link.click();
 		URL.revokeObjectURL(url);
 	};
@@ -127,6 +129,9 @@ export function ThemeSection() {
 			<div className="mb-4 flex flex-wrap items-center justify-between gap-2">
 				<h3 className="text-sm font-medium">Theme</h3>
 				<div className="flex flex-wrap items-center gap-2 justify-end">
+					{editableBaseTheme && (
+						<ThemeColorEditor baseTheme={editableBaseTheme} />
+					)}
 					<input
 						ref={fileInputRef}
 						type="file"

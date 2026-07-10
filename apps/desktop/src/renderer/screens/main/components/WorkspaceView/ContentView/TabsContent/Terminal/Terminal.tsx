@@ -40,6 +40,8 @@ const stripLeadingEmoji = (text: string) =>
 export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	const pane = useTabsStore((s) => s.panes[paneId]);
 	const paneInitialCwd = pane?.initialCwd;
+	const agentRuntime = pane?.agentRuntime;
+	const allowKilledRestore = pane?.allowKilledRestore;
 	const clearPaneInitialData = useTabsStore((s) => s.clearPaneInitialData);
 
 	const { data: workspaceData } = electronTrpc.workspaces.get.useQuery(
@@ -224,6 +226,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		paneId,
 		tabId,
 		workspaceId,
+		agentRuntime,
 		xtermRef,
 		fitAddonRef,
 		isStreamReadyRef,
@@ -322,6 +325,8 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		paneId,
 		tabIdRef,
 		workspaceId,
+		agentRuntime,
+		allowKilledRestore,
 		terminalRef,
 		xtermRef,
 		fitAddonRef,

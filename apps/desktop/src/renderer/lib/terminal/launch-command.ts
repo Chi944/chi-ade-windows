@@ -1,7 +1,10 @@
+import type { AgentRuntime } from "@superset/local-db";
+
 interface TerminalCreateOrAttachInput {
 	paneId: string;
 	tabId: string;
 	workspaceId: string;
+	runtime?: AgentRuntime;
 }
 
 interface TerminalWriteInput {
@@ -15,6 +18,7 @@ interface LaunchCommandInPaneOptions {
 	tabId: string;
 	workspaceId: string;
 	command: string;
+	runtime?: AgentRuntime;
 	createOrAttach: (input: TerminalCreateOrAttachInput) => Promise<unknown>;
 	write: (input: TerminalWriteInput) => Promise<unknown>;
 }
@@ -69,6 +73,7 @@ export async function launchCommandInPane({
 	tabId,
 	workspaceId,
 	command,
+	runtime,
 	createOrAttach,
 	write,
 }: LaunchCommandInPaneOptions): Promise<void> {
@@ -76,6 +81,7 @@ export async function launchCommandInPane({
 		paneId,
 		tabId,
 		workspaceId,
+		...(runtime ? { runtime } : {}),
 	});
 
 	await writeCommandInPane({ paneId, command, write });

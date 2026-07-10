@@ -1,3 +1,5 @@
+import type { AgentRuntime } from "@superset/local-db";
+
 export interface TerminalProps {
 	paneId: string;
 	tabId: string;
@@ -25,6 +27,9 @@ export type CreateOrAttachResult = {
 	isColdRestore?: boolean;
 	previousCwd?: string;
 	claudeSessionId?: string;
+	agentRuntime?: AgentRuntime;
+	agentSessionId?: string;
+	resumeAvailable?: boolean;
 	snapshot?: {
 		snapshotAnsi: string;
 		rehydrateSequences: string;
@@ -54,6 +59,8 @@ export interface ColdRestoreState {
 	cwd: string | null;
 	scrollback: string;
 	claudeSessionId: string | null;
+	agentRuntime: AgentRuntime | null;
+	agentSessionId: string | null;
 }
 
 /**
@@ -69,6 +76,7 @@ export interface CreateOrAttachInput {
 	skipColdRestore?: boolean;
 	allowKilled?: boolean;
 	themeType?: "dark" | "light";
+	runtime?: AgentRuntime;
 }
 
 /**

@@ -46,8 +46,8 @@ export const SupersetNotifyPlugin = async ({ $, client }) => {
    * Sends a notification to Superset's notification server.
    * Best-effort only - failures are silently ignored to avoid breaking the agent.
    */
-  const notify = async (hookEventName) => {
-    const payload = JSON.stringify({ hook_event_name: hookEventName });
+  const notify = async (hookEventName, sessionID) => {
+    const payload = JSON.stringify({ hook_event_name: hookEventName, session_id: sessionID });
     log('Sending notification:', hookEventName);
     try {
       await $`${notifyBin} ${notifyPath} ${payload}`;
@@ -111,7 +111,7 @@ export const SupersetNotifyPlugin = async ({ $, client }) => {
     if (currentState === 'idle') {
       currentState = 'busy';
       stopSent = false; // Reset stop flag for new busy period
-      await notify('Start');
+      await notify('Start', sessionID);
     } else {
       log('Already busy, skipping Start');
     }
@@ -134,7 +134,7 @@ export const SupersetNotifyPlugin = async ({ $, client }) => {
       currentState = 'idle';
       stopSent = true;
       log('Stopping, reason:', reason);
-      await notify('Stop');
+      await notify('Stop', sessionID);
       // Reset rootSessionID so we can track a new session if OpenCode starts another conversation
       rootSessionID = null;
       log('Reset rootSessionID for next session');

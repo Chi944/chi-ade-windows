@@ -1,4 +1,9 @@
 import { settings } from "@superset/local-db";
+import {
+	isValidOpenCodeModelId,
+	OPEN_CODE_MODEL_PROVIDERS,
+	type OpenCodeModelProvider,
+} from "@superset/shared/agent-command";
 import { safeStorage } from "electron";
 import { localDb } from "./local-db";
 
@@ -14,8 +19,11 @@ import { localDb } from "./local-db";
  * without relying on the user's shell rc.
  */
 
-export const PROVIDER_IDS = ["openrouter"] as const;
+export const PROVIDER_IDS = ["openrouter", "huggingface"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
+export const MODEL_PROVIDER_IDS = OPEN_CODE_MODEL_PROVIDERS;
+export type ModelProviderId = OpenCodeModelProvider;
+const MODEL_PROFILE_PREFIX = "model:";
 
 function readKeyMap(): Record<string, string> {
 	const row = localDb.select().from(settings).get();
@@ -85,4 +93,91 @@ export function getProviderKeyStatus(): Record<ProviderId, boolean> {
 	return Object.fromEntries(
 		PROVIDER_IDS.map((id) => [id, Boolean(map[id])]),
 	) as Record<ProviderId, boolean>;
+}
+
+function getStoredValue(id: string): string | null {
+	const blob = readKeyMap()[id];
+	if (!blob || !safeStorage.isEncryptionAvailable()) return null;
+	try {
+		return safeStorage.decryptString(Buffer.from(blob, "base64"));
+	} catch {
+		return null;
+	}
+}
+
+/** Persist a validated model ID in the existing encrypted provider map. */
+export function setProviderModelProfile(
+	provider: ModelProviderId,
+	modelId: string,
+): void {
+	const trimmed = modelId.trim();
+	if (!isValidOpenCodeModelId(trimmed)) {
+		throw new Error("Invalid provider model ID");
+	}
+	if (!safeStorage.isEncryptionAvailable()) {
+		throw new Error("Secure storage is not available on this system");
+	}
+	const map = readKeyMap();
+	map[`${MODEL_PROFILE_PREFIX}${provider}`] = safeStorage
+		.encryptString(trimmed)
+		.toString("base64");
+	writeKeyMap(map);
+}
+
+export function clearProviderModelProfile(provider: ModelProviderId): void {
+	const map = readKeyMap();
+	const id = `${MODEL_PROFILE_PREFIX}${provider}`;
+	if (id in map) {
+		delete map[id];
+		writeKeyMap(map);
+	}
+}
+
+function getProviderModelProfiles(): Partial<Record<ModelProviderId, string>> {
+	return Object.fromEntries(
+		MODEL_PROVIDER_IDS.flatMap((provider) => {
+			const value = getStoredValue(`${MODEL_PROFILE_PREFIX}${provider}`);
+			return value && isValidOpenCodeModelId(value)
+				? ([[provider, value]] as const)
+				: [];
+		}),
+	);
+}
+
+/**
+ * Main-process-only environment for provider sessions. Secrets are decrypted
+ * here and never included in a tRPC response. Ollama needs no credential.
+ */
+export function getProviderRuntimeEnvironment({
+	runtime,
+}: {
+	runtime?: string | null;
+	workspaceId: string;
+}): Record<string, string> {
+	const result: Record<string, string> = {};
+	const effectiveRuntime = runtime;
+	if (
+		effectiveRuntime === "kimi" ||
+		effectiveRuntime === "minimax" ||
+		effectiveRuntime === "glm"
+	) {
+		const openRouterKey = getProviderKey("openrouter");
+		if (openRouterKey) result.OPENROUTER_API_KEY = openRouterKey;
+		return result;
+	}
+
+	if (effectiveRuntime !== "huggingface" && effectiveRuntime !== "ollama") {
+		return result;
+	}
+
+	// Read the encrypted profile here as an integrity check. The selected model
+	// itself is passed as a validated CLI argument by buildProviderModelCommand.
+	getProviderModelProfiles();
+
+	if (effectiveRuntime === "huggingface") {
+		const huggingFaceToken = getProviderKey("huggingface");
+		if (huggingFaceToken) result.HF_TOKEN = huggingFaceToken;
+	}
+
+	return result;
 }

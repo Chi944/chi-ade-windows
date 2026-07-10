@@ -77,8 +77,8 @@ describe("getDefaultTerminalTheme", () => {
 	it("should fall back to default dark theme when localStorage is empty", () => {
 		const theme = getDefaultTerminalTheme();
 
-		// Default theme is dark (ember)
-		expect(theme.background).toBe("#151110");
+		// Default theme uses a true-black terminal background
+		expect(theme.background).toBe("#000000");
 	});
 
 	it("should handle invalid JSON in cached terminal gracefully", () => {
@@ -87,7 +87,7 @@ describe("getDefaultTerminalTheme", () => {
 		const theme = getDefaultTerminalTheme();
 
 		// Should fall back to default
-		expect(theme.background).toBe("#151110");
+		expect(theme.background).toBe("#000000");
 	});
 });
 
@@ -110,7 +110,7 @@ describe("getDefaultTerminalBg", () => {
 	});
 
 	it("should return default background when no cache", () => {
-		expect(getDefaultTerminalBg()).toBe("#151110");
+		expect(getDefaultTerminalBg()).toBe("#000000");
 	});
 });
 

@@ -8,6 +8,7 @@ import {
 	SHELL_CRASH_THRESHOLD_MS,
 	sanitizeEnv,
 	setOpenRouterKeyResolver,
+	setProviderEnvironmentResolver,
 } from "./env";
 
 describe("env", () => {
@@ -752,6 +753,27 @@ describe("env", () => {
 				const result = buildTerminalEnv({ ...baseParams, runtime: "claude" });
 				expect(result.CODEX_HOME).toBeUndefined();
 			});
+
+			it("isolates Hugging Face and Ollama from the subscription Codex home", async () => {
+				const { getAgentCodexHome } = await import("../agent-home");
+				const subscriptionHome = getAgentCodexHome(baseParams.workspaceId);
+				const huggingFace = buildTerminalEnv({
+					...baseParams,
+					runtime: "huggingface",
+				});
+				const ollama = buildTerminalEnv({
+					...baseParams,
+					runtime: "ollama",
+				});
+
+				expect(huggingFace.CODEX_HOME).toBe(`${subscriptionHome}-huggingface`);
+				expect(ollama.CODEX_HOME).toBe(`${subscriptionHome}-ollama`);
+				expect(huggingFace.CODEX_HOME).not.toBe(subscriptionHome);
+				expect(ollama.CODEX_HOME).not.toBe(subscriptionHome);
+				expect(buildSafeEnv(huggingFace).CODEX_HOME).toBe(
+					`${subscriptionHome}-huggingface`,
+				);
+			});
 		});
 
 		describe("OPENROUTER_API_KEY injection", () => {
@@ -782,6 +804,62 @@ describe("env", () => {
 				const result = buildTerminalEnv(baseParams);
 				expect(result.OPENROUTER_API_KEY).toBeUndefined();
 				expect(result.SUPERSET_PANE_ID).toBe(baseParams.paneId);
+			});
+		});
+
+		describe("runtime-scoped provider environment", () => {
+			afterEach(() => {
+				setProviderEnvironmentResolver(null);
+			});
+
+			it("strips inherited provider credentials from unrelated terminals", () => {
+				const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
+				const previousHuggingFaceToken = process.env.HF_TOKEN;
+				process.env.OPENROUTER_API_KEY = "inherited-openrouter-secret";
+				process.env.HF_TOKEN = "inherited-huggingface-secret";
+
+				try {
+					setProviderEnvironmentResolver(() => ({}));
+					const result = buildTerminalEnv({
+						...baseParams,
+						runtime: "claude",
+					});
+
+					expect(result.OPENROUTER_API_KEY).toBeUndefined();
+					expect(result.HF_TOKEN).toBeUndefined();
+				} finally {
+					if (previousOpenRouterKey === undefined) {
+						delete process.env.OPENROUTER_API_KEY;
+					} else {
+						process.env.OPENROUTER_API_KEY = previousOpenRouterKey;
+					}
+					if (previousHuggingFaceToken === undefined) {
+						delete process.env.HF_TOKEN;
+					} else {
+						process.env.HF_TOKEN = previousHuggingFaceToken;
+					}
+				}
+			});
+
+			it("injects Hugging Face credentials only for its explicit runtime", () => {
+				setProviderEnvironmentResolver(
+					({ runtime }): Record<string, string> =>
+						runtime === "huggingface" ? { HF_TOKEN: "hf_secret" } : {},
+				);
+
+				const huggingFace = buildTerminalEnv({
+					...baseParams,
+					runtime: "huggingface",
+				});
+				const claude = buildTerminalEnv({
+					...baseParams,
+					runtime: "claude",
+				});
+
+				expect(huggingFace.HF_TOKEN).toBe("hf_secret");
+				expect(buildSafeEnv(huggingFace).HF_TOKEN).toBe("hf_secret");
+				expect(huggingFace.CODEX_HOME).toBeDefined();
+				expect(claude.HF_TOKEN).toBeUndefined();
 			});
 		});
 	});

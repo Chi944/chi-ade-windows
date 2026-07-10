@@ -13,6 +13,11 @@ export interface AgentSessionWorkspace {
 	worktreePath?: string | null;
 }
 
+export interface AgentSessionOptions {
+	commands?: string[];
+	name?: string;
+}
+
 /**
  * Spawns an agent's runtime CLI in a new terminal session tab.
  *
@@ -25,7 +30,7 @@ export function useAgentSession() {
 	const { openPreset, addTab } = useTabsWithPresets();
 
 	const spawnAgentSession = useCallback(
-		(workspace: AgentSessionWorkspace) => {
+		(workspace: AgentSessionWorkspace, options?: AgentSessionOptions) => {
 			const { id, runtime, worktreePath } = workspace;
 			const cwd = worktreePath || undefined;
 
@@ -36,15 +41,17 @@ export function useAgentSession() {
 
 			const preset: TerminalPreset = {
 				id: `agent-${runtime}`,
-				name: AGENT_LABELS[runtime] ?? runtime,
+				name: options?.name ?? AGENT_LABELS[runtime] ?? runtime,
 				cwd: worktreePath ?? "",
-				commands: getAgentPresetCommands({
-					windows: process.platform === "win32",
-				})[runtime],
+				commands:
+					options?.commands ??
+					getAgentPresetCommands({
+						windows: process.platform === "win32",
+					})[runtime],
 				executionMode: "new-tab",
 			};
 
-			return openPreset(id, preset, { target: "new-tab" });
+			return openPreset(id, preset, { target: "new-tab", runtime });
 		},
 		[openPreset, addTab],
 	);

@@ -1,13 +1,14 @@
 import { exec, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter } from "node:path";
 import type { AgentRuntime } from "@superset/local-db";
 import defaultShell from "default-shell";
 import { env } from "shared/env.shared";
 import { getAgentCodexHome } from "../agent-home";
 import { BIN_DIR } from "../agent-setup/paths";
 import { getShellEnv } from "../agent-setup/shell-wrappers";
+import { syncSharedCodexAuth } from "./codex-auth";
 
 const MACOS_SYSTEM_CERT_FILE = "/etc/ssl/cert.pem";
 let cachedUtf8Locale: string | null = null;
@@ -310,6 +311,7 @@ const ALLOWED_ENV_VARS = new Set([
 	// (see provider-keys.ts). Like CODEX_HOME, it must survive the terminal-host's
 	// buildSafeEnv re-filter to reach the OpenRouter-routed CLI (kimi/minimax/glm).
 	"OPENROUTER_API_KEY",
+	"HF_TOKEN",
 ]);
 
 /**
@@ -427,6 +429,14 @@ export function removeAppEnvVars(
  * buildTerminalEnv only runs in the main process, where the resolver is set.
  */
 let openRouterKeyResolver: (() => string | null) | null = null;
+interface ProviderEnvironmentContext {
+	runtime?: AgentRuntime | null;
+	workspaceId: string;
+}
+
+let providerEnvironmentResolver:
+	| ((context: ProviderEnvironmentContext) => Record<string, string>)
+	| null = null;
 
 export function setOpenRouterKeyResolver(
 	resolver: (() => string | null) | null,
@@ -434,30 +444,12 @@ export function setOpenRouterKeyResolver(
 	openRouterKeyResolver = resolver;
 }
 
-/**
- * Share a single Codex login across every agent.
- *
- * Each codex agent gets an isolated CODEX_HOME, so it would otherwise start
- * logged out. We symlink the user's global ~/.codex/auth.json into the agent's
- * CODEX_HOME (once), so a single `codex login` anywhere benefits all agents.
- * Best-effort: never blocks terminal creation, and no-ops when the user has not
- * logged in globally yet (~/.codex/auth.json absent).
- */
-function linkSharedCodexAuth(codexHome: string): void {
-	try {
-		const sharedAuth = join(os.homedir(), ".codex", "auth.json");
-		if (!fs.existsSync(sharedAuth)) return;
-
-		fs.mkdirSync(codexHome, { recursive: true });
-
-		const agentAuth = join(codexHome, "auth.json");
-		// existsSync follows symlinks, so an existing (valid) link is left alone.
-		if (fs.existsSync(agentAuth)) return;
-
-		fs.symlinkSync(sharedAuth, agentAuth);
-	} catch {
-		// Auth sharing is a convenience; a failure here must not break the terminal.
-	}
+export function setProviderEnvironmentResolver(
+	resolver:
+		| ((context: ProviderEnvironmentContext) => Record<string, string>)
+		| null,
+): void {
+	providerEnvironmentResolver = resolver;
 }
 
 export function buildTerminalEnv(params: {
@@ -518,12 +510,34 @@ export function buildTerminalEnv(params: {
 	};
 	prependSupersetBinToPath(terminalEnv);
 
-	delete terminalEnv.GOOGLE_API_KEY;
+	// Provider variables are allowlisted so credentials selected in the main
+	// process survive the terminal-host's second buildSafeEnv pass. Never inherit
+	// those credentials from Electron itself: doing so would expose them to every
+	// terminal instead of only the matching provider runtime.
+	for (const key of Object.keys(terminalEnv)) {
+		const normalizedKey = key.toUpperCase();
+		if (
+			normalizedKey === "GOOGLE_API_KEY" ||
+			normalizedKey === "OPENROUTER_API_KEY" ||
+			normalizedKey === "HF_TOKEN"
+		) {
+			delete terminalEnv[key];
+		}
+	}
 
 	// Inject the stored OpenRouter key so the OpenRouter-routed runtimes
 	// (kimi/minimax/glm) authenticate without depending on the user's shell rc.
 	// No key stored -> leave it unset so any shell rc fallback still applies.
-	if (openRouterKeyResolver) {
+	if (providerEnvironmentResolver) {
+		try {
+			Object.assign(
+				terminalEnv,
+				providerEnvironmentResolver({ runtime, workspaceId }),
+			);
+		} catch {
+			// Never block terminal creation on key/config retrieval.
+		}
+	} else if (openRouterKeyResolver) {
 		try {
 			const openRouterKey = openRouterKeyResolver();
 			if (openRouterKey) {
@@ -537,10 +551,17 @@ export function buildTerminalEnv(params: {
 	// Codex isolates its config + generated AGENTS.md under a per-agent CODEX_HOME.
 	// We only point Codex at the right home here; launch-time regeneration of
 	// .codex/AGENTS.md is a future hook owned by the agent-scaffold.
-	if (runtime === "codex") {
-		const codexHome = getAgentCodexHome(workspaceId);
+	const usesCodexHome =
+		runtime === "codex" || runtime === "huggingface" || runtime === "ollama";
+	if (usesCodexHome) {
+		const agentCodexHome = getAgentCodexHome(workspaceId);
+		const codexHome =
+			runtime === "codex" ? agentCodexHome : `${agentCodexHome}-${runtime}`;
 		terminalEnv.CODEX_HOME = codexHome;
-		linkSharedCodexAuth(codexHome);
+		// Custom Hugging Face and Ollama providers do not need OpenAI account
+		// credentials. Their separate homes also prevent stale subscription auth
+		// from an older installation reaching those model processes.
+		if (runtime === "codex") syncSharedCodexAuth(codexHome);
 	}
 
 	// Electron child processes can't access macOS Keychain for TLS cert verification,

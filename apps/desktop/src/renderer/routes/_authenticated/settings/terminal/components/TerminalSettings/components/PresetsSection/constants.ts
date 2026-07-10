@@ -18,7 +18,9 @@ export interface PresetTemplate {
 
 export function getPresetTemplates(windows: boolean): PresetTemplate[] {
 	const commands = getAgentPresetCommands({ windows });
-	return AGENT_TYPES.map((agent) => ({
+	return AGENT_TYPES.filter(
+		(agent) => agent !== "huggingface" && agent !== "ollama",
+	).map((agent) => ({
 		name: agent,
 		preset: {
 			name: agent,

@@ -89,8 +89,7 @@ export function useAgentHookListener() {
 				// Reuse an existing tab with this title so e.g. nightly maintenance
 				// always writes to the same tab.
 				const existingTab = state.tabs.find(
-					(t) =>
-						t.workspaceId === wsId && (t.userTitle ?? t.name) === label,
+					(t) => t.workspaceId === wsId && (t.userTitle ?? t.name) === label,
 				);
 				let tabId: string;
 				let paneId: string;
@@ -104,7 +103,7 @@ export function useAgentHookListener() {
 						Object.values(state.panes).find((p) => p.tabId === tabId)?.id ??
 						"";
 					if (!paneId) {
-						const created = state.addTab(wsId);
+						const created = state.addTab(wsId, { agentRuntime: "claude" });
 						tabId = created.tabId;
 						paneId = created.paneId;
 						state.renameTab(tabId, label);
@@ -112,10 +111,19 @@ export function useAgentHookListener() {
 						reuseLiveSession = true;
 					}
 				} else {
-					const created = state.addTab(wsId);
+					const created = state.addTab(wsId, { agentRuntime: "claude" });
 					tabId = created.tabId;
 					paneId = created.paneId;
 					state.renameTab(tabId, label);
+				}
+				const currentPane = useTabsStore.getState().panes[paneId];
+				if (currentPane && currentPane.agentRuntime !== "claude") {
+					useTabsStore.setState((current) => ({
+						panes: {
+							...current.panes,
+							[paneId]: { ...currentPane, agentRuntime: "claude" },
+						},
+					}));
 				}
 
 				const escaped = prompt.replace(/'/g, "'\\''");
@@ -138,6 +146,7 @@ export function useAgentHookListener() {
 						tabId,
 						workspaceId: wsId,
 						command,
+						runtime: "claude",
 						createOrAttach: (input) => createOrAttach.mutateAsync(input),
 						write: (input) => writeToTerminal.mutateAsync(input),
 					});

@@ -27,7 +27,7 @@ function findBinaryPathsWindows(name: string): string[] {
 		encoding: "utf-8",
 		stdio: ["pipe", "pipe", "ignore"],
 	});
-	return result.trim().split("\r\n").filter(Boolean);
+	return result.trim().split(/\r?\n/).filter(Boolean);
 }
 
 /**
@@ -35,7 +35,7 @@ function findBinaryPathsWindows(name: string): string[] {
  * Filters out all superset bin directories (prod, dev, and workspace-specific)
  * to avoid wrapper scripts calling each other.
  */
-export function findRealBinary(name: string): string | null {
+export function findRealBinaries(name: string): string[] {
 	try {
 		const isWindows = process.platform === "win32";
 		const allPaths = isWindows
@@ -46,16 +46,24 @@ export function findRealBinary(name: string): string | null {
 		// Filter out wrapper scripts from all ADE directories:
 		// - ~/.ade/bin
 		// - ~/.ade-*/bin (workspace-specific instances)
-		const supersetBinDir = path.join(homedir, ".ade", "bin");
-		const supersetPrefix = path.join(homedir, ".ade-");
-		const paths = allPaths.filter(
-			(p) =>
-				p &&
-				!p.startsWith(supersetBinDir) &&
-				!(p.startsWith(supersetPrefix) && p.includes("/bin/")),
-		);
-		return paths[0] || null;
+		const normalize = (value: string) =>
+			path.resolve(value).replaceAll("\\", "/").toLowerCase();
+		const supersetBinDir = normalize(path.join(homedir, ".ade", "bin"));
+		const supersetPrefix = normalize(path.join(homedir, ".ade-"));
+		const paths = allPaths.filter((p) => {
+			if (!p) return false;
+			const normalized = normalize(p);
+			return (
+				!normalized.startsWith(`${supersetBinDir}/`) &&
+				!(normalized.startsWith(supersetPrefix) && normalized.includes("/bin/"))
+			);
+		});
+		return [...new Set(paths)];
 	} catch {
-		return null;
+		return [];
 	}
+}
+
+export function findRealBinary(name: string): string | null {
+	return findRealBinaries(name)[0] ?? null;
 }

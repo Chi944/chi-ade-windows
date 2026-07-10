@@ -2,14 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { projects, type SelectProject } from "@superset/local-db";
-import {
-	CHECKED_BINARIES,
-	type RuntimeAvailability,
-} from "@superset/shared/agent-binaries";
+import type { RuntimeAvailability } from "@superset/shared/agent-binaries";
 import { eq } from "drizzle-orm";
 import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
-import { findRealBinary } from "main/lib/agent-setup/utils";
 import { localDb } from "main/lib/local-db";
+import { computeRuntimeAvailability } from "main/lib/runtime-availability";
 import type { SetupAction, SetupDetectionResult } from "shared/types/config";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
@@ -24,19 +21,18 @@ import { loadSetupConfig } from "../workspaces/utils/setup";
 const AVAILABILITY_TTL_MS = 5_000;
 let availabilityCache: { at: number; value: RuntimeAvailability } | null = null;
 
-function computeRuntimeAvailability(): RuntimeAvailability {
-	const entries = CHECKED_BINARIES.map(
-		(bin) => [bin, findRealBinary(bin) !== null] as const,
-	);
-	return Object.fromEntries(entries) as RuntimeAvailability;
-}
-
-function getRuntimeAvailability(force: boolean): RuntimeAvailability {
+async function getRuntimeAvailability(
+	force: boolean,
+): Promise<RuntimeAvailability> {
 	const now = Date.now();
-	if (!force && availabilityCache && now - availabilityCache.at < AVAILABILITY_TTL_MS) {
+	if (
+		!force &&
+		availabilityCache &&
+		now - availabilityCache.at < AVAILABILITY_TTL_MS
+	) {
 		return availabilityCache.value;
 	}
-	const value = computeRuntimeAvailability();
+	const value = await computeRuntimeAvailability();
 	availabilityCache = { at: now, value };
 	return value;
 }

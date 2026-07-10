@@ -1,3 +1,4 @@
+import type { AgentRuntime } from "@superset/local-db";
 import type { MosaicBranch, MosaicNode } from "react-mosaic-component";
 import type { ChangeCategory, FileStatus } from "shared/changes-types";
 import type {
@@ -45,11 +46,13 @@ export interface TabsState extends Omit<BaseTabsState, "tabs"> {
  */
 export interface AddTabOptions {
 	initialCwd?: string;
+	agentRuntime?: AgentRuntime;
 }
 
 export interface AddTabWithMultiplePanesOptions {
 	commands: string[];
 	initialCwd?: string;
+	agentRuntime?: AgentRuntime;
 }
 
 /**

@@ -10,6 +10,12 @@ export {
 	monokaiTheme,
 	oneDarkTheme,
 } from "./built-in";
+export {
+	createCustomizedTheme,
+	type EssentialThemeColors,
+	getContrastRatio,
+	getEssentialThemeColors,
+} from "./customize";
 export { parseThemeConfigFile, type ThemeConfigParseResult } from "./import";
 export type { TerminalColors, Theme, ThemeMetadata, UIColors } from "./types";
 export {

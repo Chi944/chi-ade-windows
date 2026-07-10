@@ -50,6 +50,28 @@ describe("launchCommandInPane", () => {
 			throwOnError: true,
 		});
 	});
+
+	it("passes the pane runtime to createOrAttach", async () => {
+		const createOrAttach = mock(async () => ({}));
+		const write = mock(async () => ({}));
+
+		await launchCommandInPane({
+			paneId: "pane-1",
+			tabId: "tab-1",
+			workspaceId: "ws-1",
+			command: "codex",
+			runtime: "codex",
+			createOrAttach,
+			write,
+		});
+
+		expect(createOrAttach).toHaveBeenCalledWith({
+			paneId: "pane-1",
+			tabId: "tab-1",
+			workspaceId: "ws-1",
+			runtime: "codex",
+		});
+	});
 });
 
 describe("buildTerminalCommand", () => {

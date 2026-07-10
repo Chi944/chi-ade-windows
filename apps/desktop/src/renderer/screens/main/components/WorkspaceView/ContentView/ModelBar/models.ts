@@ -17,8 +17,8 @@ export interface ModelDescriptor {
 	iconName: string;
 	/** Tooltip / display name. */
 	label: string;
-	/** Needs a stored OpenRouter key before it can spawn. */
-	needsOpenRouterKey: boolean;
+	/** Provider Hub connection/profile required before this model can spawn. */
+	provider?: "openrouter" | "huggingface" | "ollama";
 	/** Marked as the default model (subtle emphasis). */
 	isDefault?: boolean;
 }
@@ -28,31 +28,41 @@ export const MODEL_BAR_MODELS: ModelDescriptor[] = [
 		runtime: "claude",
 		iconName: "claude",
 		label: "Claude",
-		needsOpenRouterKey: false,
 		isDefault: true,
 	},
 	{
 		runtime: "codex",
 		iconName: "codex",
 		label: "OpenAI",
-		needsOpenRouterKey: false,
 	},
 	{
 		runtime: "kimi",
 		iconName: "kimi",
 		label: "Kimi K2.7",
-		needsOpenRouterKey: true,
+		provider: "openrouter",
 	},
 	{
 		runtime: "minimax",
 		iconName: "minimax",
 		label: "MiniMax M3",
-		needsOpenRouterKey: true,
+		provider: "openrouter",
 	},
 	{
 		runtime: "glm",
 		iconName: "glm",
 		label: "GLM 5.2",
-		needsOpenRouterKey: true,
+		provider: "openrouter",
+	},
+	{
+		runtime: "huggingface",
+		iconName: "huggingface",
+		label: "Hugging Face",
+		provider: "huggingface",
+	},
+	{
+		runtime: "ollama",
+		iconName: "ollama",
+		label: "Ollama",
+		provider: "ollama",
 	},
 ];

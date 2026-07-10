@@ -8,6 +8,8 @@ export const AGENT_TYPES = [
 	"kimi",
 	"minimax",
 	"glm",
+	"huggingface",
+	"ollama",
 ] as const;
 
 export type AgentType = (typeof AGENT_TYPES)[number];
@@ -22,7 +24,113 @@ export const AGENT_LABELS: Record<AgentType, string> = {
 	kimi: "Kimi K2.7",
 	minimax: "MiniMax M3",
 	glm: "GLM 5.2",
+	huggingface: "Hugging Face",
+	ollama: "Ollama",
 };
+
+export const OPEN_CODE_MODEL_PROVIDERS = ["huggingface", "ollama"] as const;
+export type OpenCodeModelProvider = (typeof OPEN_CODE_MODEL_PROVIDERS)[number];
+export const MODEL_PROVIDER_RUNNERS = ["codex", "opencode"] as const;
+export type ModelProviderRunner = (typeof MODEL_PROVIDER_RUNNERS)[number];
+
+export const OPEN_CODE_PROVIDER_BASE_URLS: Record<
+	OpenCodeModelProvider,
+	string
+> = {
+	huggingface: "https://router.huggingface.co/v1",
+	ollama: "http://127.0.0.1:11434/v1",
+};
+
+const OPEN_CODE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}$/;
+
+export function isValidOpenCodeModelId(modelId: string): boolean {
+	return OPEN_CODE_MODEL_ID_PATTERN.test(modelId.trim());
+}
+
+export function buildOpenCodeProviderConfig(
+	profiles: Partial<Record<OpenCodeModelProvider, string>>,
+): string | null {
+	const provider: Record<string, unknown> = {};
+
+	for (const providerId of OPEN_CODE_MODEL_PROVIDERS) {
+		const modelId = profiles[providerId]?.trim();
+		if (!modelId) continue;
+		if (!isValidOpenCodeModelId(modelId)) {
+			throw new Error(`Invalid ${providerId} model ID`);
+		}
+
+		provider[providerId] = {
+			npm: "@ai-sdk/openai-compatible",
+			name: providerId === "huggingface" ? "Hugging Face" : "Ollama",
+			options: {
+				baseURL: OPEN_CODE_PROVIDER_BASE_URLS[providerId],
+				...(providerId === "huggingface" ? { apiKey: "{env:HF_TOKEN}" } : {}),
+			},
+			models: {
+				[modelId]: { name: modelId },
+			},
+		};
+	}
+
+	if (Object.keys(provider).length === 0) return null;
+	return JSON.stringify({
+		$schema: "https://opencode.ai/config.json",
+		provider,
+	});
+}
+
+export function buildOpenCodeModelCommand({
+	provider,
+	modelId,
+}: {
+	provider: OpenCodeModelProvider;
+	modelId: string;
+}): string {
+	const trimmed = modelId.trim();
+	if (!isValidOpenCodeModelId(trimmed)) {
+		throw new Error(
+			"Model ID may only contain letters, numbers, /, :, ., _, @, +, and -",
+		);
+	}
+	return `opencode -m "${provider}/${trimmed}"`;
+}
+
+export function buildProviderModelCommand({
+	provider,
+	modelId,
+	runner = "codex",
+}: {
+	provider: OpenCodeModelProvider;
+	modelId: string;
+	runner?: ModelProviderRunner;
+}): string {
+	const trimmed = modelId.trim();
+	if (!isValidOpenCodeModelId(trimmed)) {
+		throw new Error(
+			"Model ID may only contain letters, numbers, /, :, ., _, @, +, and -",
+		);
+	}
+
+	if (runner === "opencode") {
+		return buildOpenCodeModelCommand({ provider, modelId: trimmed });
+	}
+
+	if (provider === "ollama") {
+		return `codex --oss --local-provider ollama -m "${trimmed}" --ask-for-approval on-request --sandbox workspace-write`;
+	}
+
+	return [
+		"codex",
+		`-c 'model_provider="huggingface"'`,
+		`-c 'model_providers.huggingface.name="Hugging Face"'`,
+		`-c 'model_providers.huggingface.base_url="${OPEN_CODE_PROVIDER_BASE_URLS.huggingface}"'`,
+		`-c 'model_providers.huggingface.env_key="HF_TOKEN"'`,
+		`-c 'model_providers.huggingface.wire_api="responses"'`,
+		`-m "${trimmed}"`,
+		"--ask-for-approval on-request",
+		"--sandbox workspace-write",
+	].join(" ");
+}
 
 const OPENROUTER_MODELS = {
 	kimi: "moonshotai/kimi-k2.7-code",
@@ -41,7 +149,7 @@ function buildOpenRouterCommand(model: string, windows: boolean): string {
 export const AGENT_PRESET_COMMANDS: Record<AgentType, string[]> = {
 	claude: ["claude --dangerously-skip-permissions"],
 	codex: [
-		'codex --model gpt-5.5 -c model_reasoning_effort="high" --ask-for-approval never --sandbox danger-full-access -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true',
+		'codex -c model_reasoning_effort="high" --ask-for-approval never --sandbox danger-full-access -c model_reasoning_summary="detailed" -c model_supports_reasoning_summaries=true',
 	],
 	gemini: ["gemini --yolo"],
 	opencode: ["opencode"],
@@ -50,6 +158,8 @@ export const AGENT_PRESET_COMMANDS: Record<AgentType, string[]> = {
 	kimi: [buildOpenRouterCommand(OPENROUTER_MODELS.kimi, false)],
 	minimax: [buildOpenRouterCommand(OPENROUTER_MODELS.minimax, false)],
 	glm: [buildOpenRouterCommand(OPENROUTER_MODELS.glm, false)],
+	huggingface: ["codex"],
+	ollama: ["codex"],
 };
 
 export function getAgentPresetCommands({
@@ -76,6 +186,8 @@ export const AGENT_PRESET_DESCRIPTIONS: Record<AgentType, string> = {
 	kimi: "Kimi K2.7 via Claude Code + OpenRouter",
 	minimax: "MiniMax M3 via Claude Code + OpenRouter",
 	glm: "GLM 5.2 via Claude Code + OpenRouter",
+	huggingface: "Hugging Face cloud model via Codex",
+	ollama: "Existing Ollama model via Codex",
 };
 
 export interface TaskInput {
@@ -184,6 +296,28 @@ function buildPowerShellPromptCommand(
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encodeUtf16Le(script)}`;
 }
 
+export const SUBSCRIPTION_PROVIDERS = ["claude", "codex"] as const;
+export type SubscriptionProvider = (typeof SUBSCRIPTION_PROVIDERS)[number];
+
+export function buildSubscriptionConnectCommand({
+	provider,
+	windows,
+}: {
+	provider: SubscriptionProvider;
+	windows: boolean;
+}): string {
+	if (provider === "claude") return "claude auth login";
+	if (!windows) return 'CODEX_HOME="$HOME/.codex" codex login';
+
+	const script = [
+		"$ErrorActionPreference='Stop'",
+		"$env:CODEX_HOME=[IO.Path]::Combine($HOME,'.codex')",
+		"& codex login",
+		"exit $LASTEXITCODE",
+	].join(";");
+	return `powershell.exe -NoLogo -NoProfile -EncodedCommand ${encodeUtf16Le(script)}`;
+}
+
 const WINDOWS_AGENT_COMMANDS: Record<AgentType, (prompt: string) => string> = {
 	claude: (prompt) =>
 		buildPowerShellPromptCommand(
@@ -193,7 +327,7 @@ const WINDOWS_AGENT_COMMANDS: Record<AgentType, (prompt: string) => string> = {
 	codex: (prompt) =>
 		buildPowerShellPromptCommand(
 			prompt,
-			`& codex --model 'gpt-5.5' -c 'model_reasoning_effort="high"' --ask-for-approval never --sandbox danger-full-access -- $prompt`,
+			`& codex -c 'model_reasoning_effort="high"' --ask-for-approval never --sandbox danger-full-access -- $prompt`,
 		),
 	gemini: (prompt) =>
 		buildPowerShellPromptCommand(prompt, "& gemini --yolo $prompt"),
@@ -233,6 +367,10 @@ const WINDOWS_AGENT_COMMANDS: Record<AgentType, (prompt: string) => string> = {
 				"$env:ANTHROPIC_API_KEY=''",
 			],
 		),
+	huggingface: (prompt) =>
+		buildPowerShellPromptCommand(prompt, "& codex -- $prompt"),
+	ollama: (prompt) =>
+		buildPowerShellPromptCommand(prompt, "& codex -- $prompt"),
 };
 
 const AGENT_COMMANDS: Record<
@@ -245,7 +383,7 @@ const AGENT_COMMANDS: Record<
 		buildHeredoc(
 			prompt,
 			delimiter,
-			'codex --model gpt-5.5 -c model_reasoning_effort="high" --ask-for-approval never --sandbox danger-full-access --',
+			'codex -c model_reasoning_effort="high" --ask-for-approval never --sandbox danger-full-access --',
 		),
 	gemini: (prompt, delimiter) =>
 		buildHeredoc(prompt, delimiter, "gemini --yolo"),
@@ -273,6 +411,9 @@ const AGENT_COMMANDS: Record<
 			delimiter,
 			'ANTHROPIC_BASE_URL="https://openrouter.ai/api" ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY" ANTHROPIC_API_KEY="" claude --model z-ai/glm-5.2 --dangerously-skip-permissions',
 		),
+	huggingface: (prompt, delimiter) =>
+		buildHeredoc(prompt, delimiter, "codex --"),
+	ollama: (prompt, delimiter) => buildHeredoc(prompt, delimiter, "codex --"),
 };
 
 export function buildAgentPromptCommand({

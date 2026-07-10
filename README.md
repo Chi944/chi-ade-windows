@@ -1,19 +1,36 @@
-# ADE
+# Chi ADE Windows
 
-> Windows-focused fork: lean packaging, zero-copy existing-project agents,
-> PowerShell-native launch commands, and guarded cleanup for linked repositories.
+> A lean, Windows-first agentic development environment with persistent agents,
+> true-black theming, resumable terminal sessions, and bring-your-own AI providers.
 
-An agentic development environment for macOS, Windows, and Linux. ADE is a local-first, single-user desktop app where you build a roster of persistent coding agents and work alongside them in the terminal. Every agent is a durable identity — its own name, photo, git repository, runtime CLI, and long-lived memory — not a throwaway chat session. You come back to the same agent tomorrow and it remembers what it learned today.
+Chi ADE Windows is a local-first, single-user desktop app for running coding agents beside your projects. Each agent has its own identity, worktree or linked project folder, terminal sessions, and long-lived markdown memory. Existing projects can be linked without copying them.
 
-The interface is a two-level left rail. **Teams** group your work (a name and a square photo); inside each team live **Agents** (a name and a circular photo). Selecting an agent opens its workspace: a strip of **session** tabs, each a real terminal running the agent's coding CLI inside that agent's own git worktree. A **model bar** under the tabs lets you spawn a session on a different model without leaving the agent. On the right, the **Agent Files** panel shows the agent's memory growing as it works.
+## Highlights
 
-ADE runs whatever CLI coding agents you already have installed. Claude Code, OpenAI's Codex, and OpenCode are first-class runtimes. The model bar can also launch sessions on Kimi K2.7, MiniMax M3, and GLM 5.2 through a single OpenRouter key you enter once, in-app. Nothing here is a hosted service — your code, your keys, and your agents' memory all stay on your machine.
+- **Customizable true black:** the system dark theme uses `#000000`, and the Appearance screen includes a visual editor for background, surfaces, text, accent, borders, and terminal colors.
+- **Claude and Codex subscriptions:** connect through the official `claude auth login` and `codex login` flows. ADE checks only whether the CLI is installed and authenticated; it never receives the subscription credentials.
+- **Durable sessions:** ADE keeps bounded terminal history and provider session metadata, then resumes Claude, Codex, Hugging Face/Codex, Ollama/Codex, and OpenCode sessions after a clean exit, app restart, or system restart when the CLI supports it.
+- **Cloud and local models:** use Hugging Face Inference Providers remotely without downloading model weights, OpenRouter models, or models you already serve with Ollama.
+- **Provider isolation:** API tokens are encrypted with Electron secure storage and injected only into matching provider sessions.
+- **Safer custom-model defaults:** Hugging Face and Ollama sessions use workspace-write isolation and ask before elevated actions.
+- **Windows-aware health checks:** ADE executes each discovered CLI's `--version` command, so an inaccessible Windows Store alias is not mistaken for a working runtime.
+- **Storage-conscious builds:** the Windows build runs in an isolated temporary directory, copies out only the installer/manifests, and removes staging after success.
+
+ADE preserves your work and lets you resume or switch providers; it does not bypass Claude, Codex, Hugging Face, or other providers' usage, billing, or context limits. After a provider limit resets, resume the saved session, or continue the work in a new session with another configured provider.
 
 ## Screenshots
 
 ### Agent workspace
 
-![ADE Windows workspace with the team and agent rail, PowerShell terminal, model bar, and Agent Files panel](docs/screenshots/workspace.png)
+![Chi ADE Windows workspace with the team and agent rail, terminal, model bar, and Agent Files panel](docs/screenshots/workspace.png)
+
+### Provider Hub
+
+![Provider Hub with Claude and Codex subscription connections plus cloud-provider settings](docs/screenshots/provider-hub.png)
+
+### Theme color editor
+
+![True-black Appearance settings with the visual theme color editor](docs/screenshots/appearance-colors.png)
 
 ### Zero-copy existing project
 
@@ -21,121 +38,112 @@ ADE runs whatever CLI coding agents you already have installed. Claude Code, Ope
 
 ### First launch
 
-![ADE first-launch screen before a team or agent has been created](docs/screenshots/first-launch.png)
+![Chi ADE Windows first-launch screen](docs/screenshots/first-launch.png)
 
 ## Install
 
-### Download (recommended)
+Download the Windows x64 installer from the [latest release](https://github.com/Chi944/chi-ade-windows/releases/latest):
 
-Download the installer for your platform from the [latest release](https://github.com/Chi944/chi-ade-windows/releases/latest):
-
-- macOS: signed `.dmg`
-- Windows: `ADE-<version>-x64.exe`
-- Linux: `.AppImage`
-
-### Build from source
-
-Requires [Bun](https://bun.sh) 1.3.6+.
-
-```bash
-git clone https://github.com/Chi944/chi-ade-windows.git
-cd chi-ade-windows
-bun install
-cd apps/desktop
-bun run compile:app        # builds main + preload + renderer into dist/
-bunx electron .            # launches the built app
+```text
+ADE-<version>-x64.exe
 ```
 
-`compile:app` runs the full production build; `bunx electron .` then launches it directly. (Avoid `electron-vite preview` for a full run — it can exhaust memory.)
-
-To package a desktop installer from `apps/desktop`, run:
-
-```bash
-bun run build
-```
-
-On Windows, the installer is written to `apps/desktop/release/ADE-<version>-x64.exe`.
-
-### Lean Windows installer build
-
-With Bun, Node.js, and about 4 GiB of temporary free space available, run from
-Windows PowerShell 5.1 or later:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-lean.ps1
-```
-
-The script prunes the monorepo to the desktop dependency closure, keeps Bun's
-temporary cache inside the staging directory, uses the published native
-prebuilds instead of downloading Visual Studio build tools, smoke-tests those
-modules under Electron, and removes staging after a successful build. The
-installer, update manifest, and measured footprint are copied to `artifacts/`.
-Pass `-KeepStaging` only when diagnosing a build.
+The installer is the only release artifact most users need. Agent CLIs and model weights are not bundled.
 
 ## Prerequisites
 
-ADE orchestrates coding CLIs; it does not bundle them. You need:
+You need [Git for Windows](https://git-scm.com/download/win) and at least one coding-agent CLI:
 
-- **Git** — required. Each agent gets its own repository or worktree. On macOS, install Apple's command line tools with `xcode-select --install`; on Windows, install [Git for Windows](https://git-scm.com/download/win).
-- **At least one agent CLI.** Claude Code is recommended, because it also powers the Kimi, MiniMax, and GLM sessions from the model bar (they run Claude Code pointed at OpenRouter):
+```powershell
+npm install --global @anthropic-ai/claude-code
+npm install --global @openai/codex
+```
 
-  ```bash
-  npm i -g @anthropic-ai/claude-code
-  ```
+OpenCode remains available as an optional runtime:
 
-  Optionally add the other runtimes:
+```powershell
+npm install --global opencode-ai
+```
 
-  ```bash
-  npm i -g @openai/codex        # OpenAI GPT-5.5 sessions
-  npm i -g opencode-ai          # OpenCode runtime
-  ```
+Use the **+** button in the model bar to open Provider Hub:
 
-- **Node.js** — only as the vehicle for installing the CLIs above via `npm`. ADE itself does not need a separate Node runtime.
-- **An OpenRouter API key** — only if you want the open-model sessions (Kimi K2.7, MiniMax M3, GLM 5.2). You enter it in-app the first time you launch one of those models; see the walkthrough. The Claude and OpenAI runtimes authenticate through their own CLIs (your Anthropic and ChatGPT/OpenAI logins) and need no key here.
+- **Claude:** sign in with an eligible Claude subscription through the official CLI.
+- **Codex:** sign in with an eligible ChatGPT/Codex subscription through the official CLI.
+- **Hugging Face:** enter a Hugging Face token and a remotely available model ID. Requests go to Hugging Face Inference Providers; ADE does not download the model.
+- **Ollama:** enter the name of a model already served at `127.0.0.1:11434`. ADE never pulls an Ollama model automatically.
+- **OpenRouter:** enter one key for Kimi, MiniMax, and GLM sessions.
 
-## Walkthrough
+## Build from source
 
-**1. First launch.** ADE opens on a start screen with a single action: **Create a team**. There are no agents until a team exists, so start here.
+Requires [Bun](https://bun.sh) 1.3.6+, Node.js, and approximately 4 GiB of temporary free space.
 
-**2. Create a team.** Give it a name (for example, `Newsletter`). Optionally click the square photo thumbnail to pick an image — teams are the top level of the rail, so a photo makes them easy to find at a glance. The team appears in the left rail.
+```powershell
+git clone https://github.com/Chi944/chi-ade-windows.git
+Set-Location chi-ade-windows
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-lean.ps1
+```
 
-**3. Create an agent.** Hover the team's header in the rail and click the **+** button ("New agent"). In the New Agent dialog:
-   - **Name** — required (for example, `Scout`).
-   - **Role** — optional. A sentence describing what this agent is for. Leave it blank if you'd rather shape the agent by talking to it — ADE seeds the agent's identity file either way, and it refines itself over time.
-   - **Runtime** — the coding CLI this agent runs: **Claude**, **Codex**, or **OpenCode**. Claude is the default.
-   - **Repository** — start a new empty repo, clone from a URL, or point at an existing local path.
+The script:
 
-   ADE creates the agent, gives it its own git worktree, and scaffolds its memory in the background.
+1. prunes the monorepo to the desktop dependency closure;
+2. keeps Bun and npm caches inside `.tmp/windows-build`;
+3. uses published Electron native prebuilds instead of installing Visual Studio build tools;
+4. smoke-tests native modules before and after packaging;
+5. copies the installer, update manifest, and measured footprint to `artifacts/`; and
+6. deletes temporary staging after a successful build.
 
-**4. Add profile photos.** Right-click any agent in the rail and choose **Change Photo** (or **Remove Photo**) to give it a circular avatar. Team photos are set the same way from the team's header menu. Photos are optional but make a busy rail readable.
+Use `-KeepStaging` only for diagnostics.
 
-**5. Sessions start automatically.** Opening an agent that has no sessions yet automatically spawns one — a terminal tab running the agent's runtime CLI in its worktree. That's the agent, live. Open more session tabs whenever you want parallel threads of work.
+For normal development:
 
-**6. Switch models from the model bar.** Below the session tabs is a quiet row of model logos: **Claude** (the default), **OpenAI** (Codex on GPT-5.5), **Kimi K2.7**, **MiniMax M3**, and **GLM 5.2**. Click any logo to open a new session in the current agent's worktree running that model — the same code, a different model, no context switch.
+```powershell
+bun install --frozen-lockfile
+bun run --cwd apps/desktop compile:app
+bunx electron apps/desktop
+```
 
-**7. Connect OpenRouter (first open model only).** The first time you click Kimi, MiniMax, or GLM, ADE asks for your OpenRouter API key (get one at [openrouter.ai/keys](https://openrouter.ai/keys)). Paste it and choose **Save & Launch**. The key is encrypted with the OS credential store, stored locally, and injected only into the agent's terminal — it never leaves your machine and is never shown back to the app's UI. You enter it once; later open-model sessions launch straight away.
+## Session persistence
 
-**8. Watch the memory grow.** The **Agent Files** panel on the right lists the agent's memory surface, grouped into **Memory**, **Skills**, and **Worktree**. It starts nearly empty and fills in as the agent learns — its identity, your profile, its notes, and any skills it writes for itself. Click a file to open it in a viewer tab.
+Each pane records a bounded terminal transcript (maximum 5 MiB) plus the actual runtime and any provider session/thread ID exposed by the CLI. On reopen, ADE uses the provider's native continuation command:
 
-## How memory works
+- Claude: exact `--resume <session-id>`
+- Codex-backed sessions: exact `resume <thread-id>`
+- OpenCode: exact `--session <session-id>`
 
-Every ADE agent keeps a persistent, self-curated memory, adapted from the [Hermes agent](https://github.com/NousResearch/hermes-agent). The design is deliberately simple: plain markdown files the agent reads at the start of every session and writes back to as it learns. The files live outside the git worktree, so they survive branch and worktree churn and are never committed to your code.
+The provider's own transcript remains the source of truth. ADE's bounded scrollback keeps local disk use predictable while preserving enough UI history to recover the workspace after a crash or restart. Permanently removed panes and closed tabs evicted from the 20-entry reopen stack have their local terminal history deleted.
 
-Each agent's memory is a small set of files:
+## Agent memory
 
-- **AGENT.md** — a short identity and operating brief (who the agent is, its role, its standing preferences).
-- **USER.md** — a profile of you: name, preferences, communication style, hard rules.
-- **MEMORY.md** — the agent's own notes: project conventions, tool quirks, lessons learned, plus an index into any longer topic files.
-- **Skills** — reusable, multi-step procedures the agent writes for itself, each a `SKILL.md` whose body loads only when relevant.
+Every agent keeps a small, plain-markdown memory outside the project worktree:
 
-A write-back protocol travels with the memory, telling the agent when to save (a stated preference, a correction, a durable fact), when to skip (trivia, one-off state, anything easily re-discovered), and to consolidate rather than endlessly append. A session-end reflection loop prompts the agent to review the conversation and update its memory and skills before it finishes, so the next session starts smarter. On Claude Code this reflection is enforced by a native stop hook; on the other runtimes it runs by convention at session boundaries.
+- `AGENT.md` — identity, role, and operating brief
+- `USER.md` — durable preferences and working style
+- `MEMORY.md` — project conventions, lessons, and an index to longer notes
+- `skills/*/SKILL.md` — reusable procedures loaded when relevant
 
-The same canonical files feed every runtime through thin, auto-generated bridge files — a `CLAUDE.md`, an OpenCode config, or a regenerated Codex `AGENTS.md` — so you can switch an agent's runtime without losing its memory. See [docs/memory.md](docs/memory.md) for the full design.
+Thin runtime bridge files feed the same canonical memory to Claude Code, Codex, and OpenCode, so switching runtimes does not discard what the agent learned. See [docs/memory.md](docs/memory.md) for the design.
 
-## Contributing
+## Workflow features
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and our [Code of Conduct](CODE_OF_CONDUCT.md).
+Chi ADE Windows already includes several ideas also found in multi-agent environments such as DevSwarm: isolated worktrees, parallel terminals, unique development ports, diff review, GitHub/PR status, external-editor handoff, and attention indicators.
+
+Good next additions, kept out of this release until they can be implemented without bloating the app, are:
+
+- a dependency-aware task board with bounded agent concurrency;
+- searchable/exportable session transcripts;
+- per-session context and cloud-cost visibility;
+- reusable permission profiles; and
+- explicit provider fallback policies when a service is unavailable.
+
+## Why the small root file set?
+
+Runtime-unnecessary community/deployment files were removed from this owner-maintained Windows fork. The following remain because they are required for licensing, attribution, packaging, or use:
+
+- `README.md`
+- `LICENSE.md`
+- `NOTICE`
+- `THIRD-PARTY-NOTICES.md`
 
 ## License
 
-ADE is a modified derivative of [Superset](https://github.com/superset-sh/superset) (Copyright Superset, Inc.), distributed under the **Elastic License 2.0** — see [LICENSE.md](LICENSE.md). Third-party dependency notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The agent memory architecture is adapted from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT).
+ADE is a modified derivative of [Superset](https://github.com/superset-sh/superset) (Copyright Superset, Inc.), distributed under the **Elastic License 2.0**. See [LICENSE.md](LICENSE.md), [NOTICE](NOTICE), and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The agent memory architecture is adapted from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT).

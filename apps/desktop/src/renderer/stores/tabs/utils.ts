@@ -150,6 +150,7 @@ export const getPaneIdsInVisualOrder = extractPaneIdsFromLayout;
  */
 export interface CreatePaneOptions {
 	initialCwd?: string;
+	agentRuntime?: Pane["agentRuntime"];
 }
 
 /**
@@ -169,6 +170,7 @@ export const createPane = (
 		name: "Terminal",
 		isNew: true,
 		initialCwd: options?.initialCwd,
+		agentRuntime: options?.agentRuntime,
 	};
 };
 

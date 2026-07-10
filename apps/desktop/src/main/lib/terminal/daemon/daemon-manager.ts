@@ -1,9 +1,14 @@
 import { EventEmitter } from "node:events";
-import { workspaces } from "@superset/local-db";
+import { type AgentRuntime, workspaces } from "@superset/local-db";
 import { track } from "main/lib/analytics";
 import { appState } from "main/lib/app-state";
 import { localDb } from "main/lib/local-db";
-import { HistoryReader, truncateUtf8ToLastBytes } from "../../terminal-history";
+import { isValidAgentSessionId } from "shared/agent-session-recovery";
+import {
+	HistoryReader,
+	truncateUtf8ToLastBytes,
+	writeAgentSessionToHistory,
+} from "../../terminal-history";
 import {
 	disposeTerminalHostClient,
 	getTerminalHostClient,
@@ -17,11 +22,12 @@ import type { CreateSessionParams, SessionResult } from "../types";
 import {
 	CREATE_OR_ATTACH_CONCURRENCY,
 	DEBUG_TERMINAL,
+	KILL_EXIT_WAIT_MS,
 	MAX_KILLED_SESSION_TOMBSTONES,
 	MAX_SCROLLBACK_BYTES,
 	SESSION_CLEANUP_DELAY_MS,
 } from "./constants";
-import { HistoryManager } from "./history-manager";
+import { HistoryManager, scanAgentSessionOutput } from "./history-manager";
 import { PrioritySemaphore } from "./priority-semaphore";
 import type { ColdRestoreInfo, SessionInfo } from "./types";
 
@@ -29,7 +35,11 @@ export class DaemonTerminalManager extends EventEmitter {
 	private client!: TerminalHostClient;
 	private sessions = new Map<string, SessionInfo>();
 	private pendingSessions = new Map<string, Promise<SessionResult>>();
+	private pendingSessionGenerations = new Map<string, number>();
+	private paneLifecycleGenerations = new Map<string, number>();
 	private killedSessionTombstones = new Map<string, number>();
+	private deletedHistoryTombstones = new Map<string, number>();
+	private agentSessionPersistenceTails = new Map<string, Promise<void>>();
 	private createOrAttachLimiter = new PrioritySemaphore(
 		CREATE_OR_ATTACH_CONCURRENCY,
 	);
@@ -69,6 +79,69 @@ export class DaemonTerminalManager extends EventEmitter {
 
 	private clearKilledSession(paneId: string): void {
 		this.killedSessionTombstones.delete(paneId);
+	}
+
+	private recordDeletedHistory(paneId: string): void {
+		this.deletedHistoryTombstones.delete(paneId);
+		this.deletedHistoryTombstones.set(paneId, Date.now());
+		if (this.deletedHistoryTombstones.size > MAX_KILLED_SESSION_TOMBSTONES) {
+			const oldest = this.deletedHistoryTombstones.keys().next().value;
+			if (oldest) this.deletedHistoryTombstones.delete(oldest);
+		}
+	}
+
+	private getPaneLifecycleGeneration(paneId: string): number {
+		return this.paneLifecycleGenerations.get(paneId) ?? 0;
+	}
+
+	private advancePaneLifecycle(paneId: string): number {
+		const generation = this.getPaneLifecycleGeneration(paneId) + 1;
+		this.paneLifecycleGenerations.set(paneId, generation);
+		return generation;
+	}
+
+	private isPaneLifecycleCurrent(paneId: string, generation: number): boolean {
+		return (
+			this.getPaneLifecycleGeneration(paneId) === generation &&
+			!this.isSessionKilled(paneId)
+		);
+	}
+
+	private assertPaneLifecycleCurrent(paneId: string, generation: number): void {
+		if (!this.isPaneLifecycleCurrent(paneId, generation)) {
+			throw new TerminalKilledError();
+		}
+	}
+
+	private async discardStaleCreatedSession(
+		paneId: string,
+		workspaceId: string,
+	): Promise<void> {
+		const deleteHistory = this.deletedHistoryTombstones.has(paneId);
+		this.daemonAliveSessionIds.delete(paneId);
+		this.cancelPendingCleanup(paneId);
+		const session = this.sessions.get(paneId);
+		if (session) {
+			session.isAlive = false;
+			session.pid = null;
+			this.sessions.delete(paneId);
+		}
+		portManager.unregisterDaemonSession(paneId);
+
+		try {
+			await this.client.kill({ sessionId: paneId, deleteHistory });
+		} catch (error) {
+			console.warn(
+				`[DaemonTerminalManager] Failed to kill stale created session ${paneId}:`,
+				error,
+			);
+		} finally {
+			if (deleteHistory) {
+				await this.historyManager.cleanupHistory(paneId, workspaceId);
+			} else {
+				await this.historyManager.closeHistoryWriter(paneId, 0);
+			}
+		}
 	}
 
 	private initializeClient(): void {
@@ -280,18 +353,28 @@ export class DaemonTerminalManager extends EventEmitter {
 			}
 		}
 
-		const pending = this.pendingSessions.get(paneId);
-		if (pending) {
-			return pending;
+		const generation = this.getPaneLifecycleGeneration(paneId);
+		while (true) {
+			const pending = this.pendingSessions.get(paneId);
+			if (!pending) break;
+			if (this.pendingSessionGenerations.get(paneId) === generation) {
+				return pending;
+			}
+			await pending.catch(() => {});
+			this.assertPaneLifecycleCurrent(paneId, generation);
 		}
 
-		const creationPromise = this.doCreateOrAttach(params);
+		const creationPromise = this.doCreateOrAttach(params, generation);
 		this.pendingSessions.set(paneId, creationPromise);
+		this.pendingSessionGenerations.set(paneId, generation);
 
 		try {
 			return await creationPromise;
 		} finally {
-			this.pendingSessions.delete(paneId);
+			if (this.pendingSessions.get(paneId) === creationPromise) {
+				this.pendingSessions.delete(paneId);
+				this.pendingSessionGenerations.delete(paneId);
+			}
 		}
 	}
 
@@ -306,6 +389,7 @@ export class DaemonTerminalManager extends EventEmitter {
 
 	private async doCreateOrAttach(
 		params: CreateSessionParams,
+		generation: number,
 	): Promise<SessionResult> {
 		const releaseCreateOrAttach = await this.createOrAttachLimiter.acquire(
 			this.getCreateOrAttachPriority(params),
@@ -326,6 +410,7 @@ export class DaemonTerminalManager extends EventEmitter {
 		} = params;
 
 		try {
+			this.assertPaneLifecycleCurrent(paneId, generation);
 			if (!skipColdRestore) {
 				const stickyRestore = this.coldRestoreInfo.get(paneId);
 				if (stickyRestore) {
@@ -336,6 +421,12 @@ export class DaemonTerminalManager extends EventEmitter {
 						isColdRestore: true,
 						previousCwd: stickyRestore.previousCwd,
 						claudeSessionId: stickyRestore.claudeSessionId,
+						agentRuntime: stickyRestore.agentRuntime,
+						agentSessionId: stickyRestore.agentSessionId,
+						resumeAvailable: isValidAgentSessionId(
+							stickyRestore.agentRuntime,
+							stickyRestore.agentSessionId,
+						),
 						snapshot: {
 							snapshotAnsi: stickyRestore.scrollback,
 							rehydrateSequences: "",
@@ -354,6 +445,7 @@ export class DaemonTerminalManager extends EventEmitter {
 			}
 
 			await this.ensureDaemonSessionIdsHydrated();
+			this.assertPaneLifecycleCurrent(paneId, generation);
 			const daemonHasSession = this.daemonAliveSessionIds.has(paneId);
 
 			if (!daemonHasSession && !skipColdRestore) {
@@ -362,7 +454,9 @@ export class DaemonTerminalManager extends EventEmitter {
 					workspaceId,
 					cols,
 					rows,
+					runtime,
 				});
+				this.assertPaneLifecycleCurrent(paneId, generation);
 				if (coldRestoreResult) {
 					return coldRestoreResult;
 				}
@@ -370,7 +464,14 @@ export class DaemonTerminalManager extends EventEmitter {
 
 			if (!daemonHasSession && skipColdRestore) {
 				await this.historyManager.cleanupHistory(paneId, workspaceId);
+				this.assertPaneLifecycleCurrent(paneId, generation);
 			}
+
+			const previousMetadataCandidate = await new HistoryReader(
+				workspaceId,
+				paneId,
+			).readMetadata();
+			this.assertPaneLifecycleCurrent(paneId, generation);
 
 			const shell = getDefaultShell();
 			const env = buildTerminalEnv({
@@ -409,6 +510,22 @@ export class DaemonTerminalManager extends EventEmitter {
 				env,
 				shell,
 			});
+			if (!this.isPaneLifecycleCurrent(paneId, generation)) {
+				await this.discardStaleCreatedSession(paneId, workspaceId);
+				throw new TerminalKilledError();
+			}
+			const previousMetadata = response.isNew
+				? previousMetadataCandidate
+				: null;
+			const previousRuntime =
+				previousMetadata?.agentRuntime ??
+				(previousMetadata?.claudeSessionId ? "claude" : undefined);
+			const effectiveRuntime = runtime ?? previousRuntime;
+			const previousSessionId =
+				previousRuntime !== undefined && previousRuntime === effectiveRuntime
+					? (previousMetadata?.agentSessionId ??
+						previousMetadata?.claudeSessionId)
+					: undefined;
 
 			this.daemonAliveSessionIds.add(paneId);
 
@@ -427,6 +544,7 @@ export class DaemonTerminalManager extends EventEmitter {
 				pid: response.pid,
 				cols: effectiveCols,
 				rows: effectiveRows,
+				runtime: effectiveRuntime,
 			});
 
 			portManager.upsertDaemonSession(paneId, workspaceId, response.pid);
@@ -439,7 +557,7 @@ export class DaemonTerminalManager extends EventEmitter {
 					: snapshotAnsi;
 
 			if (effectiveCols >= 1 && effectiveRows >= 1) {
-				this.historyManager
+				await this.historyManager
 					.initHistoryWriter({
 						paneId,
 						workspaceId,
@@ -447,6 +565,7 @@ export class DaemonTerminalManager extends EventEmitter {
 						cols: effectiveCols,
 						rows: effectiveRows,
 						initialScrollback,
+						runtime: effectiveRuntime,
 					})
 					.catch((error) => {
 						console.error(
@@ -459,6 +578,16 @@ export class DaemonTerminalManager extends EventEmitter {
 					`[DaemonTerminalManager] Skipping history init for ${paneId}: invalid dimensions ${effectiveCols}x${effectiveRows}`,
 				);
 			}
+			if (!this.isPaneLifecycleCurrent(paneId, generation)) {
+				await this.discardStaleCreatedSession(paneId, workspaceId);
+				throw new TerminalKilledError();
+			}
+			// A live, successfully initialized daemon session is the only event that
+			// retires a permanent history-deletion tombstone. A concurrent kill marks
+			// the session dead and keeps stale provider hooks blocked.
+			if (this.sessions.get(paneId)?.isAlive && !this.isSessionKilled(paneId)) {
+				this.deletedHistoryTombstones.delete(paneId);
+			}
 
 			if (response.wasRecovered) {
 				track("terminal_warm_attached", {
@@ -470,28 +599,17 @@ export class DaemonTerminalManager extends EventEmitter {
 				});
 			}
 
-			// Read claudeSessionId from previous meta.json even for non-cold-restore paths,
-			// but ONLY when we're starting a fresh shell (response.isNew). This lets:
-			//   - "press any key to restart" after a clean exit auto-resume the Claude session
-			//   - First launch with cleanly-closed sessions auto-resume
-			// Warm attaches (isNew=false) skip this so we don't type claude --resume into an
-			// already-running shell.
-			let previousClaudeSessionId: string | undefined;
-			if (response.isNew) {
-				try {
-					const reader = new HistoryReader(workspaceId, paneId);
-					const prevMeta = await reader.readMetadata();
-					previousClaudeSessionId = prevMeta?.claudeSessionId;
-				} catch {
-					// meta.json doesn't exist or invalid — no previous session to auto-resume
-				}
-			}
-
 			return {
 				isNew: response.isNew,
 				scrollback: "",
 				wasRecovered: response.wasRecovered,
-				claudeSessionId: previousClaudeSessionId,
+				claudeSessionId:
+					effectiveRuntime === "claude" ? previousSessionId : undefined,
+				agentRuntime: effectiveRuntime ?? undefined,
+				agentSessionId: previousSessionId,
+				resumeAvailable:
+					response.isNew &&
+					isValidAgentSessionId(effectiveRuntime, previousSessionId),
 				snapshot: {
 					snapshotAnsi: response.snapshot.snapshotAnsi,
 					rehydrateSequences: response.snapshot.rehydrateSequences,
@@ -513,11 +631,13 @@ export class DaemonTerminalManager extends EventEmitter {
 		workspaceId,
 		cols,
 		rows,
+		runtime,
 	}: {
 		paneId: string;
 		workspaceId: string;
 		cols: number;
 		rows: number;
+		runtime?: AgentRuntime | null;
 	}): Promise<SessionResult | null> {
 		const historyReader = new HistoryReader(workspaceId, paneId);
 		const metadata = await historyReader.readMetadata();
@@ -540,15 +660,28 @@ export class DaemonTerminalManager extends EventEmitter {
 				: rawScrollback;
 		const scrollbackBytes = Buffer.byteLength(scrollback, "utf8");
 
-		// Prefer stored session ID from meta.json (captured in real-time)
-		// Fall back to scrollback scanning if not stored
+		const metadataRuntime =
+			metadata.agentRuntime ??
+			(metadata.claudeSessionId ? "claude" : undefined);
+		const agentRuntime = runtime ?? metadataRuntime;
+		const storedSessionId =
+			metadataRuntime !== undefined && metadataRuntime === agentRuntime
+				? (metadata.agentSessionId ?? metadata.claudeSessionId)
+				: undefined;
+		const agentSessionId =
+			storedSessionId ??
+			(agentRuntime
+				? scanAgentSessionOutput(agentRuntime, "", scrollback).sessionId
+				: undefined);
 		const claudeSessionId =
-			metadata.claudeSessionId || this.extractClaudeSessionId(scrollback);
+			agentRuntime === "claude" ? agentSessionId : undefined;
 
 		this.coldRestoreInfo.set(paneId, {
 			scrollback,
 			previousCwd: metadata.cwd,
 			claudeSessionId,
+			agentRuntime,
+			agentSessionId,
 			cols: metadata.cols || cols,
 			rows: metadata.rows || rows,
 		});
@@ -567,6 +700,9 @@ export class DaemonTerminalManager extends EventEmitter {
 			isColdRestore: true,
 			previousCwd: metadata.cwd,
 			claudeSessionId,
+			agentRuntime,
+			agentSessionId,
+			resumeAvailable: isValidAgentSessionId(agentRuntime, agentSessionId),
 			snapshot: {
 				snapshotAnsi: scrollback,
 				rehydrateSequences: "",
@@ -577,39 +713,6 @@ export class DaemonTerminalManager extends EventEmitter {
 				scrollbackLines: 0,
 			},
 		};
-	}
-
-	private extractClaudeSessionId(scrollback: string): string | undefined {
-		// Strip ANSI escape sequences for cleaner matching
-		const plain = scrollback.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
-		const UUID_RE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-
-		// Pattern 1: `claude --resume <uuid>` — explicit resume command
-		const resumeMatch = plain.match(
-			new RegExp(`claude\\s+--resume\\s+(${UUID_RE})`, "i"),
-		);
-		if (resumeMatch) return resumeMatch[1];
-
-		// Pattern 2: task output paths Claude prints (works for NAMED sessions too)
-		//   e.g. /private/tmp/claude-501/-Users-.../<uuid>/tasks/...
-		const taskPathMatch = plain.match(
-			new RegExp(`/claude-\\d+/[^/]+/(${UUID_RE})/`, "i"),
-		);
-		if (taskPathMatch) return taskPathMatch[1];
-
-		// Pattern 3: session jsonl file path references
-		const sessionFileMatch = plain.match(
-			new RegExp(`\\.claude/projects/[^/]+/(${UUID_RE})\\.jsonl`, "i"),
-		);
-		if (sessionFileMatch) return sessionFileMatch[1];
-
-		// Pattern 4: fallback — any --resume with a UUID (handles other command shapes)
-		const fallbackMatch = plain.match(
-			new RegExp(`--resume\\s+(${UUID_RE})`, "i"),
-		);
-		if (fallbackMatch) return fallbackMatch[1];
-
-		return undefined;
 	}
 
 	private getCreateOrAttachPriority(params: CreateSessionParams): number {
@@ -626,6 +729,67 @@ export class DaemonTerminalManager extends EventEmitter {
 		} catch {
 			return 1;
 		}
+	}
+
+	persistAgentSessionFromHook(params: {
+		paneId: string;
+		workspaceId: string;
+		runtime: AgentRuntime;
+		sessionId: string;
+	}): Promise<void> {
+		const { paneId } = params;
+		const previous =
+			this.agentSessionPersistenceTails.get(paneId) ?? Promise.resolve();
+		const operation = previous.then(() =>
+			this.persistAgentSessionFromHookNow(params),
+		);
+		const tail = operation.then(
+			() => {},
+			() => {},
+		);
+		this.agentSessionPersistenceTails.set(paneId, tail);
+		void tail.finally(() => {
+			if (this.agentSessionPersistenceTails.get(paneId) === tail) {
+				this.agentSessionPersistenceTails.delete(paneId);
+			}
+		});
+		return operation;
+	}
+
+	private async persistAgentSessionFromHookNow({
+		paneId,
+		workspaceId,
+		runtime,
+		sessionId,
+	}: {
+		paneId: string;
+		workspaceId: string;
+		runtime: AgentRuntime;
+		sessionId: string;
+	}): Promise<void> {
+		if (
+			this.deletedHistoryTombstones.has(paneId) ||
+			!isValidAgentSessionId(runtime, sessionId)
+		) {
+			return;
+		}
+		const handledByWriter = await this.historyManager
+			.updateAgentSessionFromHook({
+				paneId,
+				workspaceId,
+				runtime,
+				sessionId,
+			})
+			.catch((error) => {
+				console.warn(
+					`[DaemonTerminalManager] Live hook persistence failed for ${paneId}:`,
+					error,
+				);
+				return false;
+			});
+		if (handledByWriter) return;
+		if (this.deletedHistoryTombstones.has(paneId)) return;
+		await writeAgentSessionToHistory(workspaceId, paneId, runtime, sessionId);
 	}
 
 	write(params: { paneId: string; data: string }): void {
@@ -698,12 +862,33 @@ export class DaemonTerminalManager extends EventEmitter {
 	async kill(params: {
 		paneId: string;
 		deleteHistory?: boolean;
+		workspaceId?: string;
 	}): Promise<void> {
-		const { paneId, deleteHistory = false } = params;
+		const { paneId, deleteHistory = false, workspaceId } = params;
+		this.advancePaneLifecycle(paneId);
 		this.daemonAliveSessionIds.delete(paneId);
 		this.recordKilledSession(paneId);
+		if (deleteHistory) {
+			this.recordDeletedHistory(paneId);
+			this.coldRestoreInfo.delete(paneId);
+		}
 
 		const session = this.sessions.get(paneId);
+		const exitWait = session?.isAlive
+			? new Promise<void>((resolve) => {
+					let timeout: NodeJS.Timeout;
+					const onExit = () => {
+						clearTimeout(timeout);
+						resolve();
+					};
+					this.once(`exit:${paneId}`, onExit);
+					timeout = setTimeout(() => {
+						this.removeListener(`exit:${paneId}`, onExit);
+						resolve();
+					}, KILL_EXIT_WAIT_MS);
+					timeout.unref();
+				})
+			: null;
 		if (session?.isAlive) {
 			session.isAlive = false;
 			session.pid = null;
@@ -711,13 +896,28 @@ export class DaemonTerminalManager extends EventEmitter {
 
 		portManager.unregisterDaemonSession(paneId);
 
-		if (deleteHistory && session) {
-			await this.historyManager.cleanupHistory(paneId, session.workspaceId);
-		} else {
-			this.historyManager.closeHistoryWriter(paneId, 0);
-		}
+		const historyWorkspaceId = session?.workspaceId ?? workspaceId;
+		const historyClose = !deleteHistory
+			? this.historyManager.closeHistoryWriter(paneId, 0)
+			: null;
 
-		await this.client.kill({ sessionId: paneId, deleteHistory });
+		try {
+			await this.client.kill({ sessionId: paneId, deleteHistory });
+			if (exitWait) await exitWait;
+		} finally {
+			if (historyClose) await historyClose;
+			if (deleteHistory) {
+				const pendingHook = this.agentSessionPersistenceTails.get(paneId);
+				if (pendingHook) await pendingHook;
+			}
+			if (deleteHistory && historyWorkspaceId) {
+				// The exit handler closes the writer. cleanupHistory awaits that close so
+				// a final metadata flush cannot recreate files after deletion.
+				await this.historyManager.cleanupHistory(paneId, historyWorkspaceId);
+			} else if (deleteHistory) {
+				await this.historyManager.closeHistoryWriter(paneId, 0);
+			}
+		}
 	}
 
 	detach(params: { paneId: string }): void {
@@ -748,12 +948,8 @@ export class DaemonTerminalManager extends EventEmitter {
 
 			const writer = this.historyManager.getHistoryWriter(paneId);
 			if (writer) {
-				await writer.close().catch((error) => {
-					console.warn(
-						`[DaemonTerminalManager] Failed to close history writer for ${paneId}:`,
-						error,
-					);
-				});
+				await this.historyManager.closeHistoryWriter(paneId);
+				if (this.sessions.get(paneId) !== session || !session.isAlive) return;
 				try {
 					await this.historyManager.initHistoryWriter({
 						paneId,
@@ -762,6 +958,7 @@ export class DaemonTerminalManager extends EventEmitter {
 						cols: session.cols,
 						rows: session.rows,
 						initialScrollback: undefined,
+						runtime: session.runtime,
 					});
 				} catch (error) {
 					console.warn(
@@ -826,17 +1023,7 @@ export class DaemonTerminalManager extends EventEmitter {
 
 		const results = await Promise.allSettled(
 			Array.from(paneIdsToKill).map(async (paneId) => {
-				this.recordKilledSession(paneId);
-
-				const session = this.sessions.get(paneId);
-				if (session?.isAlive) {
-					session.isAlive = false;
-					session.pid = null;
-				}
-
-				portManager.unregisterDaemonSession(paneId);
-				await this.historyManager.cleanupHistory(paneId, workspaceId);
-				await this.client.kill({ sessionId: paneId, deleteHistory: true });
+				await this.kill({ paneId, workspaceId, deleteHistory: true });
 			}),
 		);
 
@@ -905,14 +1092,20 @@ export class DaemonTerminalManager extends EventEmitter {
 			clearTimeout(timeout);
 		}
 		this.cleanupTimeouts.clear();
+		for (const paneId of this.pendingSessions.keys()) {
+			this.advancePaneLifecycle(paneId);
+		}
 
 		await this.historyManager.cleanup();
 
 		this.sessions.clear();
+		this.pendingSessionGenerations.clear();
 		this.daemonAliveSessionIds.clear();
 		this.daemonSessionIdsHydrated = false;
 		this.coldRestoreInfo.clear();
 		this.killedSessionTombstones.clear();
+		this.deletedHistoryTombstones.clear();
+		this.agentSessionPersistenceTails.clear();
 		this.removeAllListeners();
 		disposeTerminalHostClient();
 	}
@@ -922,6 +1115,10 @@ export class DaemonTerminalManager extends EventEmitter {
 			sessions: [],
 		}));
 		const sessionIds = response.sessions.map((s) => s.sessionId);
+		for (const paneId of this.pendingSessions.keys()) {
+			this.advancePaneLifecycle(paneId);
+			this.recordKilledSession(paneId);
+		}
 
 		for (const session of response.sessions) {
 			if (!session.isAlive) continue;
@@ -959,13 +1156,17 @@ export class DaemonTerminalManager extends EventEmitter {
 		}
 		this.cleanupTimeouts.clear();
 		this.client.removeAllListeners();
+		for (const paneId of this.pendingSessions.keys()) {
+			this.advancePaneLifecycle(paneId);
+		}
 
 		this.sessions.clear();
-		this.pendingSessions.clear();
 		this.daemonAliveSessionIds.clear();
 		this.daemonSessionIdsHydrated = false;
 		this.coldRestoreInfo.clear();
 		this.killedSessionTombstones.clear();
+		this.deletedHistoryTombstones.clear();
+		this.agentSessionPersistenceTails.clear();
 
 		this.historyManager.closeAllSync();
 		this.createOrAttachLimiter.reset();

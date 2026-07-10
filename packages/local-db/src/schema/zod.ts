@@ -110,6 +110,8 @@ export const AGENT_RUNTIMES = [
 	"kimi",
 	"minimax",
 	"glm",
+	"huggingface",
+	"ollama",
 ] as const;
 
 export const agentRuntimeSchema = z.enum(AGENT_RUNTIMES);

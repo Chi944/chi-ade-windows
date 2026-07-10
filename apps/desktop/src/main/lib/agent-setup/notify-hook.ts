@@ -138,7 +138,8 @@ function normalizeNotifyEvent(payload) {
 function runNotify(args) {
   const input = args[0] || readStdin();
   const payload = parseJson(input);
-  dispatch(normalizeNotifyEvent(payload), payload.session_id || "");
+  const sessionId = payload.session_id || payload.sessionId || payload.sessionID || payload.thread_id || payload["thread-id"] || "";
+  dispatch(normalizeNotifyEvent(payload), sessionId);
 }
 
 function runCursor(args) {

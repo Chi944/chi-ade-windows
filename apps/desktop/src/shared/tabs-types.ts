@@ -3,16 +3,13 @@
  * Renderer extends these with MosaicNode layout specifics.
  */
 
+import type { AgentRuntime } from "@superset/local-db";
 import type { ChangeCategory } from "./changes-types";
 
 /**
  * Pane types that can be displayed within a tab
  */
-export type PaneType =
-	| "terminal"
-	| "webview"
-	| "file-viewer"
-	| "devtools";
+export type PaneType = "terminal" | "webview" | "file-viewer" | "devtools";
 
 /**
  * Pane status for agent lifecycle indicators
@@ -148,6 +145,10 @@ export interface Pane {
 	browser?: BrowserPaneState; // For browser (webview) panes
 	devtools?: DevToolsPaneState; // For devtools panes
 	terminalProfileId?: string; // Terminal color profile override
+	/** Agent CLI actually launched in this pane (may differ from the workspace default). */
+	agentRuntime?: AgentRuntime;
+	/** One-shot permission to revive a deliberately closed pane with retained history. */
+	allowKilledRestore?: boolean;
 }
 
 /**

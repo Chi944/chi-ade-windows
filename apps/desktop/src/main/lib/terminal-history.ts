@@ -17,6 +17,8 @@
 import { createWriteStream, promises as fs, type WriteStream } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
+import type { AgentRuntime } from "@superset/local-db";
+import { isValidAgentSessionId } from "shared/agent-session-recovery";
 import { SUPERSET_DIR_NAME } from "shared/constants";
 
 const MAX_HISTORY_BYTES = 5 * 1024 * 1024; // 5MB per session
@@ -59,6 +61,97 @@ export interface SessionMetadata {
 	endedAt?: string;
 	exitCode?: number;
 	claudeSessionId?: string;
+	agentRuntime?: AgentRuntime;
+	agentSessionId?: string;
+	agentSessionIdSource?: "hook" | "output";
+}
+
+export interface MergeSessionMetadataOptions {
+	clearEndedAt?: boolean;
+}
+
+function metadataRuntime(
+	metadata: Partial<SessionMetadata>,
+): AgentRuntime | undefined {
+	return (
+		metadata.agentRuntime ?? (metadata.claudeSessionId ? "claude" : undefined)
+	);
+}
+
+function validMetadataSessionId(
+	metadata: Partial<SessionMetadata>,
+	runtime = metadataRuntime(metadata),
+): string | undefined {
+	const sessionId =
+		metadata.agentSessionId ??
+		(runtime === "claude" ? metadata.claudeSessionId : undefined);
+	return isValidAgentSessionId(runtime, sessionId) ? sessionId : undefined;
+}
+
+/**
+ * Merge one serialized metadata update without allowing fallback PTY parsing to
+ * replace an already-valid conversation id. Hook ids are authoritative, while
+ * end-of-session fields survive later hook-only writes.
+ */
+export function mergeSessionMetadata(
+	existing: Partial<SessionMetadata>,
+	incoming: Partial<SessionMetadata>,
+	options: MergeSessionMetadataOptions = {},
+): Partial<SessionMetadata> {
+	const result: Partial<SessionMetadata> = { ...existing, ...incoming };
+
+	if (options.clearEndedAt) {
+		delete result.endedAt;
+		delete result.exitCode;
+	} else {
+		if (incoming.endedAt === undefined && existing.endedAt !== undefined) {
+			result.endedAt = existing.endedAt;
+		}
+		if (incoming.exitCode === undefined && existing.exitCode !== undefined) {
+			result.exitCode = existing.exitCode;
+		}
+	}
+
+	const existingRuntime = metadataRuntime(existing);
+	const incomingRuntime = metadataRuntime(incoming);
+	const runtime = incomingRuntime ?? existingRuntime;
+	const runtimeChanged =
+		incomingRuntime !== undefined &&
+		existingRuntime !== undefined &&
+		incomingRuntime !== existingRuntime;
+	const existingSessionId = validMetadataSessionId(existing, existingRuntime);
+	const incomingSessionId = validMetadataSessionId(incoming, incomingRuntime);
+
+	let sessionId: string | undefined;
+	let sessionSource: SessionMetadata["agentSessionIdSource"];
+	if (runtimeChanged) {
+		sessionId = incomingSessionId;
+		sessionSource = incomingSessionId
+			? incoming.agentSessionIdSource
+			: undefined;
+	} else if (incoming.agentSessionIdSource === "hook" && incomingSessionId) {
+		sessionId = incomingSessionId;
+		sessionSource = "hook";
+	} else if (existingSessionId) {
+		sessionId = existingSessionId;
+		sessionSource = existing.agentSessionIdSource;
+	} else if (incomingSessionId) {
+		sessionId = incomingSessionId;
+		sessionSource = incoming.agentSessionIdSource;
+	}
+
+	if (runtime) result.agentRuntime = runtime;
+	else delete result.agentRuntime;
+	delete result.agentSessionId;
+	delete result.agentSessionIdSource;
+	delete result.claudeSessionId;
+	if (sessionId && runtime) {
+		result.agentSessionId = sessionId;
+		if (sessionSource) result.agentSessionIdSource = sessionSource;
+		if (runtime === "claude") result.claudeSessionId = sessionId;
+	}
+
+	return result;
 }
 
 // =============================================================================
@@ -109,6 +202,65 @@ function getMetadataPath(workspaceId: string, paneId: string): string {
 	return join(getHistoryDir(workspaceId, paneId), "meta.json");
 }
 
+const metadataWriteTails = new Map<string, Promise<void>>();
+
+async function readMetadataFile(
+	metaPath: string,
+): Promise<Partial<SessionMetadata>> {
+	try {
+		return JSON.parse(
+			await fs.readFile(metaPath, "utf8"),
+		) as Partial<SessionMetadata>;
+	} catch {
+		return {};
+	}
+}
+
+function withMetadataDefaults(
+	metadata: Partial<SessionMetadata>,
+): SessionMetadata {
+	return {
+		...metadata,
+		cwd: typeof metadata.cwd === "string" ? metadata.cwd : homedir(),
+		cols: typeof metadata.cols === "number" ? metadata.cols : 80,
+		rows: typeof metadata.rows === "number" ? metadata.rows : 24,
+		startedAt:
+			typeof metadata.startedAt === "string"
+				? metadata.startedAt
+				: new Date().toISOString(),
+	};
+}
+
+/** Serialize every read/merge/write for a pane's meta.json. */
+async function writeMergedMetadata(
+	metaPath: string,
+	incoming: Partial<SessionMetadata>,
+	options: MergeSessionMetadataOptions = {},
+): Promise<void> {
+	const previous = metadataWriteTails.get(metaPath) ?? Promise.resolve();
+	const operation = previous.then(async () => {
+		const existing = await readMetadataFile(metaPath);
+		const merged = withMetadataDefaults(
+			mergeSessionMetadata(existing, incoming, options),
+		);
+		await fs.writeFile(metaPath, JSON.stringify(merged, null, 2), {
+			mode: HISTORY_FILE_MODE,
+		});
+		await fs.chmod(metaPath, HISTORY_FILE_MODE).catch(() => {});
+	});
+	const tail = operation.then(
+		() => {},
+		() => {},
+	);
+	metadataWriteTails.set(metaPath, tail);
+	void tail.finally(() => {
+		if (metadataWriteTails.get(metaPath) === tail) {
+			metadataWriteTails.delete(metaPath);
+		}
+	});
+	return operation;
+}
+
 // =============================================================================
 // HistoryWriter
 // =============================================================================
@@ -143,6 +295,7 @@ export class HistoryWriter {
 		cwd: string,
 		cols: number,
 		rows: number,
+		runtime?: AgentRuntime | null,
 	) {
 		this.dir = getHistoryDir(workspaceId, paneId);
 		this.scrollbackPath = getScrollbackPath(workspaceId, paneId);
@@ -152,6 +305,7 @@ export class HistoryWriter {
 			cols,
 			rows,
 			startedAt: new Date().toISOString(),
+			agentRuntime: runtime ?? undefined,
 		};
 	}
 
@@ -162,13 +316,33 @@ export class HistoryWriter {
 	async init(initialScrollback?: string): Promise<void> {
 		await fs.mkdir(this.dir, { recursive: true, mode: HISTORY_DIR_MODE });
 
-		// Preserve claudeSessionId from existing meta.json across session reinit.
-		// Otherwise ADE restarts would wipe the captured ID and break auto-resume.
+		// Preserve conversation metadata across writer reinitialization.
 		try {
 			const existing = await fs.readFile(this.metaPath, "utf8");
 			const prev = JSON.parse(existing) as Partial<SessionMetadata>;
-			if (prev.claudeSessionId && !this.metadata.claudeSessionId) {
+			const previousRuntime =
+				prev.agentRuntime ?? (prev.claudeSessionId ? "claude" : undefined);
+			const runtimeMatches =
+				!this.metadata.agentRuntime ||
+				(previousRuntime !== undefined &&
+					previousRuntime === this.metadata.agentRuntime);
+			if (
+				runtimeMatches &&
+				prev.claudeSessionId &&
+				!this.metadata.claudeSessionId
+			) {
 				this.metadata.claudeSessionId = prev.claudeSessionId;
+			}
+			if (prev.agentRuntime && !this.metadata.agentRuntime) {
+				this.metadata.agentRuntime = prev.agentRuntime;
+			}
+			if (
+				runtimeMatches &&
+				prev.agentSessionId &&
+				!this.metadata.agentSessionId
+			) {
+				this.metadata.agentSessionId = prev.agentSessionId;
+				this.metadata.agentSessionIdSource = prev.agentSessionIdSource;
 			}
 		} catch {
 			// meta.json doesn't exist or is invalid — that's fine, fresh start
@@ -233,7 +407,7 @@ export class HistoryWriter {
 		// Write meta.json immediately (without endedAt)
 		// This enables cold restore detection - if app crashes,
 		// meta.json exists but has no endedAt, indicating unclean shutdown
-		await this.writeMetadata();
+		await this.writeMetadata({ clearEndedAt: true });
 	}
 
 	/**
@@ -345,9 +519,52 @@ export class HistoryWriter {
 	 * Update the stored Claude session ID (for auto-resume after restart).
 	 */
 	updateClaudeSessionId(sessionId: string): void {
-		if (this.closed || this.metadata.claudeSessionId === sessionId) return;
-		this.metadata.claudeSessionId = sessionId;
-		this.writeMetadata();
+		this.updateAgentSession("claude", sessionId);
+	}
+
+	/** PTY parsing is fallback-only and never replaces a valid stored id. */
+	updateAgentSession(runtime: AgentRuntime, sessionId?: string): void {
+		if (this.closed) return;
+		const existingSessionId = validMetadataSessionId(this.metadata);
+		if (existingSessionId && this.metadata.agentSessionIdSource === "hook") {
+			return;
+		}
+
+		let changed = false;
+		if (this.metadata.agentRuntime && this.metadata.agentRuntime !== runtime) {
+			this.metadata.agentSessionId = undefined;
+			this.metadata.claudeSessionId = undefined;
+			this.metadata.agentSessionIdSource = undefined;
+			changed = true;
+		}
+		if (this.metadata.agentRuntime !== runtime) {
+			this.metadata.agentRuntime = runtime;
+			changed = true;
+		}
+
+		const currentSessionId = validMetadataSessionId(this.metadata, runtime);
+		if (!currentSessionId && isValidAgentSessionId(runtime, sessionId)) {
+			this.metadata.agentSessionId = sessionId;
+			this.metadata.agentSessionIdSource = "output";
+			if (runtime === "claude") this.metadata.claudeSessionId = sessionId;
+			changed = true;
+		}
+
+		if (changed) void this.writeMetadata();
+	}
+
+	/** Persist a validated id from the provider hook, overriding any fallback. */
+	async updateAgentSessionFromHook(
+		runtime: AgentRuntime,
+		sessionId: string,
+	): Promise<void> {
+		if (!isValidAgentSessionId(runtime, sessionId)) return;
+		this.metadata.agentRuntime = runtime;
+		this.metadata.agentSessionId = sessionId;
+		this.metadata.agentSessionIdSource = "hook";
+		if (runtime === "claude") this.metadata.claudeSessionId = sessionId;
+		else this.metadata.claudeSessionId = undefined;
+		await this.writeMetadata({ throwOnError: true });
 	}
 
 	/**
@@ -404,7 +621,6 @@ export class HistoryWriter {
 		if (exitCode !== undefined) {
 			this.metadata.exitCode = exitCode;
 		}
-
 		await this.writeMetadata();
 	}
 
@@ -466,21 +682,17 @@ export class HistoryWriter {
 		});
 	}
 
-	private async writeMetadata(): Promise<void> {
+	private async writeMetadata(
+		options: MergeSessionMetadataOptions & { throwOnError?: boolean } = {},
+	): Promise<void> {
 		try {
-			await fs.writeFile(
-				this.metaPath,
-				JSON.stringify(this.metadata, null, 2),
-				{
-					mode: HISTORY_FILE_MODE,
-				},
-			);
-			await fs.chmod(this.metaPath, HISTORY_FILE_MODE).catch(() => {});
+			await writeMergedMetadata(this.metaPath, { ...this.metadata }, options);
 		} catch (error) {
 			console.warn(
 				`[HistoryWriter] Failed to write metadata for ${this.paneId}:`,
 				error instanceof Error ? error.message : String(error),
 			);
+			if (options.throwOnError) throw error;
 		}
 	}
 }
@@ -534,6 +746,8 @@ export class HistoryReader {
 		cwd: string;
 		endedAt?: string;
 		claudeSessionId?: string;
+		agentRuntime?: AgentRuntime;
+		agentSessionId?: string;
 	} | null> {
 		try {
 			const content = await fs.readFile(this.metaPath, "utf8");
@@ -545,6 +759,8 @@ export class HistoryReader {
 				cwd: metadata.cwd,
 				endedAt: metadata.endedAt,
 				claudeSessionId: metadata.claudeSessionId,
+				agentRuntime: metadata.agentRuntime,
+				agentSessionId: metadata.agentSessionId,
 			};
 		} catch {
 			return null;
@@ -594,34 +810,37 @@ export async function writeClaudeSessionIdToHistory(
 	paneId: string,
 	claudeSessionId: string,
 ): Promise<void> {
+	if (!isValidAgentSessionId("claude", claudeSessionId)) return;
 	const dir = getHistoryDir(workspaceId, paneId);
 	const metaPath = getMetadataPath(workspaceId, paneId);
 
 	await fs.mkdir(dir, { recursive: true, mode: HISTORY_DIR_MODE });
 
-	let meta: Partial<SessionMetadata> = {};
-	try {
-		const existing = await fs.readFile(metaPath, "utf8");
-		meta = JSON.parse(existing) as Partial<SessionMetadata>;
-	} catch {
-		// meta.json doesn't exist or is invalid — start fresh.
-	}
-
-	// No-op if the value already matches to avoid needless writes.
-	if (meta.claudeSessionId === claudeSessionId) return;
-
-	meta.claudeSessionId = claudeSessionId;
-	// Ensure required fields exist with sane defaults so the JSON satisfies
-	// SessionMetadata for downstream readers.
-	if (typeof meta.cwd !== "string") meta.cwd = homedir();
-	if (typeof meta.cols !== "number") meta.cols = 80;
-	if (typeof meta.rows !== "number") meta.rows = 24;
-	if (typeof meta.startedAt !== "string") {
-		meta.startedAt = new Date().toISOString();
-	}
-
-	await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), {
-		mode: HISTORY_FILE_MODE,
+	await writeMergedMetadata(metaPath, {
+		agentRuntime: "claude",
+		agentSessionId: claudeSessionId,
+		agentSessionIdSource: "hook",
+		claudeSessionId,
 	});
-	await fs.chmod(metaPath, HISTORY_FILE_MODE).catch(() => {});
+}
+
+/** Persist a provider session id captured by an agent notification hook. */
+export async function writeAgentSessionToHistory(
+	workspaceId: string,
+	paneId: string,
+	runtime: AgentRuntime,
+	agentSessionId: string,
+): Promise<void> {
+	if (!isValidAgentSessionId(runtime, agentSessionId)) return;
+	const dir = getHistoryDir(workspaceId, paneId);
+	const metaPath = getMetadataPath(workspaceId, paneId);
+
+	await fs.mkdir(dir, { recursive: true, mode: HISTORY_DIR_MODE });
+
+	await writeMergedMetadata(metaPath, {
+		agentRuntime: runtime,
+		agentSessionId,
+		agentSessionIdSource: "hook",
+		...(runtime === "claude" ? { claudeSessionId: agentSessionId } : {}),
+	});
 }

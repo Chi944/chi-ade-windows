@@ -44,12 +44,17 @@ const {
 	hasProviderKey,
 	getProviderKey,
 	getProviderKeyStatus,
+	setProviderModelProfile,
+	clearProviderModelProfile,
+	getProviderRuntimeEnvironment,
 } = await import("./provider-keys");
 
 describe("provider-keys", () => {
 	beforeEach(() => {
 		encryptionAvailable = true;
 		settingsRow = null;
+		clearProviderModelProfile("huggingface");
+		clearProviderModelProfile("ollama");
 	});
 
 	it("round-trips a stored key through encryption", () => {
@@ -60,7 +65,10 @@ describe("provider-keys", () => {
 
 		expect(hasProviderKey("openrouter")).toBe(true);
 		expect(getProviderKey("openrouter")).toBe("sk-or-test-123");
-		expect(getProviderKeyStatus()).toEqual({ openrouter: true });
+		expect(getProviderKeyStatus()).toEqual({
+			openrouter: true,
+			huggingface: false,
+		});
 
 		// Persisted value must be the encrypted blob, never plaintext.
 		expect(settingsRow?.providerApiKeys?.openrouter).not.toContain(
@@ -86,7 +94,10 @@ describe("provider-keys", () => {
 
 		expect(hasProviderKey("openrouter")).toBe(false);
 		expect(getProviderKey("openrouter")).toBeNull();
-		expect(getProviderKeyStatus()).toEqual({ openrouter: false });
+		expect(getProviderKeyStatus()).toEqual({
+			openrouter: false,
+			huggingface: false,
+		});
 	});
 
 	it("degrades gracefully when secure storage is unavailable", () => {
@@ -98,5 +109,82 @@ describe("provider-keys", () => {
 		setProviderKey("openrouter", "sk-or-y");
 		encryptionAvailable = false;
 		expect(getProviderKey("openrouter")).toBeNull();
+	});
+
+	it("keeps the Hugging Face token encrypted and only exposes it in main-process env", () => {
+		setProviderKey("huggingface", "hf_secret_token");
+		setProviderModelProfile("huggingface", "Qwen/Qwen3-Coder");
+
+		const runtimeEnv = getProviderRuntimeEnvironment({
+			runtime: "huggingface",
+			workspaceId: "workspace-hf",
+		});
+		expect(runtimeEnv.HF_TOKEN).toBe("hf_secret_token");
+		expect(settingsRow?.providerApiKeys?.huggingface).not.toContain(
+			"hf_secret_token",
+		);
+		expect(settingsRow?.providerApiKeys?.["model:huggingface"]).not.toContain(
+			"Qwen/Qwen3-Coder",
+		);
+		expect(getProviderKeyStatus()).toEqual({
+			openrouter: false,
+			huggingface: true,
+		});
+	});
+
+	it("stores an Ollama profile without injecting unrelated environment", () => {
+		setProviderModelProfile("ollama", "qwen3-coder:30b");
+		const runtimeEnv = getProviderRuntimeEnvironment({
+			runtime: "ollama",
+			workspaceId: "workspace-ollama",
+		});
+
+		expect(runtimeEnv).toEqual({});
+		expect(settingsRow?.providerApiKeys?.["model:ollama"]).not.toContain(
+			"qwen3-coder:30b",
+		);
+	});
+
+	it("rejects unsafe model IDs before they reach a shell or config", () => {
+		expect(() =>
+			setProviderModelProfile("ollama", "qwen && calc.exe"),
+		).toThrow();
+	});
+
+	it("does not expose provider secrets to unrelated terminals", () => {
+		setProviderKey("openrouter", "sk-or-secret");
+		setProviderKey("huggingface", "hf_secret");
+		setProviderModelProfile("huggingface", "Qwen/Qwen3-Coder");
+
+		expect(
+			getProviderRuntimeEnvironment({
+				runtime: "claude",
+				workspaceId: "workspace-claude",
+			}),
+		).toEqual({});
+		expect(
+			getProviderRuntimeEnvironment({
+				runtime: "kimi",
+				workspaceId: "workspace-kimi",
+			}),
+		).toEqual({ OPENROUTER_API_KEY: "sk-or-secret" });
+	});
+
+	it("scopes provider secrets to the explicit runtime", () => {
+		setProviderKey("huggingface", "hf_secret");
+		setProviderModelProfile("huggingface", "Qwen/Qwen3-Coder");
+
+		expect(
+			getProviderRuntimeEnvironment({
+				runtime: "claude",
+				workspaceId: "workspace-claude",
+			}),
+		).toEqual({});
+		expect(
+			getProviderRuntimeEnvironment({
+				runtime: "huggingface",
+				workspaceId: "workspace-claude",
+			}),
+		).toEqual({ HF_TOKEN: "hf_secret" });
 	});
 });

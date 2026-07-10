@@ -1,8 +1,10 @@
+import type { AgentRuntime } from "@superset/local-db";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import { useCallback, useRef, useState } from "react";
 import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
 import { consumeSyncedPane } from "renderer/stores/tabs/syncedPaneRegistry";
+import { buildAgentResumeCommand } from "shared/agent-session-recovery";
 import { coldRestoreState } from "../state";
 import type {
 	CreateOrAttachMutate,
@@ -15,6 +17,7 @@ export interface UseTerminalColdRestoreOptions {
 	paneId: string;
 	tabId: string;
 	workspaceId: string;
+	agentRuntime?: AgentRuntime;
 	xtermRef: React.MutableRefObject<XTerm | null>;
 	fitAddonRef: React.MutableRefObject<FitAddon | null>;
 	isStreamReadyRef: React.MutableRefObject<boolean>;
@@ -53,6 +56,7 @@ export function useTerminalColdRestore({
 	paneId,
 	tabId,
 	workspaceId,
+	agentRuntime,
 	xtermRef,
 	fitAddonRef,
 	isStreamReadyRef,
@@ -91,6 +95,7 @@ export function useTerminalColdRestore({
 				workspaceId,
 				cols: xterm.cols,
 				rows: xterm.rows,
+				runtime: agentRuntime,
 			},
 			{
 				onSuccess: (result: CreateOrAttachResult) => {
@@ -108,6 +113,9 @@ export function useTerminalColdRestore({
 							cwd: result.previousCwd || null,
 							scrollback,
 							claudeSessionId: result.claudeSessionId || null,
+							agentRuntime: result.agentRuntime ?? agentRuntime ?? null,
+							agentSessionId:
+								result.agentSessionId ?? result.claudeSessionId ?? null,
 						});
 						setIsRestoredMode(true);
 						setRestoredCwd(result.previousCwd || null);
@@ -152,6 +160,7 @@ export function useTerminalColdRestore({
 		paneId,
 		tabId,
 		workspaceId,
+		agentRuntime,
 		xtermRef,
 		isStreamReadyRef,
 		isExitedRef,
@@ -171,9 +180,15 @@ export function useTerminalColdRestore({
 		const fitAddon = fitAddonRef.current;
 		if (!xterm || !fitAddon) return;
 
-		// Capture Claude session ID before clearing cold restore state
+		// Capture provider metadata before clearing cold restore state.
 		const savedColdState = coldRestoreState.get(paneId);
 		const claudeSessionId = savedColdState?.claudeSessionId;
+		const runtime =
+			savedColdState?.agentRuntime ??
+			agentRuntime ??
+			(claudeSessionId ? "claude" : undefined);
+		const agentSessionId =
+			savedColdState?.agentSessionId ?? claudeSessionId ?? undefined;
 		console.log(
 			"[ColdRestore] handleStartShell",
 			JSON.stringify({
@@ -224,6 +239,7 @@ export function useTerminalColdRestore({
 				cwd: restoredCwdRef.current || undefined,
 				skipColdRestore: true,
 				allowKilled: true,
+				runtime,
 			},
 			{
 				onSuccess: (result: CreateOrAttachResult) => {
@@ -233,15 +249,18 @@ export function useTerminalColdRestore({
 					setIsRestoredMode(false);
 					coldRestoreState.delete(paneId);
 
-					// Auto-resume Claude Code session if detected
-					if (claudeSessionId) {
+					const resumeCommand = buildAgentResumeCommand({
+						runtime,
+						sessionId: agentSessionId,
+					});
+					if (resumeCommand) {
 						// Synced-from-peer panes stage the command without pressing Enter.
 						const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
 						setTimeout(() => {
 							trpcClient.terminal.write
 								.mutate({
 									paneId,
-									data: `claude --resume ${claudeSessionId} --dangerously-skip-permissions${stagedNewline}`,
+									data: `${resumeCommand}${stagedNewline}`,
 								})
 								.catch((err) => {
 									console.warn(
@@ -273,6 +292,7 @@ export function useTerminalColdRestore({
 		paneId,
 		tabId,
 		workspaceId,
+		agentRuntime,
 		xtermRef,
 		fitAddonRef,
 		isStreamReadyRef,

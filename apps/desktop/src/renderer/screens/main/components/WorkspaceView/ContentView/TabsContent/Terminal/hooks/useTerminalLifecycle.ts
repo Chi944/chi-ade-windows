@@ -1,3 +1,4 @@
+import type { AgentRuntime } from "@superset/local-db";
 import type { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import type { IDisposable, ITheme, Terminal as XTerm } from "@xterm/xterm";
@@ -5,8 +6,9 @@ import type { MutableRefObject, RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
 import { useTabsStore } from "renderer/stores/tabs/store";
-import { killTerminalForPane } from "renderer/stores/tabs/utils/terminal-cleanup";
 import { consumeSyncedPane } from "renderer/stores/tabs/syncedPaneRegistry";
+import { killTerminalForPane } from "renderer/stores/tabs/utils/terminal-cleanup";
+import { buildAgentResumeCommand } from "shared/agent-session-recovery";
 import { scheduleTerminalAttach } from "../attach-scheduler";
 import { sanitizeForTitle } from "../commandBuffer";
 import { DEBUG_TERMINAL, FIRST_RENDER_RESTORE_FALLBACK_MS } from "../config";
@@ -83,6 +85,8 @@ export interface UseTerminalLifecycleOptions {
 	paneId: string;
 	tabIdRef: MutableRefObject<string>;
 	workspaceId: string;
+	agentRuntime?: AgentRuntime;
+	allowKilledRestore?: boolean;
 	terminalRef: RefObject<HTMLDivElement | null>;
 	xtermRef: MutableRefObject<XTerm | null>;
 	fitAddonRef: MutableRefObject<FitAddon | null>;
@@ -145,6 +149,8 @@ export function useTerminalLifecycle({
 	paneId,
 	tabIdRef,
 	workspaceId,
+	agentRuntime,
+	allowKilledRestore,
 	terminalRef,
 	xtermRef,
 	fitAddonRef,
@@ -292,6 +298,7 @@ export function useTerminalLifecycle({
 					cols: xterm.cols,
 					rows: xterm.rows,
 					allowKilled: true,
+					runtime: agentRuntime,
 				},
 				{
 					onSuccess: (result) => {
@@ -307,16 +314,23 @@ export function useTerminalLifecycle({
 							}),
 						);
 
-						// Auto-resume Claude Code session if detected from meta.json
-						if (result.claudeSessionId) {
-							const sessionId = result.claudeSessionId;
-								// Synced-from-peer panes stage the command without pressing Enter.
-								const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
+						const resumeCommand = result.resumeAvailable
+							? buildAgentResumeCommand({
+									runtime:
+										result.agentRuntime ??
+										agentRuntime ??
+										(result.claudeSessionId ? "claude" : undefined),
+									sessionId: result.agentSessionId ?? result.claudeSessionId,
+								})
+							: null;
+						if (resumeCommand) {
+							// Synced-from-peer panes stage the command without pressing Enter.
+							const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
 							setTimeout(() => {
 								trpcClient.terminal.write
 									.mutate({
 										paneId,
-										data: `claude --resume ${sessionId} --dangerously-skip-permissions${stagedNewline}`,
+										data: `${resumeCommand}${stagedNewline}`,
 									})
 									.catch((err) => {
 										console.warn(
@@ -430,6 +444,8 @@ export function useTerminalLifecycle({
 							cols: xterm.cols,
 							rows: xterm.rows,
 							cwd: initialCwd,
+							runtime: agentRuntime,
+							allowKilled: allowKilledRestore,
 						},
 						{
 							onSuccess: (result) => {
@@ -469,6 +485,9 @@ export function useTerminalLifecycle({
 										cwd: result.previousCwd || null,
 										scrollback,
 										claudeSessionId: result.claudeSessionId || null,
+										agentRuntime: result.agentRuntime ?? agentRuntime ?? null,
+										agentSessionId:
+											result.agentSessionId ?? result.claudeSessionId ?? null,
 									});
 									setIsRestoredMode(true);
 									setRestoredCwd(result.previousCwd || null);
@@ -482,19 +501,25 @@ export function useTerminalLifecycle({
 								pendingInitialStateRef.current = result;
 								maybeApplyInitialState();
 
-								// Auto-resume Claude Code session on initial mount if:
-								//   - Pane has a captured claudeSessionId in meta.json
-								//   - Not cold restore (that path handles its own auto-resume)
-								//   - It's a new shell (isNew) — avoids typing into warm-attached sessions
-								if (result.isNew && result.claudeSessionId) {
-									const sessionId = result.claudeSessionId;
-								// Synced-from-peer panes stage the command without pressing Enter.
-								const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
+								const resumeCommand =
+									result.isNew && result.resumeAvailable
+										? buildAgentResumeCommand({
+												runtime:
+													result.agentRuntime ??
+													agentRuntime ??
+													(result.claudeSessionId ? "claude" : undefined),
+												sessionId:
+													result.agentSessionId ?? result.claudeSessionId,
+											})
+										: null;
+								if (resumeCommand) {
+									// Synced-from-peer panes stage the command without pressing Enter.
+									const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
 									setTimeout(() => {
 										trpcClient.terminal.write
 											.mutate({
 												paneId,
-												data: `claude --resume ${sessionId} --dangerously-skip-permissions${stagedNewline}`,
+												data: `${resumeCommand}${stagedNewline}`,
 											})
 											.catch((err) => {
 												console.warn(
@@ -748,6 +773,8 @@ export function useTerminalLifecycle({
 	}, [
 		paneId,
 		workspaceId,
+		agentRuntime,
+		allowKilledRestore,
 		maybeApplyInitialState,
 		flushPendingEvents,
 		setConnectionError,

@@ -1,4 +1,4 @@
-import { type AgentType } from "./agent-command";
+import type { AgentType } from "./agent-command";
 
 /**
  * The external CLIs ADE shells out to. Several agent runtimes share one binary:
@@ -25,6 +25,8 @@ export const RUNTIME_BINARY: Record<AgentType, AgentBinary> = {
 	kimi: "claude",
 	minimax: "claude",
 	glm: "claude",
+	huggingface: "codex",
+	ollama: "codex",
 };
 
 export interface BinaryInstallInfo {

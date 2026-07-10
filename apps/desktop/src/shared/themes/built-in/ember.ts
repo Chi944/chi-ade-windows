@@ -1,63 +1,62 @@
 import type { Theme } from "../types";
 
 /**
- * Dark theme - Warm dark theme inspired by the Figma start screen design
- * Features a warm, slightly reddish dark background (#151110)
+ * True-black dark theme optimized for OLED screens and low-light Windows use.
  */
 export const darkTheme: Theme = {
 	id: "dark",
-	name: "Dark",
-	author: "Superset",
+	name: "True Black",
+	author: "ADE",
+	description: "A deep OLED-friendly dark theme",
 	type: "dark",
 	isBuiltIn: true,
 
 	ui: {
-		// Core - warm dark tones
-		background: "#151110",
-		foreground: "#eae8e6",
-		card: "#201E1C",
-		cardForeground: "#eae8e6",
-		popover: "#201E1C",
-		popoverForeground: "#eae8e6",
+		// Core - true black canvas with subtle near-black surfaces
+		background: "#000000",
+		foreground: "#f4f4f5",
+		card: "#090909",
+		cardForeground: "#f4f4f5",
+		popover: "#0c0c0c",
+		popoverForeground: "#f4f4f5",
 
-		// Primary - light foreground for contrast
-		primary: "#eae8e6",
-		primaryForeground: "#151110",
+		// Primary - high-contrast neutral actions
+		primary: "#f4f4f5",
+		primaryForeground: "#000000",
 
-		// Secondary - warm grays
-		secondary: "#2a2827",
-		secondaryForeground: "#eae8e6",
+		// Secondary - neutral near-black surfaces
+		secondary: "#171717",
+		secondaryForeground: "#f4f4f5",
 
-		// Muted - subtle warm grays
-		muted: "#2a2827",
-		mutedForeground: "#a8a5a3",
+		// Muted - legible without glowing against black
+		muted: "#171717",
+		mutedForeground: "#a1a1aa",
 
-		// Accent - warm highlight
-		accent: "#2a2827",
-		accentForeground: "#eae8e6",
+		accent: "#171717",
+		accentForeground: "#f4f4f5",
 
 		// Tertiary - panel backgrounds
-		tertiary: "#1a1716",
-		tertiaryActive: "#252220",
+		tertiary: "#050505",
+		tertiaryActive: "#151515",
 
 		// Destructive - warm red
 		destructive: "#cc4444",
 		destructiveForeground: "#ffcccc",
 
-		// Borders - subtle warm gray
-		border: "#2a2827",
-		input: "#2a2827",
-		ring: "#3a3837",
+		// Borders - visible separation without lifting the black canvas
+		border: "#262626",
+		input: "#262626",
+		ring: "#d4d4d8",
 
-		// Sidebar - slightly lighter than background
-		sidebar: "#1a1716",
-		sidebarForeground: "#eae8e6",
+		// Sidebar - near-black, distinct from the main canvas
+		sidebar: "#030303",
+		sidebarForeground: "#f4f4f5",
 		sidebarPrimary: "#e07850",
-		sidebarPrimaryForeground: "#151110",
-		sidebarAccent: "#252220",
-		sidebarAccentForeground: "#eae8e6",
-		sidebarBorder: "#2a2827",
-		sidebarRing: "#3a3837",
+		sidebarPrimaryForeground: "#000000",
+		sidebarAccent: "#151515",
+		sidebarAccentForeground: "#f4f4f5",
+		sidebarBorder: "#262626",
+		sidebarRing: "#d4d4d8",
 
 		// Charts - warm palette
 		chart1: "#e07850",
@@ -66,27 +65,27 @@ export const darkTheme: Theme = {
 		chart4: "#7b68ee",
 		chart5: "#dc6b6b",
 
-		// Search highlights - warm orange tint matching ember's accent
+		// Search highlights - warm orange tint matching the accent palette
 		highlightMatch: "rgba(224, 120, 80, 0.2)",
 		highlightActive: "rgba(224, 120, 80, 0.5)",
 	},
 
 	terminal: {
-		background: "#151110",
-		foreground: "#eae8e6",
+		background: "#000000",
+		foreground: "#f4f4f5",
 		cursor: "#e07850",
-		cursorAccent: "#151110",
+		cursorAccent: "#000000",
 		selectionBackground: "rgba(224, 120, 80, 0.25)",
 
-		// Standard ANSI colors - warm tinted
-		black: "#151110",
+		// Standard ANSI colors
+		black: "#000000",
 		red: "#dc6b6b",
 		green: "#7ec699",
 		yellow: "#e5c07b",
 		blue: "#61afef",
 		magenta: "#c678dd",
 		cyan: "#56b6c2",
-		white: "#eae8e6",
+		white: "#f4f4f5",
 
 		// Bright ANSI colors
 		brightBlack: "#5c5856",

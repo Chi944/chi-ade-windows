@@ -1,3 +1,4 @@
+import { AGENT_RUNTIMES } from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
 import { appState, getDeviceId } from "main/lib/app-state";
 import type { TabsState, ThemeState } from "main/lib/app-state/schemas";
@@ -76,6 +77,8 @@ const paneSchema = z.object({
 			targetPaneId: z.string(),
 		})
 		.optional(),
+	agentRuntime: z.enum(AGENT_RUNTIMES).optional(),
+	allowKilledRestore: z.boolean().optional(),
 });
 
 /**

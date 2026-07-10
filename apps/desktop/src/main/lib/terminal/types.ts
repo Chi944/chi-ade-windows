@@ -69,6 +69,12 @@ export interface SessionResult {
 	 * Extracted from "claude --resume <id>" or "Resume this session with:" patterns.
 	 */
 	claudeSessionId?: string;
+	/** Runtime that created this pane's conversation. */
+	agentRuntime?: AgentRuntime;
+	/** Stable provider session/thread id when the CLI exposes one. */
+	agentSessionId?: string;
+	/** True when previous pane metadata exists and a continuation is meaningful. */
+	resumeAvailable?: boolean;
 	/** Snapshot from daemon (if using daemon mode) */
 	snapshot?: {
 		snapshotAnsi: string;

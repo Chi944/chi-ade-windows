@@ -17,11 +17,13 @@ import { app } from "electron";
 import { quitWithoutConfirmation } from "main/index";
 import { hasCustomRingtone } from "main/lib/custom-ringtones";
 import { localDb } from "main/lib/local-db";
+import { probeSubscriptionConnections } from "main/lib/provider-connections";
 import {
 	clearProviderKey,
 	getProviderKeyStatus,
 	PROVIDER_IDS,
 	setProviderKey,
+	setProviderModelProfile,
 } from "main/lib/provider-keys";
 import {
 	DEFAULT_AUTO_APPLY_DEFAULT_PRESET,
@@ -723,6 +725,28 @@ export const createSettingsRouter = () => {
 		providerKeys: router({
 			status: publicProcedure.query(() => getProviderKeyStatus()),
 
+			setModelProfile: publicProcedure
+				.input(
+					z.object({
+						provider: z.enum(["huggingface", "ollama"]),
+						modelId: z.string().min(1),
+					}),
+				)
+				.mutation(({ input }) => {
+					try {
+						setProviderModelProfile(input.provider, input.modelId);
+					} catch (error) {
+						throw new TRPCError({
+							code: "BAD_REQUEST",
+							message:
+								error instanceof Error
+									? error.message
+									: "Invalid provider model ID",
+						});
+					}
+					return { success: true };
+				}),
+
 			set: publicProcedure
 				.input(
 					z.object({
@@ -753,6 +777,10 @@ export const createSettingsRouter = () => {
 					clearProviderKey(input.provider);
 					return { success: true };
 				}),
+		}),
+
+		subscriptionConnections: router({
+			status: publicProcedure.query(() => probeSubscriptionConnections()),
 		}),
 
 		// TODO: remove telemetry procedures once telemetry_enabled column is dropped
