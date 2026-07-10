@@ -3,6 +3,7 @@ import path from "node:path";
 import {
 	type AgentBinary,
 	BINARY_INSTALL,
+	getBinaryInstallInfo,
 } from "@superset/shared/agent-binaries";
 import { BIN_DIR } from "./paths";
 
@@ -95,7 +96,8 @@ function getMissingBinaryMessage(name: string): string {
 	// self-explanatory. Embedded inside a bash double-quoted echo, so the message
 	// must stay on one line and avoid double quotes / $ / backticks (install
 	// commands and URLs contain none).
-	const info = BINARY_INSTALL[name as AgentBinary];
+	const info =
+		name in BINARY_INSTALL ? getBinaryInstallInfo(name as AgentBinary) : null;
 	if (info) {
 		return `ADE: ${name} not found on PATH. Install ${info.label}: ${info.command} — ${info.url}`;
 	}

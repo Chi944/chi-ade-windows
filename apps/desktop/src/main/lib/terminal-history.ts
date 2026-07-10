@@ -14,6 +14,7 @@
  * - meta.json has endedAt → clean shutdown → no restore needed
  */
 
+import { randomUUID } from "node:crypto";
 import { createWriteStream, promises as fs, type WriteStream } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
@@ -175,19 +176,97 @@ function assertSafeIdSegment(label: string, value: string): void {
 	}
 }
 
-function resolveHistoryDir(workspaceId: string, paneId: string): string {
+function resolveWorkspaceHistoryDir(workspaceId: string): {
+	root: string;
+	dir: string;
+} {
 	assertSafeIdSegment("workspaceId", workspaceId);
-	assertSafeIdSegment("paneId", paneId);
-
 	const root = resolve(getTerminalHistoryRootDir());
-	const dir = resolve(root, workspaceId, paneId);
+	const dir = resolve(root, workspaceId);
 	const rel = relative(root, dir);
+	if (rel !== workspaceId || rel.split(sep).includes("..")) {
+		throw new Error("[terminal-history] Resolved workspace dir escapes root");
+	}
+	return { root, dir };
+}
 
-	if (rel.split(sep).includes("..")) {
+function resolveHistoryDir(workspaceId: string, paneId: string): string {
+	assertSafeIdSegment("paneId", paneId);
+	const { dir: workspaceDir } = resolveWorkspaceHistoryDir(workspaceId);
+	const dir = resolve(workspaceDir, paneId);
+	const rel = relative(workspaceDir, dir);
+
+	if (rel !== paneId || rel.split(sep).includes("..")) {
 		throw new Error("[terminal-history] Resolved history dir escapes root");
 	}
 
 	return dir;
+}
+
+/**
+ * Removes all persisted terminal sessions for a workspace after its database
+ * record has been committed as deleted. Linked roots/targets fail closed.
+ */
+export async function cleanupTerminalHistoryForWorkspace(
+	workspaceId: string,
+): Promise<boolean> {
+	const { root, dir } = resolveWorkspaceHistoryDir(workspaceId);
+	let rootStat: Awaited<ReturnType<typeof fs.lstat>>;
+	try {
+		rootStat = await fs.lstat(root);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+	if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+		throw new Error(
+			"[terminal-history] Refusing to clean a linked history root",
+		);
+	}
+
+	let targetStat: Awaited<ReturnType<typeof fs.lstat>>;
+	try {
+		targetStat = await fs.lstat(dir);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+	if (targetStat.isSymbolicLink()) {
+		await fs.unlink(dir);
+		return true;
+	}
+	if (!targetStat.isDirectory()) {
+		await fs.rm(dir, { force: true });
+		return true;
+	}
+
+	const realRoot = await fs.realpath(root);
+	const comparableRoot =
+		process.platform === "win32" ? root.toLowerCase() : root;
+	const comparableRealRoot =
+		process.platform === "win32" ? realRoot.toLowerCase() : realRoot;
+	if (comparableRealRoot !== comparableRoot) {
+		throw new Error(
+			"[terminal-history] Refusing to clean a linked history root",
+		);
+	}
+	const realDir = await fs.realpath(dir);
+	const realRelative = relative(realRoot, realDir);
+	if (realRelative !== workspaceId || realRelative.split(sep).includes("..")) {
+		throw new Error(
+			"[terminal-history] Workspace history path is outside the history root",
+		);
+	}
+
+	const quarantine = resolve(root, `.removing-${workspaceId}-${randomUUID()}`);
+	await fs.rename(dir, quarantine);
+	try {
+		await fs.rm(quarantine, { recursive: true, force: true, maxRetries: 3 });
+	} catch (error) {
+		await fs.rename(quarantine, dir).catch(() => {});
+		throw error;
+	}
+	return true;
 }
 
 function getHistoryDir(workspaceId: string, paneId: string): string {

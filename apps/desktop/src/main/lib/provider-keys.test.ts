@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 // safeStorage is unavailable in a headless test runner, so we mock it; the toggle
 // lets us exercise the graceful "encryption unavailable" path too.
 let encryptionAvailable = true;
+let decryptionFails = false;
 let settingsRow: { providerApiKeys?: Record<string, string> } | null = null;
 
 mock.module("electron", () => ({
@@ -11,7 +12,10 @@ mock.module("electron", () => ({
 		isEncryptionAvailable: () => encryptionAvailable,
 		// Reversible, deterministic stand-in for OS-backed encryption.
 		encryptString: (plain: string) => Buffer.from(`enc:${plain}`, "utf8"),
-		decryptString: (buf: Buffer) => buf.toString("utf8").replace(/^enc:/, ""),
+		decryptString: (buf: Buffer) => {
+			if (decryptionFails) throw new Error("damaged ciphertext");
+			return buf.toString("utf8").replace(/^enc:/, "");
+		},
 	},
 }));
 
@@ -52,6 +56,7 @@ const {
 describe("provider-keys", () => {
 	beforeEach(() => {
 		encryptionAvailable = true;
+		decryptionFails = false;
 		settingsRow = null;
 		clearProviderModelProfile("huggingface");
 		clearProviderModelProfile("ollama");
@@ -109,6 +114,14 @@ describe("provider-keys", () => {
 		setProviderKey("openrouter", "sk-or-y");
 		encryptionAvailable = false;
 		expect(getProviderKey("openrouter")).toBeNull();
+		expect(getProviderKeyStatus().openrouter).toBe(false);
+	});
+
+	it("reports damaged ciphertext as not configured", () => {
+		setProviderKey("openrouter", "sk-or-damaged");
+		decryptionFails = true;
+		expect(getProviderKey("openrouter")).toBeNull();
+		expect(getProviderKeyStatus().openrouter).toBe(false);
 	});
 
 	it("keeps the Hugging Face token encrypted and only exposes it in main-process env", () => {

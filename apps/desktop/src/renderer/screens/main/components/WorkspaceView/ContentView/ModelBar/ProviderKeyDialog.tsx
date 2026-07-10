@@ -1,3 +1,4 @@
+import type { TerminalPreset } from "@superset/local-db";
 import {
 	isValidOpenCodeModelId,
 	type OpenCodeModelProvider,
@@ -15,9 +16,15 @@ import {
 import { Input } from "@superset/ui/input";
 import { Label } from "@superset/ui/label";
 import { toast } from "@superset/ui/sonner";
-import { CheckIcon, PlayIcon, Trash2Icon } from "lucide-react";
+import {
+	CheckIcon,
+	PlayIcon,
+	SquareTerminalIcon,
+	Trash2Icon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { usePresets } from "renderer/react-query/presets";
 import { useProviderKeys } from "renderer/stores/model-bar/useProviderKeys";
 import {
 	MAX_PROVIDER_MODELS,
@@ -43,6 +50,7 @@ interface ProviderKeyDialogProps {
 		modelId: string;
 	}) => Promise<void> | void;
 	onConnectSubscription?: (provider: SubscriptionProvider) => void;
+	onLaunchPreset?: (preset: TerminalPreset) => void;
 }
 
 /**
@@ -58,6 +66,7 @@ export function ProviderKeyDialog({
 	onLaunchOpenRouter,
 	onLaunchModel,
 	onConnectSubscription,
+	onLaunchPreset,
 }: ProviderKeyDialogProps) {
 	const {
 		openrouterConfigured,
@@ -76,12 +85,56 @@ export function ProviderKeyDialog({
 		electronTrpc.settings.subscriptionConnections.status.useQuery(undefined, {
 			enabled: open,
 		});
+	const accountProfiles =
+		electronTrpc.settings.subscriptionConnections.profiles.useQuery(undefined, {
+			enabled: open,
+		});
+	const codexUsage =
+		electronTrpc.settings.subscriptionConnections.codexUsage.useQuery(
+			undefined,
+			{
+				enabled: open && Boolean(accountProfiles.data?.selected.codex),
+				staleTime: 60_000,
+				retry: false,
+			},
+		);
+	const utils = electronTrpc.useUtils();
+	const createAccountProfile =
+		electronTrpc.settings.subscriptionConnections.createProfile.useMutation({
+			onSuccess: async () => {
+				await utils.settings.subscriptionConnections.profiles.invalidate();
+				await utils.settings.subscriptionConnections.status.invalidate();
+			},
+		});
+	const selectAccountProfile =
+		electronTrpc.settings.subscriptionConnections.selectProfile.useMutation({
+			onSuccess: async () => {
+				await utils.settings.subscriptionConnections.profiles.invalidate();
+				await utils.settings.subscriptionConnections.status.invalidate();
+				await utils.settings.subscriptionConnections.codexUsage.invalidate();
+			},
+		});
+	const removeAccountProfile =
+		electronTrpc.settings.subscriptionConnections.removeProfile.useMutation({
+			onSuccess: async () => {
+				await utils.settings.subscriptionConnections.profiles.invalidate();
+				await utils.settings.subscriptionConnections.status.invalidate();
+				await utils.settings.subscriptionConnections.codexUsage.invalidate();
+			},
+		});
+	const { data: platform } = electronTrpc.window.getPlatform.useQuery();
 	const openUrl = electronTrpc.external.openUrl.useMutation();
+	const { presets, createPreset, deletePreset } = usePresets();
 	const [openRouterKey, setOpenRouterKey] = useState("");
 	const [huggingFaceToken, setHuggingFaceToken] = useState("");
 	const [modelDrafts, setModelDrafts] = useState<
 		Record<OpenCodeModelProvider, string>
 	>({ huggingface: "", ollama: "" });
+	const [customAgentName, setCustomAgentName] = useState("");
+	const [customAgentCommand, setCustomAgentCommand] = useState("");
+	const [accountDrafts, setAccountDrafts] = useState<
+		Record<SubscriptionProvider, string>
+	>({ claude: "", codex: "" });
 	const [busyProvider, setBusyProvider] = useState<ProviderHubProvider | null>(
 		null,
 	);
@@ -95,7 +148,11 @@ export function ProviderKeyDialog({
 			huggingface: "",
 			ollama: "",
 		});
+		setCustomAgentName("");
+		setCustomAgentCommand("");
+		setAccountDrafts({ claude: "", codex: "" });
 		void connectionStatus.refetch();
+		void accountProfiles.refetch();
 	}, [open]);
 
 	const isLaunch = mode === "launch";
@@ -233,8 +290,94 @@ export function ProviderKeyDialog({
 	};
 
 	const connectSubscription = (provider: SubscriptionProvider) => {
+		if (!accountProfiles.data?.selected[provider]) {
+			toast.error(
+				`Add a ${provider === "claude" ? "Claude" : "Codex"} account first`,
+			);
+			return;
+		}
 		onOpenChange(false);
 		onConnectSubscription?.(provider);
+	};
+
+	const addSubscriptionAccount = async (provider: SubscriptionProvider) => {
+		const label = accountDrafts[provider].trim();
+		if (!label) return;
+		try {
+			await createAccountProfile.mutateAsync({ provider, label });
+			setAccountDrafts((current) => ({ ...current, [provider]: "" }));
+			toast.success(`${label} added and selected`);
+			onOpenChange(false);
+			onConnectSubscription?.(provider);
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Could not add the account",
+			);
+		}
+	};
+
+	const selectSubscriptionAccount = async (
+		provider: SubscriptionProvider,
+		id: string,
+		label: string,
+	) => {
+		try {
+			await selectAccountProfile.mutateAsync({ provider, id });
+			toast.success(`${label} selected for new sessions`);
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Could not switch accounts",
+			);
+		}
+	};
+
+	const removeSubscriptionAccount = async (
+		provider: SubscriptionProvider,
+		id: string,
+		label: string,
+	) => {
+		if (
+			!window.confirm(
+				`Remove ${label}? ADE will delete this app-owned profile and its provider-managed login data.`,
+			)
+		) {
+			return;
+		}
+		try {
+			await removeAccountProfile.mutateAsync({ provider, id });
+			toast.success(`${label} removed`);
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Could not remove the account",
+			);
+		}
+	};
+
+	const customAgents = presets.filter((preset) => preset.pinnedToBar);
+
+	const addCustomAgent = async () => {
+		const name = customAgentName.trim();
+		const command = customAgentCommand.trim();
+		if (!name || !command) return;
+
+		try {
+			const preset = await createPreset.mutateAsync({
+				name,
+				description: "Custom terminal agent",
+				cwd: "",
+				commands: [command],
+				pinnedToBar: true,
+				executionMode: "new-tab",
+			});
+			setCustomAgentName("");
+			setCustomAgentCommand("");
+			toast.success(`${name} added to the Agent Bar`);
+			onLaunchPreset?.(preset);
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Could not add the agent",
+			);
+		}
 	};
 
 	const launchTarget = isLaunch
@@ -258,16 +401,113 @@ export function ProviderKeyDialog({
 				<div className="space-y-5 py-1">
 					<section className="space-y-2">
 						<div>
+							<h3 className="text-sm font-medium">Any terminal agent</h3>
+							<p className="text-xs text-muted-foreground">
+								If it has a CLI command, ADE can run it in a persistent,
+								splittable terminal. Use the CLI's native login or OS keychain;
+								never put secrets in the saved command.
+							</p>
+						</div>
+						<div className="grid gap-2 rounded-lg border p-3 sm:grid-cols-[0.8fr_1.6fr_auto] sm:items-end">
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-agent-name">Name</Label>
+								<Input
+									id="custom-agent-name"
+									value={customAgentName}
+									onChange={(event) => setCustomAgentName(event.target.value)}
+									placeholder="Aider"
+									maxLength={60}
+								/>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-agent-command">Command</Label>
+								<Input
+									id="custom-agent-command"
+									value={customAgentCommand}
+									onChange={(event) =>
+										setCustomAgentCommand(event.target.value)
+									}
+									onKeyDown={(event) => {
+										if (event.key === "Enter") void addCustomAgent();
+									}}
+									placeholder="aider --watch-files"
+									spellCheck={false}
+									maxLength={2048}
+								/>
+							</div>
+							<Button
+								onClick={() => void addCustomAgent()}
+								disabled={
+									!customAgentName.trim() ||
+									!customAgentCommand.trim() ||
+									createPreset.isPending
+								}
+							>
+								Add & launch
+							</Button>
+						</div>
+
+						{customAgents.length > 0 && (
+							<div className="space-y-1.5">
+								{customAgents.map((preset) => (
+									<div
+										key={preset.id}
+										className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+									>
+										<div className="flex min-w-0 items-center gap-2">
+											<SquareTerminalIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+											<div className="min-w-0">
+												<p className="truncate text-sm font-medium">
+													{preset.name}
+												</p>
+												<code className="block truncate text-xs text-muted-foreground">
+													{preset.commands.join(" · ")}
+												</code>
+											</div>
+										</div>
+										<div className="flex shrink-0 gap-1">
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={() => onLaunchPreset?.(preset)}
+											>
+												<PlayIcon className="h-3.5 w-3.5" />
+												Launch
+											</Button>
+											<Button
+												variant="ghost"
+												size="sm"
+												aria-label={`Remove ${preset.name}`}
+												disabled={deletePreset.isPending}
+												onClick={() => deletePreset.mutate({ id: preset.id })}
+											>
+												<Trash2Icon className="h-3.5 w-3.5" />
+											</Button>
+										</div>
+									</div>
+								))}
+							</div>
+						)}
+					</section>
+
+					<section className="space-y-3">
+						<div>
 							<h3 className="text-sm font-medium">Subscriptions</h3>
 							<p className="text-xs text-muted-foreground">
-								ADE opens the official login flow. It never receives your
-								account credentials.
+								Account profiles hot-swap new sessions without re-login. Running
+								sessions stay on the account that started them. ADE stores
+								labels and profile IDs; the official CLIs own all credentials.
 							</p>
 						</div>
 						<div className="grid gap-2 sm:grid-cols-2">
 							{(["claude", "codex"] as const).map((provider) => {
 								const state = connectionStatus.data?.[provider];
 								const label = provider === "claude" ? "Claude" : "Codex";
+								const selectedId = accountProfiles.data?.selected[provider];
+								const providerProfiles =
+									accountProfiles.data?.profiles.filter(
+										(profile) => profile.provider === provider,
+									) ?? [];
 								const status = !state
 									? "Checking…"
 									: !state.installed
@@ -278,7 +518,7 @@ export function ProviderKeyDialog({
 								return (
 									<div
 										key={provider}
-										className="rounded-lg border bg-muted/20 p-3"
+										className="space-y-2 rounded-lg border bg-muted/20 p-3"
 									>
 										<div className="flex items-center justify-between gap-3">
 											<div>
@@ -290,7 +530,7 @@ export function ProviderKeyDialog({
 											<Button
 												variant="outline"
 												size="sm"
-												disabled={!state}
+												disabled={!state || !selectedId}
 												onClick={() => connectSubscription(provider)}
 											>
 												{!state?.installed
@@ -300,25 +540,179 @@ export function ProviderKeyDialog({
 														: "Connect"}
 											</Button>
 										</div>
+
+										{providerProfiles.length > 0 && (
+											<div className="space-y-1">
+												{providerProfiles.map((profile) => {
+													const selected = profile.id === selectedId;
+													return (
+														<div
+															key={profile.id}
+															className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 ${selected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+														>
+															<button
+																type="button"
+																onClick={() =>
+																	void selectSubscriptionAccount(
+																		provider,
+																		profile.id,
+																		profile.label,
+																	)
+																}
+																className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+															>
+																<span
+																	className={`size-2 rounded-full ${selected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
+																/>
+																<span className="truncate">
+																	{profile.label}
+																</span>
+																{selected && (
+																	<span className="text-violet-400">
+																		Active
+																	</span>
+																)}
+															</button>
+															<button
+																type="button"
+																onClick={() =>
+																	void removeSubscriptionAccount(
+																		provider,
+																		profile.id,
+																		profile.label,
+																	)
+																}
+																className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+																aria-label={`Remove ${profile.label}`}
+															>
+																<Trash2Icon className="size-3.5" />
+															</button>
+														</div>
+													);
+												})}
+											</div>
+										)}
+
+										<div className="flex gap-2">
+											<Input
+												value={accountDrafts[provider]}
+												onChange={(event) =>
+													setAccountDrafts((current) => ({
+														...current,
+														[provider]: event.target.value,
+													}))
+												}
+												placeholder="Account label"
+												className="h-8"
+												maxLength={80}
+											/>
+											<Button
+												size="sm"
+												disabled={
+													!accountDrafts[provider].trim() ||
+													createAccountProfile.isPending
+												}
+												onClick={() => void addSubscriptionAccount(provider)}
+											>
+												Add
+											</Button>
+										</div>
+										{provider === "claude" && platform === "darwin" && (
+											<p className="text-[11px] text-amber-500/90">
+												macOS keeps Claude credentials in Keychain; profile
+												history is isolated, but account switching may require
+												the official login flow.
+											</p>
+										)}
 									</div>
 								);
 							})}
 						</div>
-						<button
-							type="button"
-							className="text-xs text-muted-foreground underline underline-offset-2"
-							onClick={() => connectionStatus.refetch()}
-						>
-							Refresh connection status
-						</button>
+						{accountProfiles.data?.selected.codex && (
+							<div className="space-y-2 rounded-lg border p-3">
+								<div className="flex items-center justify-between gap-3">
+									<div>
+										<p className="text-sm font-medium">Codex usage</p>
+										<p className="text-xs text-muted-foreground">
+											{codexUsage.data?.email ?? "Selected account"}
+											{codexUsage.data?.planType
+												? ` · ${codexUsage.data.planType}`
+												: ""}
+										</p>
+									</div>
+									<Button
+										variant="ghost"
+										size="sm"
+										disabled={codexUsage.isFetching}
+										onClick={() => codexUsage.refetch()}
+									>
+										{codexUsage.isFetching ? "Refreshing…" : "Refresh"}
+									</Button>
+								</div>
+								<p className="text-[11px] text-muted-foreground">
+									Fetched on demand through the official local Codex app-server.
+									It may contact OpenAI for current account data; ADE never
+									opens the profile's credential file.
+								</p>
+								{codexUsage.data?.error && (
+									<p className="text-xs text-amber-500">
+										{codexUsage.data.error}
+									</p>
+								)}
+								{codexUsage.data?.windows.map((window) => (
+									<div key={window.id} className="space-y-1">
+										<div className="flex justify-between text-xs">
+											<span>{window.label ?? window.id}</span>
+											<span className="text-muted-foreground">
+												{Math.round(window.usedPercent)}% used
+												{window.resetsAt
+													? ` · resets ${new Date(window.resetsAt * 1000).toLocaleString()}`
+													: ""}
+											</span>
+										</div>
+										<div className="h-1.5 overflow-hidden rounded-full bg-muted">
+											<div
+												className={`h-full rounded-full ${window.usedPercent >= 80 ? "bg-amber-500" : "bg-violet-500"}`}
+												style={{
+													width: `${Math.min(100, Math.max(0, window.usedPercent))}%`,
+												}}
+											/>
+										</div>
+									</div>
+								))}
+								{codexUsage.data?.summary?.lifetimeTokens !== null &&
+									codexUsage.data?.summary?.lifetimeTokens !== undefined && (
+										<p className="text-xs text-muted-foreground">
+											Lifetime activity:{" "}
+											{codexUsage.data.summary.lifetimeTokens.toLocaleString()}{" "}
+											tokens
+										</p>
+									)}
+							</div>
+						)}
+						<div className="flex gap-3 text-xs text-muted-foreground">
+							<button
+								type="button"
+								className="underline underline-offset-2"
+								onClick={() => {
+									void connectionStatus.refetch();
+									void codexUsage.refetch();
+								}}
+							>
+								Refresh account status
+							</button>
+							<span>
+								Claude usage remains available through Claude’s /usage command.
+							</span>
+						</div>
 					</section>
 
 					<section className="space-y-2">
 						<div>
 							<h3 className="text-sm font-medium">Model providers</h3>
 							<p className="text-xs text-muted-foreground">
-								Tokens stay encrypted with Windows secure storage. Model IDs do
-								not download weights unless you explicitly manage Ollama outside
+								Tokens stay encrypted with OS secure storage. Model IDs do not
+								download weights unless you explicitly manage Ollama outside
 								ADE. Custom-model sessions use workspace-write isolation and ask
 								before elevated actions.
 							</p>

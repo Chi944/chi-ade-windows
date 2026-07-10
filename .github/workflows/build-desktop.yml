@@ -31,20 +31,24 @@ on:
 jobs:
   build-macos:
     name: Build - macOS (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     environment: production
 
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64]
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.6"
 
@@ -59,6 +63,24 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen
+
+      - name: Smoke-test macOS native prebuilds
+        run: bun run --cwd apps/desktop smoke:native
+
+      - name: Require Apple signing for stable releases
+        if: inputs.channel == 'stable'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK" || { echo "::error::MAC_CERTIFICATE is required for stable releases"; exit 1; }
+          test -n "$CSC_KEY_PASSWORD" || { echo "::error::MAC_CERTIFICATE_PASSWORD is required"; exit 1; }
+          test -n "$APPLE_ID" || { echo "::error::APPLE_ID is required"; exit 1; }
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD" || { echo "::error::APPLE_ID_PASSWORD is required"; exit 1; }
+          test -n "$APPLE_TEAM_ID" || { echo "::error::APPLE_TEAM_ID is required"; exit 1; }
 
       - name: Set version suffix
         if: inputs.version_suffix != ''
@@ -105,22 +127,49 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: bun run package -- --publish never --config ${{ inputs.electron_builder_config }}
+        run: bun run package -- --mac --${{ matrix.arch }} --publish never --config ${{ inputs.electron_builder_config }}
+
+      - name: Smoke-test packaged macOS native modules
+        working-directory: apps/desktop
+        run: |
+          APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
+          test -n "$APP_DIR" || { echo "::error::Packaged .app not found"; exit 1; }
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")
+          test -n "$EXECUTABLE" || { echo "::error::CFBundleExecutable is missing"; exit 1; }
+          export ELECTRON_RUN_AS_NODE=1
+          export ADE_SMOKE_MODULE_ROOT="$APP_DIR/Contents/Resources/app.asar/node_modules"
+          "$APP_DIR/Contents/MacOS/$EXECUTABLE" scripts/smoke-native-runtime.cjs
+
+      - name: Verify signature
+        if: inputs.channel == 'stable'
+        working-directory: apps/desktop
+        run: |
+          APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
       - name: Verify app-update.yml exists
         working-directory: apps/desktop
         run: |
-          APP_DIR=$(ls -d release/mac-arm64/*.app | head -1)
+          APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
           test -f "$APP_DIR/Contents/Resources/app-update.yml" || {
             echo "::error::app-update.yml missing from $APP_DIR/Contents/Resources/ — auto-update will be broken"
             exit 1
           }
 
+      - name: Name architecture-specific update manifest
+        working-directory: apps/desktop
+        run: |
+          MANIFEST=$(find release -maxdepth 1 -name '*-mac.yml' -type f | head -1)
+          test -n "$MANIFEST" || { echo "::error::macOS update manifest missing"; exit 1; }
+          cp "$MANIFEST" "release/latest-${{ matrix.arch }}-mac.yml"
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-mac-${{ matrix.arch }}-dmg
-          path: apps/desktop/release/*.dmg
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.dmg.blockmap
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
 
@@ -128,15 +177,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-mac-${{ matrix.arch }}-zip
-          path: apps/desktop/release/*.zip
+          path: |
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.zip.blockmap
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
 
       - name: Upload auto-update manifest
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.artifact_prefix }}-mac-update-manifest
-          path: apps/desktop/release/*-mac.yml
+          name: ${{ inputs.artifact_prefix }}-mac-${{ matrix.arch }}-update-manifest
+          path: apps/desktop/release/latest-${{ matrix.arch }}-mac.yml
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
 
@@ -150,7 +201,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.6"
 
@@ -245,7 +296,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.6"
 
@@ -301,6 +352,20 @@ jobs:
           SUPERSET_WORKSPACE_NAME: superset
         run: bun run compile:app
 
+      - name: Require Windows signing for stable releases
+        if: inputs.channel == 'stable'
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if (-not $env:WIN_CSC_LINK) {
+            throw "WIN_CSC_LINK is required for stable releases"
+          }
+          if (-not $env:WIN_CSC_KEY_PASSWORD) {
+            throw "WIN_CSC_KEY_PASSWORD is required for stable releases"
+          }
+
       - name: Build Electron app
         working-directory: apps/desktop
         env:
@@ -317,7 +382,9 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = "1"
           $asar = (Resolve-Path "apps/desktop/release/win-unpacked/resources/app.asar").Path
           $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
-          node apps/desktop/node_modules/electron/cli.js apps/desktop/scripts/smoke-native-runtime.cjs
+          $exeName = if ("${{ inputs.channel }}" -eq "canary") { "ADE Canary.exe" } else { "ADE.exe" }
+          $exe = (Resolve-Path "apps/desktop/release/win-unpacked/$exeName").Path
+          & $exe apps/desktop/scripts/smoke-native-runtime.cjs
 
       - name: Verify Windows installer + update manifest exist
         working-directory: apps/desktop
@@ -335,7 +402,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_prefix }}-windows-installer
-          path: apps/desktop/release/*.exe
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
 

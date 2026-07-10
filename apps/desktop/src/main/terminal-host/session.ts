@@ -362,11 +362,24 @@ export class Session {
 	 * Flush queued frames to subprocess stdin, respecting stream backpressure.
 	 */
 	private flushSubprocessStdinQueue(): void {
-		if (!this.subprocess?.stdin || this.disposed) return;
+		if (
+			!this.subprocess?.stdin ||
+			this.disposed ||
+			this.subprocessStdinDrainArmed
+		) {
+			return;
+		}
 
 		while (this.subprocessStdinQueue.length > 0) {
 			const buf = this.subprocessStdinQueue[0];
 			const canWrite = this.subprocess.stdin.write(buf);
+
+			// A false return value means the stream accepted this buffer but its
+			// internal queue reached the high-water mark. Remove the accepted buffer
+			// before waiting for drain so it is never written a second time.
+			this.subprocessStdinQueue.shift();
+			this.subprocessStdinQueuedBytes -= buf.length;
+
 			if (!canWrite) {
 				if (!this.subprocessStdinDrainArmed) {
 					this.subprocessStdinDrainArmed = true;
@@ -377,9 +390,6 @@ export class Session {
 				}
 				return;
 			}
-
-			this.subprocessStdinQueue.shift();
-			this.subprocessStdinQueuedBytes -= buf.length;
 		}
 	}
 
@@ -413,14 +423,15 @@ export class Session {
 		}
 
 		const header = createFrameHeader(type, payloadBuffer.length);
+		const frame =
+			payloadBuffer.length > 0
+				? Buffer.concat([header, payloadBuffer], frameSize)
+				: header;
 
-		this.subprocessStdinQueue.push(header);
-		this.subprocessStdinQueuedBytes += header.length;
-
-		if (payloadBuffer.length > 0) {
-			this.subprocessStdinQueue.push(payloadBuffer);
-			this.subprocessStdinQueuedBytes += payloadBuffer.length;
-		}
+		// Keep each protocol frame in one stream write. Apart from reducing pipe
+		// churn, this makes backpressure bookkeeping frame-atomic on Windows.
+		this.subprocessStdinQueue.push(frame);
+		this.subprocessStdinQueuedBytes += frame.length;
 
 		const wasBackpressured = this.subprocessStdinDrainArmed;
 		this.flushSubprocessStdinQueue();

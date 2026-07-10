@@ -124,12 +124,14 @@ describe("agent-wrappers copilot", () => {
 		const command =
 			process.platform === "win32" ? process.execPath : wrapperPath;
 		const args = process.platform === "win32" ? [wrapperPath] : [];
+		const testPath = `${TEST_BIN_DIR}${path.delimiter}${realBinDir}${path.delimiter}${process.env.Path || process.env.PATH || ""}`;
 
 		execFileSync(command, args, {
 			cwd: projectDir,
 			env: {
 				...process.env,
-				PATH: `${TEST_BIN_DIR}${path.delimiter}${realBinDir}${path.delimiter}${process.env.PATH || ""}`,
+				Path: testPath,
+				PATH: testPath,
 				SUPERSET_TAB_ID: "tab-1",
 			},
 			encoding: "utf-8",

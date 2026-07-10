@@ -3,8 +3,13 @@ import { type AgentRuntime, workspaces } from "@superset/local-db";
 import { track } from "main/lib/analytics";
 import { appState } from "main/lib/app-state";
 import { localDb } from "main/lib/local-db";
+import {
+	releaseSubscriptionProfilePane,
+	releaseSubscriptionProfileWorkspace,
+} from "main/lib/subscription-profiles";
 import { isValidAgentSessionId } from "shared/agent-session-recovery";
 import {
+	cleanupTerminalHistoryForWorkspace,
 	HistoryReader,
 	truncateUtf8ToLastBytes,
 	writeAgentSessionToHistory,
@@ -35,7 +40,9 @@ export class DaemonTerminalManager extends EventEmitter {
 	private client!: TerminalHostClient;
 	private sessions = new Map<string, SessionInfo>();
 	private pendingSessions = new Map<string, Promise<SessionResult>>();
+	private pendingSessionWorkspaceIds = new Map<string, string>();
 	private pendingSessionGenerations = new Map<string, number>();
+	private stoppedWorkspacePaneIds = new Map<string, Set<string>>();
 	private paneLifecycleGenerations = new Map<string, number>();
 	private killedSessionTombstones = new Map<string, number>();
 	private deletedHistoryTombstones = new Map<string, number>();
@@ -366,6 +373,7 @@ export class DaemonTerminalManager extends EventEmitter {
 
 		const creationPromise = this.doCreateOrAttach(params, generation);
 		this.pendingSessions.set(paneId, creationPromise);
+		this.pendingSessionWorkspaceIds.set(paneId, params.workspaceId);
 		this.pendingSessionGenerations.set(paneId, generation);
 
 		try {
@@ -373,6 +381,7 @@ export class DaemonTerminalManager extends EventEmitter {
 		} finally {
 			if (this.pendingSessions.get(paneId) === creationPromise) {
 				this.pendingSessions.delete(paneId);
+				this.pendingSessionWorkspaceIds.delete(paneId);
 				this.pendingSessionGenerations.delete(paneId);
 			}
 		}
@@ -905,17 +914,30 @@ export class DaemonTerminalManager extends EventEmitter {
 			await this.client.kill({ sessionId: paneId, deleteHistory });
 			if (exitWait) await exitWait;
 		} finally {
-			if (historyClose) await historyClose;
-			if (deleteHistory) {
-				const pendingHook = this.agentSessionPersistenceTails.get(paneId);
-				if (pendingHook) await pendingHook;
-			}
-			if (deleteHistory && historyWorkspaceId) {
-				// The exit handler closes the writer. cleanupHistory awaits that close so
-				// a final metadata flush cannot recreate files after deletion.
-				await this.historyManager.cleanupHistory(paneId, historyWorkspaceId);
-			} else if (deleteHistory) {
-				await this.historyManager.closeHistoryWriter(paneId, 0);
+			try {
+				if (historyClose) await historyClose;
+				if (deleteHistory) {
+					const pendingHook = this.agentSessionPersistenceTails.get(paneId);
+					if (pendingHook) await pendingHook;
+				}
+				if (deleteHistory && historyWorkspaceId) {
+					// The exit handler closes the writer. cleanupHistory awaits that close so
+					// a final metadata flush cannot recreate files after deletion.
+					await this.historyManager.cleanupHistory(paneId, historyWorkspaceId);
+				} else if (deleteHistory) {
+					await this.historyManager.closeHistoryWriter(paneId, 0);
+				}
+			} finally {
+				if (deleteHistory) {
+					try {
+						releaseSubscriptionProfilePane(paneId);
+					} catch (error) {
+						console.warn(
+							`[DaemonTerminalManager] Failed to release provider home for ${paneId}:`,
+							error,
+						);
+					}
+				}
 			}
 		}
 	}
@@ -989,15 +1011,36 @@ export class DaemonTerminalManager extends EventEmitter {
 		};
 	}
 
+	private async purgeWorkspaceStorage(workspaceId: string): Promise<void> {
+		try {
+			await cleanupTerminalHistoryForWorkspace(workspaceId);
+		} catch (error) {
+			console.warn(
+				`[DaemonTerminalManager] Failed to purge terminal history for workspace ${workspaceId}:`,
+				error,
+			);
+		}
+		try {
+			releaseSubscriptionProfileWorkspace(workspaceId);
+		} catch (error) {
+			console.warn(
+				`[DaemonTerminalManager] Failed to release provider homes for workspace ${workspaceId}:`,
+				error,
+			);
+		}
+	}
+
 	async killByWorkspaceId(
 		workspaceId: string,
+		options: { deleteHistory: boolean },
 	): Promise<{ killed: number; failed: number }> {
+		const { deleteHistory } = options;
 		const paneIdsToKill = new Set<string>();
 
 		try {
 			const response = await this.client.listSessions();
 			for (const session of response.sessions) {
-				if (session.workspaceId === workspaceId && session.isAlive) {
+				if (session.workspaceId === workspaceId) {
 					paneIdsToKill.add(session.paneId);
 				}
 			}
@@ -1006,14 +1049,25 @@ export class DaemonTerminalManager extends EventEmitter {
 				"[DaemonTerminalManager] Failed to query daemon for sessions:",
 				error,
 			);
-			for (const [paneId, session] of this.sessions.entries()) {
-				if (session.workspaceId === workspaceId) {
-					paneIdsToKill.add(paneId);
-				}
-			}
+		}
+		for (const [paneId, session] of this.sessions.entries()) {
+			if (session.workspaceId === workspaceId) paneIdsToKill.add(paneId);
+		}
+		for (const [
+			paneId,
+			pendingWorkspaceId,
+		] of this.pendingSessionWorkspaceIds.entries()) {
+			if (pendingWorkspaceId === workspaceId) paneIdsToKill.add(paneId);
+		}
+		for (const paneId of this.stoppedWorkspacePaneIds.get(workspaceId) ?? []) {
+			paneIdsToKill.add(paneId);
 		}
 
 		if (paneIdsToKill.size === 0) {
+			if (deleteHistory) {
+				await this.purgeWorkspaceStorage(workspaceId);
+				this.stoppedWorkspacePaneIds.delete(workspaceId);
+			}
 			return { killed: 0, failed: 0 };
 		}
 
@@ -1023,12 +1077,18 @@ export class DaemonTerminalManager extends EventEmitter {
 
 		const results = await Promise.allSettled(
 			Array.from(paneIdsToKill).map(async (paneId) => {
-				await this.kill({ paneId, workspaceId, deleteHistory: true });
+				await this.kill({ paneId, workspaceId, deleteHistory });
 			}),
 		);
 
 		const killed = results.filter((r) => r.status === "fulfilled").length;
 		const failed = results.filter((r) => r.status === "rejected").length;
+		if (deleteHistory) {
+			await this.purgeWorkspaceStorage(workspaceId);
+			this.stoppedWorkspacePaneIds.delete(workspaceId);
+		} else {
+			this.stoppedWorkspacePaneIds.set(workspaceId, paneIdsToKill);
+		}
 
 		if (failed > 0) {
 			console.warn(
@@ -1099,7 +1159,9 @@ export class DaemonTerminalManager extends EventEmitter {
 		await this.historyManager.cleanup();
 
 		this.sessions.clear();
+		this.pendingSessionWorkspaceIds.clear();
 		this.pendingSessionGenerations.clear();
+		this.stoppedWorkspacePaneIds.clear();
 		this.daemonAliveSessionIds.clear();
 		this.daemonSessionIdsHydrated = false;
 		this.coldRestoreInfo.clear();
@@ -1146,6 +1208,8 @@ export class DaemonTerminalManager extends EventEmitter {
 		this.daemonSessionIdsHydrated = true;
 		this.coldRestoreInfo.clear();
 		this.sessions.clear();
+		this.pendingSessionWorkspaceIds.clear();
+		this.stoppedWorkspacePaneIds.clear();
 	}
 
 	reset(): void {
@@ -1161,6 +1225,8 @@ export class DaemonTerminalManager extends EventEmitter {
 		}
 
 		this.sessions.clear();
+		this.pendingSessionWorkspaceIds.clear();
+		this.stoppedWorkspacePaneIds.clear();
 		this.daemonAliveSessionIds.clear();
 		this.daemonSessionIdsHydrated = false;
 		this.coldRestoreInfo.clear();

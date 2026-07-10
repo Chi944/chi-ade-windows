@@ -14,6 +14,7 @@ import {
 	checkForUpdatesInteractive,
 	simulateDownloading,
 	simulateError,
+	simulateUpdateAvailable,
 	simulateUpdateReady,
 } from "./auto-updater";
 import { menuEmitter } from "./menu-events";
@@ -88,21 +89,9 @@ export function createApplicationMenu() {
 				},
 				{ type: "separator" },
 				{
-					label: "Contact Us",
-					click: () => {
-						shell.openExternal(COMPANY.MAIL_TO);
-					},
-				},
-				{
 					label: "Report Issue",
 					click: () => {
 						shell.openExternal(COMPANY.REPORT_ISSUE_URL);
-					},
-				},
-				{
-					label: "Join Discord",
-					click: () => {
-						shell.openExternal(COMPANY.DISCORD_URL);
 					},
 				},
 				{ type: "separator" },
@@ -111,6 +100,13 @@ export function createApplicationMenu() {
 					accelerator: showHotkeysAccelerator,
 					click: () => {
 						menuEmitter.emit("open-settings", "keyboard");
+					},
+				},
+				{ type: "separator" },
+				{
+					label: "Check for Updates...",
+					click: () => {
+						checkForUpdatesInteractive();
 					},
 				},
 			],
@@ -137,6 +133,10 @@ export function createApplicationMenu() {
 					},
 				},
 				{ type: "separator" },
+				{
+					label: "Simulate Update Available",
+					click: () => simulateUpdateAvailable(),
+				},
 				{
 					label: "Simulate Update Downloading",
 					click: () => simulateDownloading(),

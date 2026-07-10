@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	BINARY_INSTALL,
 	CHECKED_BINARIES,
+	getBinaryInstallInfo,
 	RUNTIME_BINARY,
 } from "./agent-binaries";
 import { AGENT_TYPES } from "./agent-command";
@@ -32,5 +33,19 @@ describe("agent-binaries", () => {
 			expect(info.command.length).toBeGreaterThan(0);
 			expect(info.url.startsWith("https://")).toBe(true);
 		}
+	});
+
+	it("uses platform-correct Git installation commands", () => {
+		expect(getBinaryInstallInfo("git", "win32").command).toContain("winget");
+		expect(getBinaryInstallInfo("git", "darwin").command).toBe(
+			"xcode-select --install",
+		);
+	});
+
+	it("does not offer the Unix Cursor installer in a Windows shell", () => {
+		const info = getBinaryInstallInfo("cursor-agent", "win32");
+		expect(info.command).toStartWith("Start-Process");
+		expect(info.command).not.toContain("| bash");
+		expect(info.note).toContain("cursor-agent.cmd");
 	});
 });

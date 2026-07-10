@@ -11,6 +11,7 @@ import {
 	LuArrowUp,
 	LuChevronDown,
 	LuChevronUp,
+	LuClipboardCopy,
 } from "react-icons/lu";
 import {
 	TbFocus2,
@@ -43,6 +44,8 @@ interface DiffToolbarProps {
 	onNavigateToSection: (category: ChangeCategory) => void;
 	isFirstFile: boolean;
 	isLastFile: boolean;
+	annotationCount: number;
+	onCopyAnnotations: () => void;
 }
 
 export function DiffToolbar({
@@ -67,6 +70,8 @@ export function DiffToolbar({
 	onNavigateToSection,
 	isFirstFile,
 	isLastFile,
+	annotationCount,
+	onCopyAnnotations,
 }: DiffToolbarProps) {
 	return (
 		<div className="flex items-center gap-3 px-3 py-2.5 border-b border-r border-border bg-background sticky top-0 z-30">
@@ -168,6 +173,23 @@ export function DiffToolbar({
 			)}
 
 			<div className="flex items-center gap-1">
+				{annotationCount > 0 && (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								onClick={onCopyAnnotations}
+								className="flex items-center gap-1 rounded bg-violet-500/15 px-2 py-1 text-xs text-violet-400 transition-colors hover:bg-violet-500/25"
+							>
+								<LuClipboardCopy className="size-3.5" />
+								Review · {annotationCount}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" showArrow={false}>
+							Copy unresolved review notes for an agent
+						</TooltipContent>
+					</Tooltip>
+				)}
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<button

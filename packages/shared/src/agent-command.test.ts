@@ -159,20 +159,16 @@ describe("subscription connection commands", () => {
 		).toBe("claude auth login");
 		expect(
 			buildSubscriptionConnectCommand({ provider: "codex", windows: false }),
-		).toBe('CODEX_HOME="$HOME/.codex" codex login');
+		).toBe("codex login");
 	});
 
-	it("forces Windows Codex login into the shared global home", () => {
+	it("lets Windows Codex inherit the selected profile home", () => {
 		const command = buildSubscriptionConnectCommand({
 			provider: "codex",
 			windows: true,
 		});
-		const encoded = command.split(" ").at(-1) ?? "";
-		const script = Buffer.from(encoded, "base64").toString("utf16le");
 
-		expect(script).toContain(
-			"$env:CODEX_HOME=[IO.Path]::Combine($HOME,'.codex')",
-		);
-		expect(script).toContain("& codex login");
+		expect(command).toBe("codex login");
+		expect(command).not.toContain("CODEX_HOME");
 	});
 });

@@ -50,6 +50,8 @@ class MockTerminalHostClient extends EventEmitter {
 }
 
 let mockClient = new MockTerminalHostClient();
+const releasedProviderPanes: string[] = [];
+const releasedProviderWorkspaces: string[] = [];
 
 mock.module("../../terminal-host/client", () => ({
 	getTerminalHostClient: () => mockClient,
@@ -75,6 +77,17 @@ mock.module("main/lib/local-db", () => ({
 	},
 }));
 
+mock.module("main/lib/subscription-profiles", () => ({
+	releaseSubscriptionProfilePane: (paneId: string) => {
+		releasedProviderPanes.push(paneId);
+		return true;
+	},
+	releaseSubscriptionProfileWorkspace: (workspaceId: string) => {
+		releasedProviderWorkspaces.push(workspaceId);
+		return 1;
+	},
+}));
+
 mock.module("@superset/local-db", () => ({
 	workspaces: { id: "id" },
 }));
@@ -84,6 +97,8 @@ const { DaemonTerminalManager } = await import("./daemon-manager");
 describe("DaemonTerminalManager kill tracking", () => {
 	beforeEach(() => {
 		mockClient = new MockTerminalHostClient();
+		releasedProviderPanes.length = 0;
+		releasedProviderWorkspaces.length = 0;
 	});
 
 	it("waits for daemon exit and labels killed sessions", async () => {
@@ -321,6 +336,51 @@ describe("DaemonTerminalManager kill tracking", () => {
 		expect((result as Error).name).toBe("TerminalKilledError");
 		expect(mockClient.killCalls).toHaveLength(2);
 		expect(manager.getSession(paneId)).toBeNull();
+	});
+
+	it("stops a pending workspace create without deleting data until commit", async () => {
+		const manager = new DaemonTerminalManager();
+		let releaseCreate: (() => void) | undefined;
+		mockClient.createGate = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+		const paneId = "pane-pending-workspace-delete";
+		const workspaceId = "workspace-pending-delete";
+		const creation = manager
+			.createOrAttach({
+				paneId,
+				tabId: "tab-pending-workspace-delete",
+				workspaceId,
+				cwd: "C:\\repo",
+				cols: 80,
+				rows: 24,
+			})
+			.then(
+				() => null,
+				(error: unknown) => error,
+			);
+		while (mockClient.createCalls.length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		const stopped = await manager.killByWorkspaceId(workspaceId, {
+			deleteHistory: false,
+		});
+		expect(stopped).toEqual({ killed: 1, failed: 0 });
+		expect(releasedProviderPanes).toEqual([]);
+		expect(releasedProviderWorkspaces).toEqual([]);
+
+		releaseCreate?.();
+		const result = await creation;
+		expect(result).toBeInstanceOf(Error);
+		expect((result as Error).name).toBe("TerminalKilledError");
+
+		const purged = await manager.killByWorkspaceId(workspaceId, {
+			deleteHistory: true,
+		});
+		expect(purged).toEqual({ killed: 1, failed: 0 });
+		expect(releasedProviderPanes).toContain(paneId);
+		expect(releasedProviderWorkspaces).toEqual([workspaceId]);
 	});
 
 	it("defaults exit reason to exited when no kill tombstone exists", () => {

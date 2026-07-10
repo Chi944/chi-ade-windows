@@ -27,7 +27,9 @@ import { publicProcedure, router } from "../..";
 import { resolveDefaultEditor } from "../external";
 import {
 	activateProject,
+	clearWorkspaceDeletingStatus,
 	getBranchWorkspace,
+	markWorkspaceAsDeleting,
 	setLastActiveWorkspace,
 	touchWorkspace,
 } from "../workspaces/utils/db-helpers";
@@ -1002,59 +1004,83 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					.where(eq(workspaces.projectId, input.id))
 					.all();
 
-				let totalFailed = 0;
-				const registry = getWorkspaceRuntimeRegistry();
 				for (const workspace of projectWorkspaces) {
-					const terminal = registry.getForWorkspaceId(workspace.id).terminal;
-					const terminalResult = await terminal.killByWorkspaceId(workspace.id);
-					totalFailed += terminalResult.failed;
+					markWorkspaceAsDeleting(workspace.id);
 				}
+				try {
+					let totalFailed = 0;
+					const registry = getWorkspaceRuntimeRegistry();
+					for (const workspace of projectWorkspaces) {
+						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
+						const terminalResult = await terminal.killByWorkspaceId(
+							workspace.id,
+							{
+								deleteHistory: false,
+							},
+						);
+						totalFailed += terminalResult.failed;
+					}
 
-				const closedWorkspaceIds = projectWorkspaces.map((w) => w.id);
+					const closedWorkspaceIds = projectWorkspaces.map((w) => w.id);
 
-				if (closedWorkspaceIds.length > 0) {
+					if (closedWorkspaceIds.length > 0) {
+						localDb
+							.delete(workspaces)
+							.where(inArray(workspaces.id, closedWorkspaceIds))
+							.run();
+					}
+					for (const workspace of projectWorkspaces) {
+						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
+						const cleanupResult = await terminal.killByWorkspaceId(
+							workspace.id,
+							{
+								deleteHistory: true,
+							},
+						);
+						totalFailed += cleanupResult.failed;
+					}
+
+					// Hide the project by setting tabOrder to null
 					localDb
-						.delete(workspaces)
-						.where(inArray(workspaces.id, closedWorkspaceIds))
+						.update(projects)
+						.set({ tabOrder: null })
+						.where(eq(projects.id, input.id))
 						.run();
+
+					// Update active workspace if it was in this project
+					const currentSettings = localDb.select().from(settings).get();
+					if (
+						currentSettings?.lastActiveWorkspaceId &&
+						closedWorkspaceIds.includes(currentSettings.lastActiveWorkspaceId)
+					) {
+						const remainingWorkspaces = localDb
+							.select()
+							.from(workspaces)
+							.orderBy(desc(workspaces.lastOpenedAt))
+							.all();
+
+						localDb
+							.update(settings)
+							.set({
+								lastActiveWorkspaceId: remainingWorkspaces[0]?.id ?? null,
+							})
+							.where(eq(settings.id, 1))
+							.run();
+					}
+					const terminalWarning =
+						totalFailed > 0
+							? `${totalFailed} terminal process(es) may still be running`
+							: undefined;
+
+					track("project_closed", { project_id: input.id });
+
+					return { success: true, terminalWarning };
+				} catch (error) {
+					for (const workspace of projectWorkspaces) {
+						clearWorkspaceDeletingStatus(workspace.id);
+					}
+					throw error;
 				}
-
-				// Hide the project by setting tabOrder to null
-				localDb
-					.update(projects)
-					.set({ tabOrder: null })
-					.where(eq(projects.id, input.id))
-					.run();
-
-				// Update active workspace if it was in this project
-				const currentSettings = localDb.select().from(settings).get();
-				if (
-					currentSettings?.lastActiveWorkspaceId &&
-					closedWorkspaceIds.includes(currentSettings.lastActiveWorkspaceId)
-				) {
-					const remainingWorkspaces = localDb
-						.select()
-						.from(workspaces)
-						.orderBy(desc(workspaces.lastOpenedAt))
-						.all();
-
-					localDb
-						.update(settings)
-						.set({
-							lastActiveWorkspaceId: remainingWorkspaces[0]?.id ?? null,
-						})
-						.where(eq(settings.id, 1))
-						.run();
-				}
-
-				const terminalWarning =
-					totalFailed > 0
-						? `${totalFailed} terminal process(es) may still be running`
-						: undefined;
-
-				track("project_closed", { project_id: input.id });
-
-				return { success: true, terminalWarning };
 			}),
 
 		linkToNeon: publicProcedure
@@ -1192,7 +1218,8 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 			.mutation(({ input }) => {
 				const allProjects = localDb.select().from(projects).all();
 				const maxTabOrder = allProjects.reduce(
-					(max, p) => (p.tabOrder != null && p.tabOrder > max ? p.tabOrder : max),
+					(max, p) =>
+						p.tabOrder != null && p.tabOrder > max ? p.tabOrder : max,
 					-1,
 				);
 

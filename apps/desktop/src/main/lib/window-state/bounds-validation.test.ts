@@ -7,7 +7,7 @@ import {
 	mock,
 } from "bun:test";
 
-// Mock electron with screen API before importing anything that uses it
+// Mock the narrow wrapper instead of Electron's process-wide module.
 const mockScreen = {
 	getPrimaryDisplay: mock(() => ({
 		workAreaSize: { width: 1920, height: 1080 },
@@ -21,7 +21,7 @@ const mockScreen = {
 	]),
 };
 
-mock.module("electron", () => ({
+mock.module("./electron-api", () => ({
 	screen: mockScreen,
 }));
 

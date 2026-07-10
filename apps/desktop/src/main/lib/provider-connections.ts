@@ -1,5 +1,6 @@
-import { findRealBinaries } from "main/lib/agent-setup/utils";
+import { findRealBinariesAsync } from "main/lib/agent-setup/utils";
 import { probeBinaryCommand } from "main/lib/runtime-availability";
+import { buildCliProcessEnvironment } from "./cli-process-env";
 
 export const SUBSCRIPTION_PROVIDER_IDS = ["claude", "codex"] as const;
 export type SubscriptionProviderId = (typeof SUBSCRIPTION_PROVIDER_IDS)[number];
@@ -14,22 +15,47 @@ export type SubscriptionConnectionStatus = Record<
 	SubscriptionConnectionState
 >;
 
+let subscriptionEnvironmentResolver: (
+	provider: SubscriptionProviderId,
+) => Record<string, string> = () => ({});
+
+export function setSubscriptionConnectionEnvironmentResolver(
+	resolver:
+		| ((provider: SubscriptionProviderId) => Record<string, string>)
+		| null,
+): void {
+	subscriptionEnvironmentResolver = resolver ?? (() => ({}));
+}
+
 interface ProbeDependencies {
-	findBinaries: (name: SubscriptionProviderId) => string[];
-	runStatus: (binary: string, args: string[]) => Promise<boolean>;
+	findBinaries: (name: SubscriptionProviderId) => string[] | Promise<string[]>;
+	runStatus: (
+		binary: string,
+		args: string[],
+		provider: SubscriptionProviderId,
+	) => Promise<boolean>;
 }
 
 const defaultDependencies: ProbeDependencies = {
-	findBinaries: (name) => findRealBinaries(name),
-	runStatus: probeBinaryCommand,
+	findBinaries: (name) =>
+		findRealBinariesAsync(name, {
+			env: buildCliProcessEnvironment(subscriptionEnvironmentResolver(name)),
+		}),
+	runStatus: (binary, args, provider) =>
+		probeBinaryCommand(binary, args, {
+			env: buildCliProcessEnvironment(
+				subscriptionEnvironmentResolver(provider),
+			),
+		}),
 };
 
 async function findRunnableBinary(
 	provider: SubscriptionProviderId,
 	dependencies: ProbeDependencies,
 ): Promise<string | null> {
-	for (const binary of dependencies.findBinaries(provider)) {
-		if (await dependencies.runStatus(binary, ["--version"])) return binary;
+	for (const binary of await dependencies.findBinaries(provider)) {
+		if (await dependencies.runStatus(binary, ["--version"], provider))
+			return binary;
 	}
 	return null;
 }
@@ -48,10 +74,10 @@ export async function probeSubscriptionConnections(
 
 	const [claudeAuthenticated, codexAuthenticated] = await Promise.all([
 		claudeBinary
-			? dependencies.runStatus(claudeBinary, ["auth", "status"])
+			? dependencies.runStatus(claudeBinary, ["auth", "status"], "claude")
 			: false,
 		codexBinary
-			? dependencies.runStatus(codexBinary, ["login", "status"])
+			? dependencies.runStatus(codexBinary, ["login", "status"], "codex")
 			: false,
 	]);
 

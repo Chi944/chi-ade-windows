@@ -20,6 +20,7 @@ export function UpdateRequiredPage({
 }: UpdateRequiredPageProps) {
 	const openUrl = electronTrpc.external.openUrl.useMutation();
 	const checkMutation = electronTrpc.autoUpdate.check.useMutation();
+	const downloadMutation = electronTrpc.autoUpdate.download.useMutation();
 	const installMutation = electronTrpc.autoUpdate.install.useMutation();
 
 	// Track update status via subscription for real-time updates
@@ -35,6 +36,7 @@ export function UpdateRequiredPage({
 		},
 	});
 
+	const isAvailable = updateStatus.status === AUTO_UPDATE_STATUS.AVAILABLE;
 	const isChecking = updateStatus.status === AUTO_UPDATE_STATUS.CHECKING;
 	const isDownloading = updateStatus.status === AUTO_UPDATE_STATUS.DOWNLOADING;
 	const isReady = updateStatus.status === AUTO_UPDATE_STATUS.READY;
@@ -47,6 +49,10 @@ export function UpdateRequiredPage({
 
 	const handleInstall = () => {
 		installMutation.mutate();
+	};
+
+	const handleDownload = () => {
+		downloadMutation.mutate();
 	};
 
 	const handleDownloadManually = () => {
@@ -90,6 +96,13 @@ export function UpdateRequiredPage({
 								{installMutation.isPending
 									? "Installing..."
 									: "Install & Restart"}
+							</Button>
+						) : isAvailable ? (
+							<Button
+								onClick={handleDownload}
+								disabled={downloadMutation.isPending}
+							>
+								{downloadMutation.isPending ? "Starting..." : "Download Update"}
 							</Button>
 						) : (
 							<Button

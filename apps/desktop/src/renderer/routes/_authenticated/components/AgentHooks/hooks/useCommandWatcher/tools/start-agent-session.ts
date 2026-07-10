@@ -1,3 +1,7 @@
+import {
+	buildAgentCommand,
+	TERMINAL_AGENT_TYPES,
+} from "@superset/shared/agent-command";
 import { launchCommandInPane } from "renderer/lib/terminal/launch-command";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import { useWorkspaceInitStore } from "renderer/stores/workspace-init";
@@ -5,7 +9,17 @@ import { z } from "zod";
 import type { CommandResult, ToolContext, ToolDefinition } from "./types";
 
 const schema = z.object({
-	command: z.string(),
+	task: z.object({
+		id: z.string(),
+		slug: z.string(),
+		title: z.string(),
+		description: z.string().nullable(),
+		priority: z.string(),
+		statusName: z.string().nullable(),
+		labels: z.array(z.string()).nullable(),
+	}),
+	randomId: z.string().uuid(),
+	agent: z.enum(TERMINAL_AGENT_TYPES),
 	name: z.string(),
 	workspaceId: z.string(),
 	paneId: z.string().optional(),
@@ -29,6 +43,12 @@ async function execute(
 	}
 
 	try {
+		const command = buildAgentCommand({
+			task: params.task,
+			randomId: params.randomId,
+			agent: params.agent,
+			windows: process.platform === "win32",
+		});
 		if (params.paneId) {
 			const tabsStore = useTabsStore.getState();
 			const pane = tabsStore.panes[params.paneId];
@@ -47,7 +67,9 @@ async function execute(
 				};
 			}
 
-			const newPaneId = tabsStore.addPane(tab.id);
+			const newPaneId = tabsStore.addPane(tab.id, {
+				agentRuntime: params.agent,
+			});
 
 			if (!newPaneId) {
 				return { success: false, error: "Failed to add pane" };
@@ -58,7 +80,8 @@ async function execute(
 					paneId: newPaneId,
 					tabId: tab.id,
 					workspaceId: workspace.id,
-					command: params.command,
+					command,
+					runtime: params.agent,
 					createOrAttach: (input) =>
 						ctx.terminalCreateOrAttach.mutateAsync(input),
 					write: (input) => ctx.terminalWrite.mutateAsync(input),
@@ -88,7 +111,8 @@ async function execute(
 			projectId: pending?.projectId ?? workspace.projectId,
 			initialCommands: pending?.initialCommands ?? null,
 			defaultPresets: pending?.defaultPresets,
-			agentCommand: params.command,
+			agentCommand: command,
+			agentRuntime: params.agent,
 		});
 
 		return {

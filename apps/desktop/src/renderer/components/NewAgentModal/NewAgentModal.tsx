@@ -1,10 +1,13 @@
-import type { AGENT_RUNTIMES } from "@superset/local-db";
+import type { AgentRuntime } from "@superset/local-db";
 import {
 	type AgentBinary,
 	type CheckedBinary,
 	RUNTIME_BINARY,
 } from "@superset/shared/agent-binaries";
-import { AGENT_LABELS } from "@superset/shared/agent-command";
+import {
+	AGENT_LABELS,
+	TERMINAL_AGENT_TYPES,
+} from "@superset/shared/agent-command";
 import { Button } from "@superset/ui/button";
 import {
 	Dialog,
@@ -45,7 +48,7 @@ type RepoMode = "init" | "clone" | "local" | "existing";
  * the launch presets) still support the rest — they return for the later
  * models stage.
  */
-const RUNTIME_CHOICES = ["claude", "codex", "opencode"] as const;
+const RUNTIME_CHOICES = TERMINAL_AGENT_TYPES satisfies readonly AgentRuntime[];
 
 /**
  * Create an Agent inside a Category. ADE agents own a standalone repo, so this
@@ -65,8 +68,7 @@ export function NewAgentModal() {
 
 	const [name, setName] = useState("");
 	const [role, setRole] = useState("");
-	const [runtime, setRuntime] =
-		useState<(typeof AGENT_RUNTIMES)[number]>("claude");
+	const [runtime, setRuntime] = useState<AgentRuntime>("claude");
 	const [repoMode, setRepoMode] = useState<RepoMode>("init");
 	const [cloneUrl, setCloneUrl] = useState("");
 	const [localPath, setLocalPath] = useState("");
@@ -232,9 +234,7 @@ export function NewAgentModal() {
 						<Label>Runtime</Label>
 						<Select
 							value={runtime}
-							onValueChange={(v) =>
-								setRuntime(v as (typeof AGENT_RUNTIMES)[number])
-							}
+							onValueChange={(v) => setRuntime(v as AgentRuntime)}
 						>
 							<SelectTrigger>
 								<SelectValue />

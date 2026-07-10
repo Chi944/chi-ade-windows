@@ -19,9 +19,9 @@ const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4; // 4 hours
 const RELEASE_REPO_OWNER = "Chi944";
 const RELEASE_REPO_NAME = "chi-ade-windows";
 
-// Auto-update is intentionally DISABLED for the v1 public launch. To turn it
-// on later: set RELEASE_REPO_NAME above and flip this single flag to `true`.
-const AUTO_UPDATE_ENABLED = false;
+// Update checks are enabled in packaged builds. Downloads and installation are
+// always user initiated; see setupAutoUpdater() below.
+const AUTO_UPDATE_ENABLED = true;
 
 /**
  * Detect if this is a prerelease build from app version using semver.
@@ -51,6 +51,7 @@ export interface AutoUpdateStatusEvent {
 	status: AutoUpdateStatus;
 	version?: string;
 	error?: string;
+	progress?: number;
 }
 
 export const autoUpdateEmitter = new EventEmitter();
@@ -77,34 +78,84 @@ function isNetworkError(error: Error | string): boolean {
 
 let currentStatus: AutoUpdateStatus = AUTO_UPDATE_STATUS.IDLE;
 let currentVersion: string | undefined;
+let currentProgress: number | undefined;
 let isDismissed = false;
 
 function emitStatus(
 	status: AutoUpdateStatus,
 	version?: string,
 	error?: string,
+	progress?: number,
 ): void {
 	currentStatus = status;
 	currentVersion = version;
+	currentProgress = progress;
 
-	if (isDismissed && status === AUTO_UPDATE_STATUS.READY) {
+	if (
+		isDismissed &&
+		(status === AUTO_UPDATE_STATUS.AVAILABLE ||
+			status === AUTO_UPDATE_STATUS.READY)
+	) {
 		return;
 	}
 
-	autoUpdateEmitter.emit("status-changed", { status, version, error });
+	autoUpdateEmitter.emit("status-changed", {
+		status,
+		version,
+		error,
+		progress,
+	});
 }
 
 export function getUpdateStatus(): AutoUpdateStatusEvent {
-	if (isDismissed && currentStatus === AUTO_UPDATE_STATUS.READY) {
+	if (
+		isDismissed &&
+		(currentStatus === AUTO_UPDATE_STATUS.AVAILABLE ||
+			currentStatus === AUTO_UPDATE_STATUS.READY)
+	) {
 		return { status: AUTO_UPDATE_STATUS.IDLE };
 	}
-	return { status: currentStatus, version: currentVersion };
+	return {
+		status: currentStatus,
+		version: currentVersion,
+		progress: currentProgress,
+	};
+}
+
+export function downloadUpdate(): void {
+	if (!AUTO_UPDATE_ENABLED || env.NODE_ENV === "development") {
+		console.info("[auto-updater] Download skipped outside a packaged build");
+		return;
+	}
+	if (currentStatus !== AUTO_UPDATE_STATUS.AVAILABLE) {
+		console.info(
+			`[auto-updater] Download ignored while status is ${currentStatus}`,
+		);
+		return;
+	}
+
+	isDismissed = false;
+	emitStatus(AUTO_UPDATE_STATUS.DOWNLOADING, currentVersion, undefined, 0);
+	autoUpdater.downloadUpdate().catch((error) => {
+		console.error("[auto-updater] Failed to download update:", error);
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			currentVersion,
+			error instanceof Error ? error.message : String(error),
+		);
+	});
 }
 
 export function installUpdate(): void {
 	if (!AUTO_UPDATE_ENABLED || env.NODE_ENV === "development") {
 		console.info("[auto-updater] Install skipped in dev mode");
 		emitStatus(AUTO_UPDATE_STATUS.IDLE);
+		return;
+	}
+	if (currentStatus !== AUTO_UPDATE_STATUS.READY) {
+		console.info(
+			`[auto-updater] Install ignored while status is ${currentStatus}`,
+		);
 		return;
 	}
 	// Skip confirmation dialog - quitAndInstall internally calls app.quit()
@@ -123,6 +174,17 @@ export function checkForUpdates(): void {
 		env.NODE_ENV === "development" ||
 		!IS_AUTO_UPDATE_PLATFORM
 	) {
+		return;
+	}
+	if (
+		currentStatus === AUTO_UPDATE_STATUS.CHECKING ||
+		currentStatus === AUTO_UPDATE_STATUS.DOWNLOADING
+	) {
+		return;
+	}
+	if (currentStatus === AUTO_UPDATE_STATUS.READY) {
+		isDismissed = false;
+		emitStatus(currentStatus, currentVersion, undefined, currentProgress);
 		return;
 	}
 	isDismissed = false;
@@ -161,6 +223,17 @@ export function checkForUpdatesInteractive(): void {
 			title: "Updates",
 			message: "Auto-updates are only available on macOS, Linux, and Windows.",
 		});
+		return;
+	}
+	if (
+		currentStatus === AUTO_UPDATE_STATUS.CHECKING ||
+		currentStatus === AUTO_UPDATE_STATUS.DOWNLOADING
+	) {
+		return;
+	}
+	if (currentStatus === AUTO_UPDATE_STATUS.READY) {
+		isDismissed = false;
+		emitStatus(currentStatus, currentVersion, undefined, currentProgress);
 		return;
 	}
 
@@ -211,6 +284,12 @@ export function simulateUpdateReady(): void {
 	emitStatus(AUTO_UPDATE_STATUS.READY, "99.0.0-test");
 }
 
+export function simulateUpdateAvailable(): void {
+	if (env.NODE_ENV !== "development") return;
+	isDismissed = false;
+	emitStatus(AUTO_UPDATE_STATUS.AVAILABLE, "99.0.0-test");
+}
+
 export function simulateDownloading(): void {
 	if (env.NODE_ENV !== "development") return;
 	isDismissed = false;
@@ -228,18 +307,27 @@ export function simulateError(): void {
 }
 
 export function setupAutoUpdater(): void {
-	// Gated off for v1: only runs in a packaged app, on a supported platform,
-	// and when AUTO_UPDATE_ENABLED is flipped on. app.isPackaged is false in
-	// development, so this also covers the dev case.
+	// Only runs in a packaged app on a supported platform. Development builds
+	// can exercise each state through the Dev menu.
 	if (!AUTO_UPDATE_ENABLED || !app.isPackaged || !IS_AUTO_UPDATE_PLATFORM) {
 		return;
 	}
 
-	autoUpdater.autoDownload = true;
-	autoUpdater.autoInstallOnAppQuit = true;
-	autoUpdater.disableDifferentialDownload = true;
+	// Never download or install behind the user's back. A background check only
+	// surfaces an AVAILABLE toast; downloadUpdate() and installUpdate() are
+	// explicit renderer actions.
+	autoUpdater.autoDownload = false;
+	autoUpdater.autoInstallOnAppQuit = false;
+	autoUpdater.disableDifferentialDownload = false;
 
-	// Allow downgrade for prerelease builds so users can switch back to stable
+	// macOS update artifacts are built and smoke-tested natively for each CPU
+	// architecture. Separate channel manifests prevent an Intel install from
+	// ever selecting an Apple Silicon archive (and vice versa).
+	if (PLATFORM.IS_MAC) {
+		autoUpdater.channel = `latest-${process.arch}`;
+	}
+	// Setting a custom channel enables downgrades inside electron-updater, so
+	// apply our policy after the architecture-specific channel assignment.
 	autoUpdater.allowDowngrade = IS_PRERELEASE;
 
 	// Use generic provider with explicit feed URL so electron-updater can request
@@ -277,7 +365,7 @@ export function setupAutoUpdater(): void {
 		console.info(
 			`[auto-updater] Update available: ${app.getVersion()} → ${info.version} (files: ${info.files?.map((f: { url: string }) => f.url).join(", ")})`,
 		);
-		emitStatus(AUTO_UPDATE_STATUS.DOWNLOADING, info.version);
+		emitStatus(AUTO_UPDATE_STATUS.AVAILABLE, info.version);
 	});
 
 	autoUpdater.on("update-not-available", (info) => {
@@ -290,6 +378,12 @@ export function setupAutoUpdater(): void {
 	autoUpdater.on("download-progress", (progress) => {
 		console.info(
 			`[auto-updater] Download progress: ${progress.percent.toFixed(1)}% (${(progress.transferred / 1024 / 1024).toFixed(1)}MB / ${(progress.total / 1024 / 1024).toFixed(1)}MB)`,
+		);
+		emitStatus(
+			AUTO_UPDATE_STATUS.DOWNLOADING,
+			currentVersion,
+			undefined,
+			progress.percent,
 		);
 	});
 

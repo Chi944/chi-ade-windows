@@ -8,7 +8,7 @@ const UPDATE_TOAST_ID = "auto-update";
 export function useUpdateListener() {
 	electronTrpc.autoUpdate.subscribe.useSubscription(undefined, {
 		onData: (event) => {
-			const { status, version, error } = event;
+			const { status, version, error, progress } = event;
 
 			if (
 				status === AUTO_UPDATE_STATUS.IDLE ||
@@ -19,6 +19,7 @@ export function useUpdateListener() {
 			}
 
 			if (
+				status === AUTO_UPDATE_STATUS.AVAILABLE ||
 				status === AUTO_UPDATE_STATUS.DOWNLOADING ||
 				status === AUTO_UPDATE_STATUS.READY ||
 				status === AUTO_UPDATE_STATUS.ERROR
@@ -30,6 +31,7 @@ export function useUpdateListener() {
 							status={status}
 							version={version}
 							error={error}
+							progress={progress}
 						/>
 					),
 					{

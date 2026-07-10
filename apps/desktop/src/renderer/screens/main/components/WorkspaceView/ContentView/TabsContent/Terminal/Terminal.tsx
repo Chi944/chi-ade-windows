@@ -2,6 +2,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { toast } from "@superset/ui/sonner";
 import { useEffect, useRef, useState } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useTabsStore } from "renderer/stores/tabs/store";
@@ -407,20 +408,28 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 
 	const handleDrop = (event: React.DragEvent) => {
 		event.preventDefault();
-		const files = Array.from(event.dataTransfer.files);
-		let text: string;
-		if (files.length > 0) {
-			// Native file drop (from Finder, etc.)
-			const paths = files.map((file) => window.webUtils.getPathForFile(file));
-			text = shellEscapePaths(paths);
-		} else {
-			// Internal drag (from file tree) - path is in text/plain
-			const plainText = event.dataTransfer.getData("text/plain");
-			if (!plainText) return;
-			text = shellEscapePaths([plainText]);
-		}
-		if (!isExitedRef.current) {
-			writeRef.current({ paneId, data: text });
+		try {
+			const files = Array.from(event.dataTransfer.files);
+			let text: string;
+			if (files.length > 0) {
+				// Native file drop (from Finder, Explorer, etc.). Electron returns
+				// the actual OS path; the default platform shell gets a literal-safe
+				// representation for spaces and metacharacters.
+				const paths = files.map((file) => window.webUtils.getPathForFile(file));
+				text = shellEscapePaths(paths);
+			} else {
+				// Internal drag (from file tree) - path is in text/plain.
+				const plainText = event.dataTransfer.getData("text/plain");
+				if (!plainText) return;
+				text = shellEscapePaths([plainText]);
+			}
+			if (!isExitedRef.current) {
+				writeRef.current({ paneId, data: text });
+			}
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : "Could not attach those files",
+			);
 		}
 	};
 

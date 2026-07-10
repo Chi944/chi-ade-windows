@@ -1,6 +1,7 @@
 export const AUTO_UPDATE_STATUS = {
 	IDLE: "idle",
 	CHECKING: "checking",
+	AVAILABLE: "available",
 	DOWNLOADING: "downloading",
 	READY: "ready",
 	ERROR: "error",

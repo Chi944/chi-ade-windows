@@ -14,6 +14,16 @@ export const AGENT_TYPES = [
 
 export type AgentType = (typeof AGENT_TYPES)[number];
 
+export const TERMINAL_AGENT_TYPES = [
+	"claude",
+	"codex",
+	"gemini",
+	"opencode",
+	"copilot",
+	"cursor-agent",
+] as const satisfies readonly AgentType[];
+export type TerminalAgentType = (typeof TERMINAL_AGENT_TYPES)[number];
+
 export const AGENT_LABELS: Record<AgentType, string> = {
 	claude: "Claude",
 	codex: "Codex",
@@ -301,21 +311,15 @@ export type SubscriptionProvider = (typeof SUBSCRIPTION_PROVIDERS)[number];
 
 export function buildSubscriptionConnectCommand({
 	provider,
-	windows,
+	windows: _windows,
 }: {
 	provider: SubscriptionProvider;
 	windows: boolean;
 }): string {
 	if (provider === "claude") return "claude auth login";
-	if (!windows) return 'CODEX_HOME="$HOME/.codex" codex login';
-
-	const script = [
-		"$ErrorActionPreference='Stop'",
-		"$env:CODEX_HOME=[IO.Path]::Combine($HOME,'.codex')",
-		"& codex login",
-		"exit $LASTEXITCODE",
-	].join(";");
-	return `powershell.exe -NoLogo -NoProfile -EncodedCommand ${encodeUtf16Le(script)}`;
+	// CODEX_HOME is injected into the terminal environment for the selected
+	// account profile. Let the official CLI own its login and token files.
+	return "codex login";
 }
 
 const WINDOWS_AGENT_COMMANDS: Record<AgentType, (prompt: string) => string> = {

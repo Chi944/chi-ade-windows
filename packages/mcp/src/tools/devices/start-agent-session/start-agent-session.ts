@@ -1,7 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "@superset/db/client";
 import { taskStatuses, tasks } from "@superset/db/schema";
-import { AGENT_TYPES, buildAgentCommand } from "@superset/shared/agent-command";
+import {
+	TERMINAL_AGENT_TYPES,
+	type TerminalAgentType,
+} from "@superset/shared/agent-command";
 import { and, eq, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
@@ -97,7 +100,7 @@ export function register(server: McpServer) {
 						"Optional pane ID. When provided, adds a new pane to the tab containing this pane instead of initializing the workspace.",
 					),
 				agent: z
-					.enum(AGENT_TYPES)
+					.enum(TERMINAL_AGENT_TYPES)
 					.optional()
 					.describe(
 						'AI agent to use: "claude", "codex", "gemini", "opencode", "copilot", or "cursor-agent". Defaults to "claude".',
@@ -109,8 +112,7 @@ export function register(server: McpServer) {
 			const validated = validateArgs(args);
 			if (!validated) return ERROR_ARGS_REQUIRED;
 
-			const agent =
-				(validated.agent as (typeof AGENT_TYPES)[number]) ?? "claude";
+			const agent = (validated.agent as TerminalAgentType) ?? "claude";
 
 			const task = await fetchTask({
 				taskId: validated.taskId,
@@ -123,11 +125,9 @@ export function register(server: McpServer) {
 				deviceId: validated.deviceId,
 				tool: "start_agent_session",
 				params: {
-					command: buildAgentCommand({
-						task,
-						randomId: crypto.randomUUID(),
-						agent,
-					}),
+					task,
+					randomId: crypto.randomUUID(),
+					agent,
 					name: task.slug,
 					workspaceId: validated.workspaceId,
 					...(validated.paneId ? { paneId: validated.paneId } : {}),

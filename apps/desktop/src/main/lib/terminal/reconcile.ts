@@ -22,14 +22,17 @@ export interface ReconcilableManager {
 /**
  * Resolve to `true` if `p` settles before `ms`, `false` if the timeout wins.
  * `p`'s own rejection still propagates (so the caller's catch runs). The timer
- * is unref'd so it can never keep the process alive and is cleared once `p`
- * settles.
+ * remains referenced while this function is awaited; unref'ing it can prevent
+ * the timeout callback from running when the reconcile promise is the only
+ * outstanding work. It is cleared as soon as `p` settles.
  */
-async function settledWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+async function settledWithin(
+	p: Promise<unknown>,
+	ms: number,
+): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<false>((resolve) => {
 		timer = setTimeout(() => resolve(false), ms);
-		timer.unref?.();
 	});
 	try {
 		return await Promise.race([p.then(() => true), timeout]);
@@ -47,7 +50,10 @@ export async function reconcileWithTimeout(
 	timeoutMs: number = RECONCILE_STARTUP_TIMEOUT_MS,
 ): Promise<void> {
 	try {
-		const settled = await settledWithin(manager.reconcileOnStartup(), timeoutMs);
+		const settled = await settledWithin(
+			manager.reconcileOnStartup(),
+			timeoutMs,
+		);
 		if (!settled) {
 			console.warn(
 				`[TerminalManager] reconcileOnStartup timed out after ${timeoutMs}ms; ` +

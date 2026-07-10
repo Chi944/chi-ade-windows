@@ -1,155 +1,160 @@
-# Chi ADE Windows
+<p align="center">
+  <img src="apps/desktop/src/resources/build/icons/icon.png" width="96" alt="chi-ade-windows icon">
+</p>
 
-> A lean, Windows-first agentic development environment with persistent agents,
-> true-black theming, resumable terminal sessions, and bring-your-own AI providers.
+<h1 align="center">chi-ade-windows</h1>
 
-Chi ADE Windows is a local-first, single-user desktop app for running coding agents beside your projects. Each agent has its own identity, worktree or linked project folder, terminal sessions, and long-lived markdown memory. Existing projects can be linked without copying them.
+<p align="center">
+  A local-first agentic development environment for Windows and macOS.<br>
+  Run coding agents, worktrees, terminals, diffs, and local previews in one workspace.
+</p>
 
-## Highlights
+<p align="center">
+  <a href="https://github.com/Chi944/chi-ade-windows/releases">Releases</a>
+  · <a href="https://github.com/Chi944/chi-ade-windows/actions/workflows/ci.yml">Build status</a>
+  · <a href="https://github.com/Chi944/chi-ade-windows/issues">Issues</a>
+  · <a href="LICENSE.md">License</a>
+</p>
 
-- **Customizable true black:** the system dark theme uses `#000000`, and the Appearance screen includes a visual editor for background, surfaces, text, accent, borders, and terminal colors.
-- **Claude and Codex subscriptions:** connect through the official `claude auth login` and `codex login` flows. ADE checks only whether the CLI is installed and authenticated; it never receives the subscription credentials.
-- **Durable sessions:** ADE keeps bounded terminal history and provider session metadata, then resumes Claude, Codex, Hugging Face/Codex, Ollama/Codex, and OpenCode sessions after a clean exit, app restart, or system restart when the CLI supports it.
-- **Your cloud and local models:** save, select, launch, and remove multiple Hugging Face Inference Provider model IDs or models you already serve with Ollama. Hugging Face weights stay in the cloud, and ADE never pulls Ollama models automatically.
-- **Provider isolation:** API tokens are encrypted with Electron secure storage and injected only into matching provider sessions.
-- **Safer custom-model defaults:** Hugging Face and Ollama sessions use workspace-write isolation and ask before elevated actions.
-- **Windows-aware health checks:** ADE executes each discovered CLI's `--version` command, so an inaccessible Windows Store alias is not mistaken for a working runtime.
-- **Storage-conscious builds:** the Windows build runs in an isolated temporary directory, copies out only the installer/manifests, and removes staging after success.
+![chi-ade-windows workspace with a local preview and split PowerShell terminal](docs/screenshots/workspace.png)
 
-ADE preserves your work and lets you resume or switch providers; it does not bypass Claude, Codex, Hugging Face, or other providers' usage, billing, or context limits. After a provider limit resets, resume the saved session, or continue the work in a new session with another configured provider.
+> Version 0.3 is currently available from source. The latest public installer remains Windows-only v0.2.1 until signed Windows and notarized macOS v0.3 artifacts are published.
 
-## Screenshots
+## One workspace, many agents
 
-### Agent workspace
+- **Parallel Git worktrees** keep branches and agents isolated while sharing Git object storage. Existing local repositories can be linked without copying them.
+- **Persistent split panes** place agents, PowerShell or other shells, files, diffs, and browser previews side by side. Layout and bounded terminal history survive restarts.
+- **Any terminal agent** can run in ADE. Use a built-in runtime or pin any installed CLI command as a custom Agent Bar preset.
+- **Provider Hub** brings Claude and Codex account profiles, Codex usage/reset windows, OpenRouter, remote Hugging Face models, and Ollama models into one place.
+- **Design Mode** previews trusted localhost apps at desktop, tablet, or mobile sizes and copies a selected element's safe context for an agent.
+- **AI diff annotations** attach persistent notes to exact file/side/line locations and combine unresolved notes into one review prompt.
+- **Drag files to agents** pastes safely shell-quoted Explorer or Finder paths into a terminal.
+- **Custom appearance** includes a deep true-black theme and editable UI and terminal colours.
+- **User-controlled updates** announce new releases; nothing downloads or installs until you choose it.
 
-![Chi ADE Windows workspace with the team and agent rail, terminal, model bar, and Agent Files panel](docs/screenshots/workspace.png)
+## Gallery
 
-### Provider Hub
+| Provider Hub | Remote and local models |
+| --- | --- |
+| ![Custom terminal agents, subscription accounts, and provider controls](docs/screenshots/provider-hub.png) | ![Hugging Face and Ollama models with provider icons and launch controls](docs/screenshots/provider-models.png) |
 
-![Provider Hub with Claude and Codex subscription connections plus selectable Hugging Face and Ollama model lists](docs/screenshots/provider-hub.png)
+| Design Mode | Annotated AI diff review |
+| --- | --- |
+| ![Tablet preview with a selected localhost heading ready to copy for an agent](docs/screenshots/design-mode.png) | ![Exact-line diff annotation and deterministic review prompt](docs/screenshots/diff-review.png) |
 
-### Your model library
+![True-black Appearance settings with editable theme colours](docs/screenshots/appearance.png)
 
-![Saved Hugging Face cloud and Ollama model lists with provider icons, default selection, launch, and removal controls](docs/screenshots/provider-models.png)
+## Agents and models
 
-### Theme color editor
+ADE does not bundle agent CLIs, subscriptions, model weights, or provider usage.
 
-![True-black Appearance settings with the visual theme color editor](docs/screenshots/appearance-colors.png)
+| Integration | Support |
+| --- | --- |
+| Claude Code | Official CLI login, isolated profile metadata, persistent panes, and native session resume |
+| Codex CLI | Official CLI login, isolated profile metadata, native resume, and on-demand usage/rate-limit windows through the local Codex app-server |
+| Gemini CLI | Built-in terminal preset |
+| OpenCode | Built-in terminal preset and native session resume |
+| GitHub Copilot CLI | Built-in terminal preset |
+| Cursor Agent | Built-in terminal preset when the native CLI is installed |
+| Any terminal CLI | Save its name and command as a custom pinned preset |
+| OpenRouter | Kimi, MiniMax, and GLM routes through Claude Code |
+| Hugging Face | Add remote Inference Provider model IDs; weights stay in the cloud |
+| Ollama | Select models already served by Ollama; ADE never pulls them automatically |
 
-### Zero-copy existing project
+Conversation-level cold resume is implemented for Claude, Codex, Codex-backed Hugging Face and Ollama sessions, and OpenCode. Other agents retain ADE's pane layout and bounded terminal scrollback; conversation continuation depends on the CLI itself.
 
-![New agent dialog with the zero-copy existing-folder option selected](docs/screenshots/new-agent.png)
+## Accounts and usage
 
-### First launch
+Each Claude or Codex profile completes its provider's official CLI login once. Selecting a profile affects new panes; running panes and resumed sessions stay pinned to the profile that created them.
 
-![Chi ADE Windows first-launch screen](docs/screenshots/first-launch.png)
+ADE stores profile labels, IDs, and pane bindings, while each provider CLI owns its credentials. ADE does not copy or parse those credentials. Codex usage and reset windows are fetched on demand. Claude usage remains available through Claude Code's `/usage` command. Because Claude credentials can also be tied to macOS Keychain, switching a Claude profile on macOS may require the official login flow again.
 
-## Install
+Provider API tokens entered in ADE are encrypted with Electron secure storage and decrypted in the main process only for matching sessions.
 
-Download the Windows x64 installer from the [latest release](https://github.com/Chi944/chi-ade-windows/releases/latest):
+## Updates
 
-```text
-ADE-<version>-x64.exe
+Packaged builds check GitHub Releases at startup, every four hours, and when you choose **Check for Updates**:
+
+1. ADE tells you a version is available.
+2. You choose **Download** and can watch its progress.
+3. You choose **Install & Restart** when ready.
+
+ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
+
+The public v0.2.1 build predates this updater, so moving from v0.2.1 to v0.3 requires one manual installer download. Once v0.3 is installed, the in-app flow handles later published versions.
+
+## Storage and privacy
+
+- App state lives under `~/.ade`.
+- Existing-folder linking is zero-copy, and Git worktrees share repository objects.
+- Terminal scrollback is capped at 5 MiB per pane; the reopen stack retains at most 20 closed tabs.
+- Hugging Face weights stay remote, and Ollama models remain outside ADE.
+- Analytics emission is disabled in this build.
+- Agent memory is stored as small Markdown files outside the worktree; see [the memory design](docs/memory.md).
+
+Built-in autonomous presets may use high-permission or auto-approval flags. Review terminal presets before using ADE with untrusted repositories. Custom Hugging Face and Ollama sessions use workspace-write isolation and ask before elevated actions.
+
+Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It excludes input values, page HTML, cookies, storage, and `data-*` attributes. Only enable it for local apps you trust.
+
+## Platform status
+
+| Platform | Status |
+| --- | --- |
+| Windows x64 | v0.3 packages locally and passes its packaged native-runtime smoke test. The latest public release remains v0.2.1. |
+| macOS Apple Silicon | Build, package, native-runtime smoke, signing, and updater jobs are defined; public support awaits a green pushed CI run and a notarized release. |
+| macOS Intel | Same validation and release requirement as Apple Silicon. |
+
+## SSH status
+
+ADE supports Git SSH remotes and can run `ssh` or another installed remote CLI in a terminal or custom agent preset. Managed worktrees, file browsing, diffs, persistence, and Design Mode currently operate on local files.
+
+First-class SSH worktrees, remote file editing, SFTP, reconnect, and port forwarding are not implemented yet.
+
+## Workspace recipes
+
+Add `.ade/config.json` to a repository when a worktree needs repeatable setup or teardown commands:
+
+```json
+{
+  "setup": ["bun install"],
+  "teardown": ["docker compose down"]
+}
 ```
 
-The installer is the only release artifact most users need. Agent CLIs and model weights are not bundled.
-
-The community installer is currently unsigned, so Windows SmartScreen may show **Unknown publisher**. Before running it, verify the installer against the `ADE-<version>-x64.exe.sha256` checksum attached to the same GitHub release.
-
-## Prerequisites
-
-You need [Git for Windows](https://git-scm.com/download/win) and at least one coding-agent CLI:
-
-```powershell
-npm install --global @anthropic-ai/claude-code
-npm install --global @openai/codex
-```
-
-OpenCode remains available as an optional runtime:
-
-```powershell
-npm install --global opencode-ai
-```
-
-Use the **+** button in the model bar to open Provider Hub:
-
-- **Claude:** sign in with an eligible Claude subscription through the official CLI.
-- **Codex:** sign in with an eligible ChatGPT/Codex subscription through the official CLI.
-- **Hugging Face:** enter one token, then add up to 20 remotely available model IDs. Choose a default or launch any saved model directly; ADE does not download the weights.
-- **Ollama:** add up to 20 model names already served at `127.0.0.1:11434`, choose a default, or launch one directly. ADE never pulls an Ollama model automatically.
-- **OpenRouter:** enter one key for Kimi, MiniMax, and GLM sessions.
+Review repository-provided commands before running them. A per-project override can be kept outside Git under `~/.ade/projects/<project-id>/config.json`.
 
 ## Build from source
 
-Requires [Bun](https://bun.sh) 1.3.6+, Node.js, and approximately 4 GiB of temporary free space.
+Install [Bun](https://bun.sh) 1.3.6+, Node.js, Git, and at least one agent CLI.
+
+```sh
+git clone https://github.com/Chi944/chi-ade-windows.git
+cd chi-ade-windows
+bun install --frozen-lockfile
+bun run --cwd apps/desktop typecheck
+bun run --cwd apps/desktop compile:app
+```
+
+Package on the native target host:
 
 ```powershell
-git clone https://github.com/Chi944/chi-ade-windows.git
-Set-Location chi-ade-windows
+# Windows x64
+bun run --cwd apps/desktop package -- --win --x64 --publish never --config electron-builder.ts
+
+# Storage-conscious Windows build with temporary staging cleanup
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-lean.ps1
 ```
 
-The script:
+```sh
+# macOS Apple Silicon
+bun run --cwd apps/desktop package -- --mac --arm64 --publish never --config electron-builder.ts
 
-1. prunes the monorepo to the desktop dependency closure;
-2. keeps Bun and npm caches inside `.tmp/windows-build`;
-3. uses published Electron native prebuilds instead of installing Visual Studio build tools;
-4. smoke-tests native modules before and after packaging;
-5. copies the installer, checksum, update manifest, and measured footprint to `artifacts/`; and
-6. deletes temporary staging after a successful build.
-
-Use `-KeepStaging` only for diagnostics.
-
-For normal development:
-
-```powershell
-bun install --frozen-lockfile
-bun run --cwd apps/desktop compile:app
-bunx electron apps/desktop
+# macOS Intel
+bun run --cwd apps/desktop package -- --mac --x64 --publish never --config electron-builder.ts
 ```
-
-## Session persistence
-
-Each pane records a bounded terminal transcript (maximum 5 MiB) plus the actual runtime and any provider session/thread ID exposed by the CLI. On reopen, ADE uses the provider's native continuation command:
-
-- Claude: exact `--resume <session-id>`
-- Codex-backed sessions: exact `resume <thread-id>`
-- OpenCode: exact `--session <session-id>`
-
-The provider's own transcript remains the source of truth. ADE's bounded scrollback keeps local disk use predictable while preserving enough UI history to recover the workspace after a crash or restart. Permanently removed panes and closed tabs evicted from the 20-entry reopen stack have their local terminal history deleted.
-
-## Agent memory
-
-Every agent keeps a small, plain-markdown memory outside the project worktree:
-
-- `AGENT.md` — identity, role, and operating brief
-- `USER.md` — durable preferences and working style
-- `MEMORY.md` — project conventions, lessons, and an index to longer notes
-- `skills/*/SKILL.md` — reusable procedures loaded when relevant
-
-Thin runtime bridge files feed the same canonical memory to Claude Code, Codex, and OpenCode, so switching runtimes does not discard what the agent learned. See [docs/memory.md](docs/memory.md) for the design.
-
-## Workflow features
-
-Chi ADE Windows already includes several ideas also found in multi-agent environments such as DevSwarm: isolated worktrees, parallel terminals, unique development ports, diff review, GitHub/PR status, external-editor handoff, and attention indicators.
-
-Good next additions, kept out of this release until they can be implemented without bloating the app, are:
-
-- a dependency-aware task board with bounded agent concurrency;
-- searchable/exportable session transcripts;
-- per-session context and cloud-cost visibility;
-- reusable permission profiles; and
-- explicit provider fallback policies when a service is unavailable.
-
-## Why the small root file set?
-
-Runtime-unnecessary community/deployment files were removed from this owner-maintained Windows fork. The following remain because they are required for licensing, attribution, packaging, or use:
-
-- `README.md`
-- `LICENSE.md`
-- `NOTICE`
-- `THIRD-PARTY-NOTICES.md`
 
 ## License
 
-ADE is a modified derivative of [Superset](https://github.com/superset-sh/superset) (Copyright Superset, Inc.), distributed under the **Elastic License 2.0**. See [LICENSE.md](LICENSE.md), [NOTICE](NOTICE), and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The agent memory architecture is adapted from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT).
+This project is **source-available under the Elastic License 2.0**, not OSI-approved open source. ELv2 does not permit offering a substantial set of this software's functionality to third parties as a hosted or managed service.
+
+ADE is a modified derivative of Superset. See [LICENSE.md](LICENSE.md), [NOTICE](NOTICE), and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

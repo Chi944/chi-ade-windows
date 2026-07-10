@@ -243,9 +243,14 @@ export const createDeleteProcedures = () => {
 				let worktree: SelectWorktree | undefined;
 				let isExternalAgent = false;
 
-				const terminalPromise = getWorkspaceRuntimeRegistry()
-					.getForWorkspaceId(input.id)
-					.terminal.killByWorkspaceId(input.id);
+				const terminal = getWorkspaceRuntimeRegistry().getForWorkspaceId(
+					input.id,
+				).terminal;
+				// Stop processes so worktree teardown is safe, but retain history and
+				// provider homes until every fallible deletion step has succeeded.
+				const terminalPromise = terminal.killByWorkspaceId(input.id, {
+					deleteHistory: false,
+				});
 
 				let teardownPromise:
 					| Promise<{ success: boolean; error?: string; output?: string }>
@@ -347,6 +352,10 @@ export const createDeleteProcedures = () => {
 				}
 
 				deleteWorkspace(input.id);
+				const terminalCleanupResult = await terminal.killByWorkspaceId(
+					input.id,
+					{ deleteHistory: true },
+				);
 
 				if (worktree) {
 					deleteWorktreeRecord(worktree.id);
@@ -355,10 +364,9 @@ export const createDeleteProcedures = () => {
 				if (project) {
 					hideProjectIfNoWorkspaces(workspace.projectId);
 				}
-
 				const terminalWarning =
-					terminalResult.failed > 0
-						? `${terminalResult.failed} terminal process(es) may still be running`
+					terminalResult.failed + terminalCleanupResult.failed > 0
+						? `${terminalResult.failed + terminalCleanupResult.failed} terminal process cleanup operation(s) failed`
 						: undefined;
 
 				track("workspace_deleted", { workspace_id: input.id });
@@ -377,22 +385,35 @@ export const createDeleteProcedures = () => {
 					throw new Error("Workspace not found");
 				}
 
-				const terminalResult = await getWorkspaceRuntimeRegistry()
-					.getForWorkspaceId(input.id)
-					.terminal.killByWorkspaceId(input.id);
+				markWorkspaceAsDeleting(input.id);
+				try {
+					const terminal = getWorkspaceRuntimeRegistry().getForWorkspaceId(
+						input.id,
+					).terminal;
+					const terminalResult = await terminal.killByWorkspaceId(input.id, {
+						deleteHistory: false,
+					});
 
-				deleteWorkspace(input.id);
-				hideProjectIfNoWorkspaces(workspace.projectId);
-				updateActiveWorkspaceIfRemoved(input.id);
+					deleteWorkspace(input.id);
+					const terminalCleanupResult = await terminal.killByWorkspaceId(
+						input.id,
+						{ deleteHistory: true },
+					);
+					hideProjectIfNoWorkspaces(workspace.projectId);
+					updateActiveWorkspaceIfRemoved(input.id);
 
-				const terminalWarning =
-					terminalResult.failed > 0
-						? `${terminalResult.failed} terminal process(es) may still be running`
-						: undefined;
+					const terminalWarning =
+						terminalResult.failed + terminalCleanupResult.failed > 0
+							? `${terminalResult.failed + terminalCleanupResult.failed} terminal process cleanup operation(s) failed`
+							: undefined;
 
-				track("workspace_closed", { workspace_id: input.id });
+					track("workspace_closed", { workspace_id: input.id });
 
-				return { success: true, terminalWarning };
+					return { success: true, terminalWarning };
+				} catch (error) {
+					clearWorkspaceDeletingStatus(input.id);
+					throw error;
+				}
 			}),
 
 		canDeleteWorktree: publicProcedure

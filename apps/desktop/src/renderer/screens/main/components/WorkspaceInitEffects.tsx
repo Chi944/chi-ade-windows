@@ -59,12 +59,14 @@ export function WorkspaceInitEffects() {
 			tabId,
 			workspaceId,
 			command,
+			runtime,
 			removePaneOnError,
 		}: {
 			paneId: string;
 			tabId: string;
 			workspaceId: string;
 			command: string;
+			runtime?: PendingTerminalSetup["agentRuntime"];
 			removePaneOnError?: boolean;
 		}) => {
 			void launchCommandInPane({
@@ -72,6 +74,7 @@ export function WorkspaceInitEffects() {
 				tabId,
 				workspaceId,
 				command,
+				runtime,
 				createOrAttach: (input) => terminalCreateOrAttach.mutateAsync(input),
 				write: (input) => terminalWrite.mutateAsync(input),
 			}).catch((error) => {
@@ -110,7 +113,7 @@ export function WorkspaceInitEffects() {
 				(p) => p.commands.length > 0,
 			);
 			const hasPresets = shouldApplyPreset && presets.length > 0;
-			const { agentCommand } = setup;
+			const { agentCommand, agentRuntime } = setup;
 
 			if (hasSetupScript && hasPresets) {
 				const { tabId: setupTabId, paneId: setupPaneId } = addTab(
@@ -120,13 +123,14 @@ export function WorkspaceInitEffects() {
 				openPresetsInActiveTab(setup.workspaceId, presets);
 
 				if (agentCommand) {
-					const agentPaneId = addPane(setupTabId);
+					const agentPaneId = addPane(setupTabId, { agentRuntime });
 					if (agentPaneId) {
 						launchAgentCommand({
 							paneId: agentPaneId,
 							tabId: setupTabId,
 							workspaceId: setup.workspaceId,
 							command: agentCommand,
+							runtime: agentRuntime,
 							removePaneOnError: true,
 						});
 					}
@@ -179,13 +183,14 @@ export function WorkspaceInitEffects() {
 				setTabAutoTitle(tabId, "Agent Setup");
 
 				if (agentCommand) {
-					const agentPaneId = addPane(tabId);
+					const agentPaneId = addPane(tabId, { agentRuntime });
 					if (agentPaneId) {
 						launchAgentCommand({
 							paneId: agentPaneId,
 							tabId,
 							workspaceId: setup.workspaceId,
 							command: agentCommand,
+							runtime: agentRuntime,
 							removePaneOnError: true,
 						});
 					}
@@ -269,6 +274,7 @@ export function WorkspaceInitEffects() {
 				if (agentCommand) {
 					const { tabId: agentTabId, paneId: agentPaneId } = addTab(
 						setup.workspaceId,
+						{ agentRuntime },
 					);
 					setTabAutoTitle(agentTabId, "Agent");
 					launchAgentCommand({
@@ -276,6 +282,7 @@ export function WorkspaceInitEffects() {
 						tabId: agentTabId,
 						workspaceId: setup.workspaceId,
 						command: agentCommand,
+						runtime: agentRuntime,
 						removePaneOnError: true,
 					});
 				}
@@ -286,6 +293,7 @@ export function WorkspaceInitEffects() {
 			if (agentCommand) {
 				const { tabId: agentTabId, paneId: agentPaneId } = addTab(
 					setup.workspaceId,
+					{ agentRuntime },
 				);
 				setTabAutoTitle(agentTabId, "Agent");
 				launchAgentCommand({
@@ -293,6 +301,7 @@ export function WorkspaceInitEffects() {
 					tabId: agentTabId,
 					workspaceId: setup.workspaceId,
 					command: agentCommand,
+					runtime: agentRuntime,
 					removePaneOnError: true,
 				});
 				onComplete();

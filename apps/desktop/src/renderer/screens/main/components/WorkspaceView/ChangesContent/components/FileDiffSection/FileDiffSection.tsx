@@ -1,14 +1,26 @@
 import { Button } from "@superset/ui/button";
+import { Checkbox } from "@superset/ui/checkbox";
 import { Collapsible, CollapsibleContent } from "@superset/ui/collapsible";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { LuFileCode, LuLoader } from "react-icons/lu";
+import { Input } from "@superset/ui/input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@superset/ui/select";
+import { Textarea } from "@superset/ui/textarea";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LuFileCode, LuLoader, LuTrash2 } from "react-icons/lu";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useChangesStore } from "renderer/stores/changes";
-import type { ChangeCategory, ChangedFile } from "shared/changes-types";
 import {
-	getStatusColor,
-	getStatusIndicator,
-} from "../../../shared/file-utils";
+	annotationMatchesFile,
+	type DiffAnnotationSide,
+	useDiffAnnotationsStore,
+} from "renderer/stores/diff-annotations";
+import type { ChangeCategory, ChangedFile } from "shared/changes-types";
+import { getStatusColor, getStatusIndicator } from "../../../shared/file-utils";
 import { createFileKey, useScrollContext } from "../../context";
 import { DiffViewer } from "../DiffViewer";
 import { LightDiffViewer } from "../LightDiffViewer";
@@ -84,6 +96,31 @@ export function FileDiffSection({
 	const [isCopied, setIsCopied] = useState(false);
 	const [hasBeenVisible, setHasBeenVisible] = useState(false);
 	const [loadHiddenDiff, setLoadHiddenDiff] = useState(false);
+	const [annotationsOpen, setAnnotationsOpen] = useState(false);
+	const [annotationLine, setAnnotationLine] = useState("1");
+	const [annotationSide, setAnnotationSide] =
+		useState<DiffAnnotationSide>("modified");
+	const [annotationBody, setAnnotationBody] = useState("");
+	const allAnnotations = useDiffAnnotationsStore((state) => state.annotations);
+	const annotations = useMemo(
+		() =>
+			allAnnotations.filter((annotation) =>
+				annotationMatchesFile(annotation, {
+					worktreePath,
+					filePath: file.path,
+					category,
+					commitHash,
+				}),
+			),
+		[allAnnotations, worktreePath, file.path, category, commitHash],
+	);
+	const addAnnotation = useDiffAnnotationsStore((state) => state.addAnnotation);
+	const setAnnotationResolved = useDiffAnnotationsStore(
+		(state) => state.setResolved,
+	);
+	const removeAnnotation = useDiffAnnotationsStore(
+		(state) => state.removeAnnotation,
+	);
 
 	const { isEditing, toggleEdit, handleSave } = useFileDiffEdit({
 		category,
@@ -218,6 +255,25 @@ export function FileDiffSection({
 	const showStats = file.additions > 0 || file.deletions > 0;
 
 	const shouldRenderEditor = hasBeenVisible && diffData;
+	const parsedAnnotationLine = Number.parseInt(annotationLine, 10);
+	const canAddAnnotation =
+		Number.isInteger(parsedAnnotationLine) &&
+		parsedAnnotationLine > 0 &&
+		annotationBody.trim().length > 0;
+
+	const handleAddAnnotation = () => {
+		if (!canAddAnnotation) return;
+		addAnnotation({
+			worktreePath,
+			filePath: file.path,
+			category,
+			commitHash,
+			side: annotationSide,
+			line: parsedAnnotationLine,
+			body: annotationBody,
+		});
+		setAnnotationBody("");
+	};
 
 	return (
 		<div
@@ -240,11 +296,108 @@ export function FileDiffSection({
 					isCopied={isCopied}
 					isEditing={isEditing}
 					onToggleEdit={toggleEdit}
+					annotationCount={annotations.filter((note) => !note.resolved).length}
+					onToggleAnnotations={() => setAnnotationsOpen((open) => !open)}
+					annotationsOpen={annotationsOpen}
 					onStage={onStage}
 					onUnstage={onUnstage}
 					onDiscard={onDiscard}
 					isActioning={isActioning}
 				/>
+
+				{annotationsOpen && (
+					<div className="space-y-3 border-b bg-violet-500/[0.04] p-3">
+						<div className="grid gap-2 sm:grid-cols-[110px_90px_1fr_auto] sm:items-end">
+							<div className="space-y-1">
+								<span className="text-xs text-muted-foreground">Side</span>
+								<Select
+									value={annotationSide}
+									onValueChange={(value) =>
+										setAnnotationSide(value as DiffAnnotationSide)
+									}
+								>
+									<SelectTrigger className="h-8">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="modified">New</SelectItem>
+										<SelectItem value="original">Original</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
+							<div className="space-y-1">
+								<label
+									htmlFor={`annotation-line-${fileKey}`}
+									className="text-xs text-muted-foreground"
+								>
+									Line
+								</label>
+								<Input
+									id={`annotation-line-${fileKey}`}
+									type="number"
+									min={1}
+									className="h-8"
+									value={annotationLine}
+									onChange={(event) => setAnnotationLine(event.target.value)}
+								/>
+							</div>
+							<Textarea
+								value={annotationBody}
+								onChange={(event) => setAnnotationBody(event.target.value)}
+								placeholder="Describe what the agent should change..."
+								rows={2}
+								maxLength={2000}
+								className="min-h-8 resize-y"
+							/>
+							<Button
+								size="sm"
+								disabled={!canAddAnnotation}
+								onClick={handleAddAnnotation}
+							>
+								Add note
+							</Button>
+						</div>
+
+						{annotations.length > 0 && (
+							<div className="space-y-1.5">
+								{annotations.map((annotation) => (
+									<div
+										key={annotation.id}
+										className="flex items-start gap-2 rounded-md border bg-background/80 px-2.5 py-2"
+									>
+										<Checkbox
+											checked={annotation.resolved}
+											onCheckedChange={(checked) =>
+												setAnnotationResolved(annotation.id, checked === true)
+											}
+											aria-label="Mark review note resolved"
+											className="mt-0.5"
+										/>
+										<div className="min-w-0 flex-1">
+											<p className="text-[11px] font-medium text-violet-400">
+												{annotation.side === "modified" ? "New" : "Original"}
+												line {annotation.line}
+											</p>
+											<p
+												className={`text-xs ${annotation.resolved ? "text-muted-foreground line-through" : "text-foreground"}`}
+											>
+												{annotation.body}
+											</p>
+										</div>
+										<button
+											type="button"
+											onClick={() => removeAnnotation(annotation.id)}
+											className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+											aria-label="Delete review note"
+										>
+											<LuTrash2 className="size-3.5" />
+										</button>
+									</div>
+								))}
+							</div>
+						)}
+					</div>
+				)}
 
 				<CollapsibleContent>
 					{isHiddenByDefault && !loadHiddenDiff ? (

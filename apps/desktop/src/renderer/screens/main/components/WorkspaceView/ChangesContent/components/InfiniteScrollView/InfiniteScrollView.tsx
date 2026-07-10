@@ -1,5 +1,11 @@
+import { toast } from "@superset/ui/sonner";
 import { useCallback, useMemo, useState } from "react";
 import { useChangesStore } from "renderer/stores/changes";
+import {
+	buildDiffReviewPrompt,
+	getActiveDiffAnnotations,
+	useDiffAnnotationsStore,
+} from "renderer/stores/diff-annotations";
 import type { GitChangesStatus } from "shared/changes-types";
 import { useScrollContext } from "../../context";
 import { sortFiles } from "../../utils";
@@ -33,6 +39,21 @@ export function InfiniteScrollView({
 		toggleSection: toggleCategory,
 	} = useChangesStore();
 	const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+	const allAnnotations = useDiffAnnotationsStore((state) => state.annotations);
+	const activeAnnotations = useMemo(
+		() => getActiveDiffAnnotations(worktreePath, status, allAnnotations),
+		[allAnnotations, status, worktreePath],
+	);
+	const annotationCount = activeAnnotations.filter(
+		(annotation) => !annotation.resolved,
+	).length;
+	const handleCopyAnnotations = useCallback(() => {
+		const prompt = buildDiffReviewPrompt(worktreePath, activeAnnotations);
+		if (!prompt) return;
+		void navigator.clipboard.writeText(prompt).then(() => {
+			toast.success("AI diff review copied");
+		});
+	}, [activeAnnotations, worktreePath]);
 
 	const { stageFileMutation, unstageFileMutation, handleDiscard, isActioning } =
 		useFileMutations({ worktreePath, baseBranch });
@@ -159,6 +180,8 @@ export function InfiniteScrollView({
 				onNavigateToSection={navigateToSection}
 				isFirstFile={focusedIndex <= 0}
 				isLastFile={focusedIndex >= flatFileList.length - 1}
+				annotationCount={annotationCount}
+				onCopyAnnotations={handleCopyAnnotations}
 			/>
 
 			{focusMode ? (

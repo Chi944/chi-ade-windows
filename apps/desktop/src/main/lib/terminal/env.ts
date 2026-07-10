@@ -8,7 +8,6 @@ import { env } from "shared/env.shared";
 import { getAgentCodexHome } from "../agent-home";
 import { BIN_DIR } from "../agent-setup/paths";
 import { getShellEnv } from "../agent-setup/shell-wrappers";
-import { syncSharedCodexAuth } from "./codex-auth";
 
 const MACOS_SYSTEM_CERT_FILE = "/etc/ssl/cert.pem";
 let cachedUtf8Locale: string | null = null;
@@ -306,6 +305,7 @@ const ALLOWED_ENV_VARS = new Set([
 	// for codex agents; it must survive the terminal-host's buildSafeEnv re-filter
 	// to reach the spawned CLI's environment.
 	"CODEX_HOME",
+	"CLAUDE_CONFIG_DIR",
 
 	// Provider API key that buildTerminalEnv injects from the encrypted key store
 	// (see provider-keys.ts). Like CODEX_HOME, it must survive the terminal-host's
@@ -432,6 +432,7 @@ let openRouterKeyResolver: (() => string | null) | null = null;
 interface ProviderEnvironmentContext {
 	runtime?: AgentRuntime | null;
 	workspaceId: string;
+	paneId: string;
 }
 
 let providerEnvironmentResolver:
@@ -519,32 +520,11 @@ export function buildTerminalEnv(params: {
 		if (
 			normalizedKey === "GOOGLE_API_KEY" ||
 			normalizedKey === "OPENROUTER_API_KEY" ||
-			normalizedKey === "HF_TOKEN"
+			normalizedKey === "HF_TOKEN" ||
+			normalizedKey === "CODEX_HOME" ||
+			normalizedKey === "CLAUDE_CONFIG_DIR"
 		) {
 			delete terminalEnv[key];
-		}
-	}
-
-	// Inject the stored OpenRouter key so the OpenRouter-routed runtimes
-	// (kimi/minimax/glm) authenticate without depending on the user's shell rc.
-	// No key stored -> leave it unset so any shell rc fallback still applies.
-	if (providerEnvironmentResolver) {
-		try {
-			Object.assign(
-				terminalEnv,
-				providerEnvironmentResolver({ runtime, workspaceId }),
-			);
-		} catch {
-			// Never block terminal creation on key/config retrieval.
-		}
-	} else if (openRouterKeyResolver) {
-		try {
-			const openRouterKey = openRouterKeyResolver();
-			if (openRouterKey) {
-				terminalEnv.OPENROUTER_API_KEY = openRouterKey;
-			}
-		} catch {
-			// Never block terminal creation on key retrieval.
 		}
 	}
 
@@ -561,7 +541,28 @@ export function buildTerminalEnv(params: {
 		// Custom Hugging Face and Ollama providers do not need OpenAI account
 		// credentials. Their separate homes also prevent stale subscription auth
 		// from an older installation reaching those model processes.
-		if (runtime === "codex") syncSharedCodexAuth(codexHome);
+	}
+
+	// Inject provider credentials and the user-selected subscription account
+	// only after setting fallback runtime homes, so a selected profile can
+	// override CODEX_HOME/CLAUDE_CONFIG_DIR for new sessions. Provider CLIs own
+	// and refresh their credentials; ADE never reads or copies token files.
+	if (providerEnvironmentResolver) {
+		// Profile integrity failures must fail closed. Silently continuing here can
+		// switch a pane from its pinned account to a provider's global account.
+		Object.assign(
+			terminalEnv,
+			providerEnvironmentResolver({ runtime, workspaceId, paneId }),
+		);
+	} else if (openRouterKeyResolver) {
+		try {
+			const openRouterKey = openRouterKeyResolver();
+			if (openRouterKey) {
+				terminalEnv.OPENROUTER_API_KEY = openRouterKey;
+			}
+		} catch {
+			// Never block terminal creation on key retrieval.
+		}
 	}
 
 	// Electron child processes can't access macOS Keychain for TLS cert verification,

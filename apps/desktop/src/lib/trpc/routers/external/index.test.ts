@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 const showItemInFolder = mock(() => {});
 const openPath = mock(async () => "");
 
-mock.module("electron", () => ({
+mock.module("./electron-api", () => ({
 	clipboard: { writeText: mock(() => {}) },
 	shell: {
 		openExternal: mock(async () => {}),

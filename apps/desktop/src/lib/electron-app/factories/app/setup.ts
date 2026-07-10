@@ -70,7 +70,13 @@ PLATFORM.IS_WINDOWS &&
 
 app.commandLine.appendSwitch("force-color-profile", "srgb");
 
-// Enable CDP for browser DevTools and desktop automation MCP
-const cdpPort = String(process.env.DESKTOP_AUTOMATION_PORT || 41729);
-app.commandLine.appendSwitch("remote-debugging-port", cdpPort);
-app.commandLine.appendSwitch("remote-allow-origins", "*");
+// CDP is unauthenticated. Keep it out of normal packaged builds and require an
+// explicit local automation opt-in when testing a release artifact.
+const desktopAutomationEnabled =
+	env.NODE_ENV === "development" ||
+	process.env.ADE_ENABLE_DESKTOP_AUTOMATION === "1";
+if (desktopAutomationEnabled) {
+	const cdpPort = String(process.env.DESKTOP_AUTOMATION_PORT || 41729);
+	app.commandLine.appendSwitch("remote-debugging-port", cdpPort);
+	app.commandLine.appendSwitch("remote-allow-origins", "*");
+}

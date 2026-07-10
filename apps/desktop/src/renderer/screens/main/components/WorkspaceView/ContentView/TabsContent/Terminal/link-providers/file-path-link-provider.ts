@@ -238,6 +238,15 @@ export class FilePathLinkProvider implements ILinkProvider {
 			return true;
 		}
 
+		// VS Code's parser can return the second slash onward, for example
+		// `/example.com/path` from `https://example.com/path`.
+		if (
+			pathText.startsWith("/") &&
+			/(?:https?|ftp):\/$/i.test(combinedText.slice(0, linkStart))
+		) {
+			return true;
+		}
+
 		// Check if this is part of a URL (e.g., the path portion after ://)
 		if (
 			linkStart > 0 &&

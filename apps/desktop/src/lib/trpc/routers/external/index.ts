@@ -1,15 +1,11 @@
-import {
-	EXTERNAL_APPS,
-	NON_EDITOR_APPS,
-	projects,
-	settings,
-} from "@superset/local-db";
+import { projects, settings } from "@superset/local-db";
+import { EXTERNAL_APPS, NON_EDITOR_APPS } from "@superset/local-db/schema/zod";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { clipboard, shell } from "electron";
 import { localDb } from "main/lib/local-db";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
+import { clipboard, shell } from "./electron-api";
 import {
 	type ExternalApp,
 	getAppCommand,

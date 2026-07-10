@@ -1,7 +1,7 @@
 import {
 	AGENT_LABELS,
-	AGENT_TYPES,
-	type AgentType,
+	TERMINAL_AGENT_TYPES,
+	type TerminalAgentType,
 } from "@superset/shared/agent-command";
 import { Button } from "@superset/ui/button";
 import {
@@ -52,10 +52,11 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 	const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
 		() => localStorage.getItem("lastOpenedInProjectId"),
 	);
-	const [selectedAgent, setSelectedAgent] = useState<AgentType>(() => {
+	const [selectedAgent, setSelectedAgent] = useState<TerminalAgentType>(() => {
 		const stored = localStorage.getItem("lastSelectedAgent");
-		return stored && (AGENT_TYPES as readonly string[]).includes(stored)
-			? (stored as AgentType)
+		return stored &&
+			(TERMINAL_AGENT_TYPES as readonly string[]).includes(stored)
+			? (stored as TerminalAgentType)
 			: "claude";
 	});
 
@@ -105,7 +106,9 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 			});
 
 			if (result.wasExisting) {
-				const { tabId, paneId } = addTab(result.workspace.id);
+				const { tabId, paneId } = addTab(result.workspace.id, {
+					agentRuntime: selectedAgent,
+				});
 				setTabAutoTitle(tabId, "Agent");
 				try {
 					await launchCommandInPane({
@@ -113,6 +116,7 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 						tabId,
 						workspaceId: result.workspace.id,
 						command,
+						runtime: selectedAgent,
 						createOrAttach: (input) =>
 							terminalCreateOrAttach.mutateAsync(input),
 						write: (input) => terminalWrite.mutateAsync(input),
@@ -136,6 +140,7 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 					initialCommands: pending?.initialCommands ?? null,
 					defaultPresets: pending?.defaultPresets,
 					agentCommand: command,
+					agentRuntime: selectedAgent,
 				});
 			}
 
@@ -225,7 +230,7 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 			</div>
 			<Select
 				value={selectedAgent}
-				onValueChange={(value: AgentType) => {
+				onValueChange={(value: TerminalAgentType) => {
 					setSelectedAgent(value);
 					localStorage.setItem("lastSelectedAgent", value);
 				}}
@@ -234,7 +239,7 @@ export function OpenInWorkspace({ task }: OpenInWorkspaceProps) {
 					<SelectValue placeholder="Select agent" />
 				</SelectTrigger>
 				<SelectContent>
-					{AGENT_TYPES.map((agent) => {
+					{TERMINAL_AGENT_TYPES.map((agent) => {
 						const icon = getPresetIcon(agent, isDark);
 						return (
 							<SelectItem key={agent} value={agent}>

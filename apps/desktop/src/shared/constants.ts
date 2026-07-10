@@ -8,9 +8,7 @@ export const PLATFORM = {
 };
 
 const workspace = getWorkspaceName();
-export const SUPERSET_DIR_NAME = workspace
-	? `.ade-${workspace}`
-	: ".ade";
+export const SUPERSET_DIR_NAME = workspace ? `.ade-${workspace}` : ".ade";
 export const PROTOCOL_SCHEME = workspace
 	? `ade-${workspace}`
 	: PROTOCOL_SCHEMES.PROD;
@@ -44,11 +42,13 @@ export const DEFAULT_FILE_OPEN_MODE = "split-pane" as const;
 export const DEFAULT_AUTO_APPLY_DEFAULT_PRESET = true;
 export const DEFAULT_SHOW_PRESETS_BAR = true;
 export const DEFAULT_USE_COMPACT_TERMINAL_ADD_BUTTON = true;
-export const DEFAULT_TELEMETRY_ENABLED = true;
+export const DEFAULT_TELEMETRY_ENABLED = false;
 export const DEFAULT_SHOW_RESOURCE_MONITOR = false;
 export const DEFAULT_OPEN_LINKS_IN_APP = false;
 
 // External links (documentation, help resources, etc.)
 export const EXTERNAL_LINKS = {
-	SETUP_TEARDOWN_SCRIPTS: `${process.env.NEXT_PUBLIC_DOCS_URL}/setup-teardown-scripts`,
+	SETUP_TEARDOWN_SCRIPTS:
+		process.env.NEXT_PUBLIC_DOCS_URL ||
+		"https://github.com/Chi944/chi-ade-windows#workspace-recipes",
 } as const;

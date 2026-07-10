@@ -13,6 +13,7 @@ import {
 import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { useParams } from "@tanstack/react-router";
+import { SquareTerminalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HiOutlinePlus } from "react-icons/hi2";
 import {
@@ -21,10 +22,12 @@ import {
 } from "renderer/assets/app-icons/preset-icons";
 import { BinaryInstallDialog } from "renderer/components/BinaryInstallDialog/BinaryInstallDialog";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { usePresets } from "renderer/react-query/presets";
 import { useProviderKeys } from "renderer/stores/model-bar/useProviderKeys";
 import { useProviderProfiles } from "renderer/stores/model-bar/useProviderProfiles";
 import { useRuntimeAvailability } from "renderer/stores/model-bar/useRuntimeAvailability";
 import { useAgentSession } from "renderer/stores/tabs/useAgentSession";
+import { useTabsWithPresets } from "renderer/stores/tabs/useTabsWithPresets";
 import { MODEL_BAR_MODELS, type ModelDescriptor } from "./models";
 import { ProviderIcon } from "./ProviderIcon";
 import {
@@ -42,6 +45,8 @@ export function ModelBar() {
 	const { workspaceId } = useParams({ strict: false });
 	const isDark = useIsDarkTheme();
 	const { spawnAgentSession } = useAgentSession();
+	const { openPreset } = useTabsWithPresets();
+	const { presets } = usePresets();
 	const { openrouterConfigured, huggingfaceConfigured } = useProviderKeys();
 	const profiles = useProviderProfiles((state) => state.profiles);
 	const { isAvailable, recheck, isFetching } = useRuntimeAvailability();
@@ -68,6 +73,7 @@ export function ModelBar() {
 
 	const worktreePath = workspace?.worktreePath ?? null;
 	const ready = !!worktreePath;
+	const customAgents = presets.filter((preset) => preset.pinnedToBar);
 
 	const spawn = (
 		model: ModelDescriptor,
@@ -123,6 +129,11 @@ export function ModelBar() {
 			],
 			name: `Connect ${model.label}`,
 		});
+	};
+
+	const launchPreset = (preset: (typeof presets)[number]) => {
+		if (!ready) return;
+		openPreset(workspaceId, preset, { target: "new-tab" });
 	};
 
 	const handleModelClick = async (model: ModelDescriptor) => {
@@ -248,6 +259,27 @@ export function ModelBar() {
 						</Tooltip>
 					);
 				})}
+				{customAgents.map((preset) => (
+					<Tooltip key={preset.id}>
+						<TooltipTrigger asChild>
+							<button
+								type="button"
+								aria-label={`New session — ${preset.name}`}
+								disabled={!ready}
+								onClick={() => launchPreset(preset)}
+								className="group flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+							>
+								<SquareTerminalIcon className="h-4 w-4" />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" showArrow={false}>
+							{preset.name}
+							<code className="block max-w-72 truncate text-muted-foreground">
+								{preset.commands.join(" · ")}
+							</code>
+						</TooltipContent>
+					</Tooltip>
+				))}
 			</div>
 
 			<div className="mx-1 h-4 w-px bg-border" />
@@ -280,6 +312,7 @@ export function ModelBar() {
 				}}
 				onLaunchModel={launchProviderModel}
 				onConnectSubscription={connectSubscription}
+				onLaunchPreset={launchPreset}
 			/>
 
 			<BinaryInstallDialog

@@ -15,12 +15,13 @@ class FakeStdout extends EventEmitter {}
 
 class FakeStdin extends EventEmitter {
 	readonly writes: Buffer[] = [];
+	readonly writeResults: boolean[] = [];
 
 	write(chunk: Buffer | string): boolean {
 		this.writes.push(
 			Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"),
 		);
-		return true;
+		return this.writeResults.shift() ?? true;
 	}
 }
 
@@ -89,5 +90,87 @@ describe("Terminal Host Session shell args", () => {
 		expect(spawnPayload?.args?.[1]?.endsWith(path.join("bash", "rcfile"))).toBe(
 			true,
 		);
+	});
+
+	it("does not resend an accepted frame after Windows pipe backpressure", () => {
+		const session = new Session({
+			sessionId: "session-backpressure",
+			workspaceId: "workspace-1",
+			paneId: "pane-1",
+			tabId: "tab-1",
+			cols: 80,
+			rows: 24,
+			cwd: "/tmp",
+			shell: "/bin/bash",
+			spawnProcess: () => fakeChildProcess as unknown as ChildProcess,
+		});
+
+		session.spawn({
+			cwd: "/tmp",
+			cols: 80,
+			rows: 24,
+			env: { PATH: "/usr/bin" },
+		});
+
+		// Node streams accept the chunk even when write() returns false.
+		fakeChildProcess.stdin.writeResults.push(false);
+		fakeChildProcess.stdout.emit(
+			"data",
+			createFrameHeader(PtySubprocessIpcType.Ready, 0),
+		);
+
+		expect(fakeChildProcess.stdin.writes).toHaveLength(1);
+		fakeChildProcess.stdin.emit("drain");
+		expect(fakeChildProcess.stdin.writes).toHaveLength(1);
+
+		const decoder = new PtySubprocessFrameDecoder();
+		const frames = decoder.push(fakeChildProcess.stdin.writes[0]);
+		expect(frames).toHaveLength(1);
+		expect(frames[0]?.type).toBe(PtySubprocessIpcType.Spawn);
+	});
+
+	it("queues new frames until the backpressured Windows pipe drains", () => {
+		const session = new Session({
+			sessionId: "session-backpressure-queue",
+			workspaceId: "workspace-1",
+			paneId: "pane-1",
+			tabId: "tab-1",
+			cols: 80,
+			rows: 24,
+			cwd: "/tmp",
+			shell: "/bin/bash",
+			spawnProcess: () => fakeChildProcess as unknown as ChildProcess,
+		});
+
+		session.spawn({
+			cwd: "/tmp",
+			cols: 80,
+			rows: 24,
+			env: { PATH: "/usr/bin" },
+		});
+
+		fakeChildProcess.stdin.writeResults.push(false);
+		fakeChildProcess.stdout.emit(
+			"data",
+			createFrameHeader(PtySubprocessIpcType.Ready, 0),
+		);
+		session.write("queued input");
+
+		// The stream has already accepted the spawn frame. New input must stay in
+		// ADE's bounded queue until the stream announces capacity again.
+		expect(fakeChildProcess.stdin.writes).toHaveLength(1);
+
+		fakeChildProcess.stdin.emit("drain");
+		expect(fakeChildProcess.stdin.writes).toHaveLength(2);
+
+		const decoder = new PtySubprocessFrameDecoder();
+		const frames = fakeChildProcess.stdin.writes.flatMap((chunk) =>
+			decoder.push(chunk),
+		);
+		expect(frames.map((frame) => frame.type)).toEqual([
+			PtySubprocessIpcType.Spawn,
+			PtySubprocessIpcType.Write,
+		]);
+		expect(frames[1]?.payload.toString("utf8")).toBe("queued input");
 	});
 });

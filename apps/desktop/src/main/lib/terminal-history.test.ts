@@ -1,9 +1,15 @@
 import { describe, expect, it, mock } from "bun:test";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { SessionMetadata } from "./terminal-history";
 
 mock.module("shared/constants", () => ({ SUPERSET_DIR_NAME: ".ade-test" }));
 
-const { mergeSessionMetadata } = await import("./terminal-history");
+const {
+	cleanupTerminalHistoryForWorkspace,
+	getTerminalHistoryRootDir,
+	mergeSessionMetadata,
+} = await import("./terminal-history");
 
 const FIRST_ID = "123e4567-e89b-12d3-a456-426614174000";
 const SECOND_ID = "223e4567-e89b-12d3-a456-426614174000";
@@ -17,6 +23,22 @@ const BASE_METADATA: SessionMetadata = {
 };
 
 describe("mergeSessionMetadata", () => {
+	it("purges every retained pane history after a workspace commit", async () => {
+		const workspaceId = `workspace-purge-${process.pid}-${Date.now()}`;
+		const workspaceDir = join(getTerminalHistoryRootDir(), workspaceId);
+		const paneDir = join(workspaceDir, "closed-pane");
+		mkdirSync(paneDir, { recursive: true });
+		writeFileSync(join(paneDir, "scrollback.bin"), "retained history");
+
+		try {
+			expect(await cleanupTerminalHistoryForWorkspace(workspaceId)).toBe(true);
+			expect(existsSync(workspaceDir)).toBe(false);
+			expect(await cleanupTerminalHistoryForWorkspace(workspaceId)).toBe(false);
+		} finally {
+			rmSync(workspaceDir, { recursive: true, force: true });
+		}
+	});
+
 	it("never lets PTY fallback replace an existing valid session id", () => {
 		const merged = mergeSessionMetadata(
 			{

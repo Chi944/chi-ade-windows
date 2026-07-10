@@ -106,10 +106,20 @@ export const createTerminalRouter = () => {
 					.from(workspaces)
 					.where(eq(workspaces.id, workspaceId))
 					.get();
-				const workspacePath = workspace
-					? (getWorkspacePath(workspace) ?? undefined)
-					: undefined;
-				if (workspace?.type === "worktree") {
+				if (!workspace) {
+					throw new TRPCError({
+						code: "NOT_FOUND",
+						message: "Workspace not found",
+					});
+				}
+				if (workspace.deletingAt) {
+					throw new TRPCError({
+						code: "PRECONDITION_FAILED",
+						message: "Workspace is being removed",
+					});
+				}
+				const workspacePath = getWorkspacePath(workspace) ?? undefined;
+				if (workspace.type === "worktree") {
 					assertWorkspaceUsable(workspaceId, workspacePath);
 				}
 				const cwd = resolveCwd(cwdOverride, workspacePath);
@@ -126,18 +136,16 @@ export const createTerminalRouter = () => {
 					});
 				}
 
-				const project = workspace
-					? localDb
-							.select()
-							.from(projects)
-							.where(eq(projects.id, workspace.projectId))
-							.get()
-					: undefined;
+				const project = localDb
+					.select()
+					.from(projects)
+					.where(eq(projects.id, workspace.projectId))
+					.get();
 				const resolvedThemeType = resolveTerminalThemeType({
 					requestedThemeType: themeType,
 					persistedThemeState: appState.data.themeState,
 				});
-				const runtime = runtimeOverride ?? workspace?.runtime ?? null;
+				const runtime = runtimeOverride ?? workspace.runtime ?? null;
 
 				// Codex reads its memory bridge from CODEX_HOME/.codex/AGENTS.md.
 				// Regenerate it from the canonical memory files before each spawn so a
@@ -160,7 +168,7 @@ export const createTerminalRouter = () => {
 						paneId,
 						tabId,
 						workspaceId,
-						workspaceName: workspace?.name,
+						workspaceName: workspace.name,
 						workspacePath,
 						rootPath: project?.mainRepoPath,
 						cwd,

@@ -116,6 +116,7 @@ export interface TerminalWorkspaceOperations {
 	/** Kill all sessions for a workspace */
 	killByWorkspaceId(
 		workspaceId: string,
+		options: { deleteHistory: boolean },
 	): Promise<{ killed: number; failed: number }>;
 
 	/** Get count of alive sessions for a workspace */

@@ -9,7 +9,7 @@
 	},
 	"content_scripts": [
 		{
-			"matches": ["<all_urls>"],
+			"matches": ["*://localhost/*", "*://*.localhost/*", "*://127.0.0.1/*"],
 			"js": ["content.js"],
 			"run_at": "document_idle"
 		}

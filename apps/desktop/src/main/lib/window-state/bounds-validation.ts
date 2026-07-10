@@ -1,5 +1,5 @@
 import type { Rectangle } from "electron";
-import { screen } from "electron";
+import { screen } from "./electron-api";
 import type { WindowState } from "./window-state";
 
 const MIN_VISIBLE_OVERLAP = 50;

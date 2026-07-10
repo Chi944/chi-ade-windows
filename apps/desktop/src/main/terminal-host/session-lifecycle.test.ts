@@ -26,9 +26,12 @@ import {
 } from "../lib/terminal-host/types";
 
 // Test uses a dedicated workspace name for isolation
-const SUPERSET_DIR_NAME = ".superset-test";
+const SUPERSET_DIR_NAME = ".ade-test";
 const SUPERSET_HOME_DIR = join(homedir(), SUPERSET_DIR_NAME);
-const SOCKET_PATH = join(SUPERSET_HOME_DIR, "terminal-host.sock");
+const SOCKET_PATH =
+	process.platform === "win32"
+		? `\\\\.\\pipe\\${SUPERSET_DIR_NAME}-terminal-host`
+		: join(SUPERSET_HOME_DIR, "terminal-host.sock");
 const TOKEN_PATH = join(SUPERSET_HOME_DIR, "terminal-host.token");
 const PID_PATH = join(SUPERSET_HOME_DIR, "terminal-host.pid");
 

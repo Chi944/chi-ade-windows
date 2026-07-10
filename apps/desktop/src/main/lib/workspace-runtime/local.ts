@@ -99,8 +99,11 @@ class LocalTerminalRuntime implements TerminalRuntime {
 	// Workspace Operations (delegate to backend)
 	// ===========================================================================
 
-	killByWorkspaceId: TerminalRuntime["killByWorkspaceId"] = (workspaceId) => {
-		return this.backend.killByWorkspaceId(workspaceId);
+	killByWorkspaceId: TerminalRuntime["killByWorkspaceId"] = (
+		workspaceId,
+		options,
+	) => {
+		return this.backend.killByWorkspaceId(workspaceId, options);
 	};
 
 	getSessionCountByWorkspaceId: TerminalRuntime["getSessionCountByWorkspaceId"] =

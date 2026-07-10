@@ -34,7 +34,11 @@ export function useAgentSession() {
 			const { id, runtime, worktreePath } = workspace;
 			const cwd = worktreePath || undefined;
 
-			if (!runtime) {
+			if (
+				!runtime ||
+				((runtime === "huggingface" || runtime === "ollama") &&
+					!options?.commands)
+			) {
 				// No runtime configured — open a plain shell in the worktree.
 				return addTab(id, { initialCwd: cwd });
 			}

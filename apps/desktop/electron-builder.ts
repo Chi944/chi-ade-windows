@@ -4,8 +4,9 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import type { Configuration } from "electron-builder";
+import { join, resolve } from "node:path";
+import type { AfterPackContext, Configuration } from "electron-builder";
+import rcedit from "rcedit";
 import pkg from "./package.json";
 
 const currentYear = new Date().getFullYear();
@@ -31,8 +32,14 @@ const hasWindowsSigningConfig = Boolean(
 		process.env.CSC_NAME ||
 		process.env.AZURE_TENANT_ID,
 );
-const shouldSignAndEditWindowsExecutable =
-	hasWindowsSigningConfig || process.env.ADE_WIN_EDIT_EXECUTABLE === "true";
+// Signed builds use electron-builder's normal edit-then-sign path. Unsigned
+// native Windows builds use standalone rcedit in afterPack so standard Windows
+// accounts do not need symlink rights for electron-builder's mixed-platform
+// signing archive. Cross-host editing remains an explicit Wine-powered opt-in.
+const shouldEditUnsignedWindowsExecutable =
+	!hasWindowsSigningConfig &&
+	(process.platform === "win32" ||
+		process.env.ADE_WIN_EDIT_EXECUTABLE === "true");
 const macIconPath = join(pkg.resources, "build/icons/icon.icns");
 const linuxIconPath = join(pkg.resources, "build/icons");
 const winIconPath = join(pkg.resources, "build/icons/icon.ico");
@@ -45,7 +52,43 @@ const nodePtyFiles =
 				"prebuilds/win32-x64/**/*",
 				"!prebuilds/win32-x64/**/*.pdb",
 			]
-		: ["**/*"];
+		: process.platform === "darwin"
+			? [
+					"package.json",
+					"LICENSE",
+					"lib/**/*",
+					`prebuilds/darwin-${process.arch}/**/*`,
+				]
+			: ["**/*"];
+const betterSqliteSource = ".cache/electron-native/node_modules/better-sqlite3";
+
+async function editUnsignedWindowsExecutable(context: AfterPackContext) {
+	if (
+		context.electronPlatformName !== "win32" ||
+		!shouldEditUnsignedWindowsExecutable
+	) {
+		return;
+	}
+
+	const appInfo = context.packager.appInfo;
+	const iconPath = await context.packager.getIconPath();
+	const versionStrings = {
+		FileDescription: appInfo.productName,
+		ProductName: appInfo.productName,
+		LegalCopyright: appInfo.copyright,
+		InternalName: appInfo.productFilename,
+		OriginalFilename: "",
+		...(appInfo.companyName ? { CompanyName: appInfo.companyName } : {}),
+	};
+
+	await rcedit(join(context.appOutDir, `${appInfo.productFilename}.exe`), {
+		"version-string": versionStrings,
+		"file-version": appInfo.shortVersion || appInfo.buildVersion,
+		"product-version":
+			appInfo.shortVersionWindows || appInfo.getVersionInWeirdWindowsForm(),
+		...(iconPath ? { icon: resolve(iconPath) } : {}),
+	});
+}
 
 const config: Configuration = {
 	appId: "io.github.chi944.ade",
@@ -58,6 +101,7 @@ const config: Configuration = {
 	// Generate update manifests for all channels (latest.yml, canary.yml, etc.)
 	// This enables proper channel-based auto-updates following electron-builder conventions
 	generateUpdatesFilesForAllChannels: true,
+	afterPack: editUnsignedWindowsExecutable,
 
 	// Publish target for update manifests (latest-mac.yml, etc.). The release
 	// workflow uploads artifacts itself (--publish never), but this makes the
@@ -94,6 +138,12 @@ const config: Configuration = {
 
 	// Extra resources placed outside asar archive (accessible via process.resourcesPath)
 	extraResources: [
+		// Chrome extensions must live outside app.asar for Electron to load them.
+		{
+			from: join(pkg.resources, "browser-extension"),
+			to: "browser-extension",
+			filter: ["**/*"],
+		},
 		// Database migrations - must be outside asar for drizzle-orm to read
 		{
 			from: "dist/resources/migrations",
@@ -118,14 +168,14 @@ const config: Configuration = {
 			from: pkg.resources,
 			to: "resources",
 			// Icons and entitlements are build inputs, not runtime resources.
-			filter: ["**/*", "!build/**/*"],
+			filter: ["**/*", "!build/**/*", "!browser-extension/**/*"],
 		},
 		// Native modules that can't be bundled by Vite.
 		// bun creates symlinks for direct deps in workspace node_modules.
 		// The copy:native-modules script replaces symlinks with real files
 		// before building (required for Bun 1.3+ isolated installs).
 		{
-			from: "node_modules/better-sqlite3",
+			from: betterSqliteSource,
 			to: "node_modules/better-sqlite3",
 			filter: ["**/*"],
 		},
@@ -192,10 +242,10 @@ const config: Configuration = {
 	mac: {
 		...(existsSync(macIconPath) ? { icon: macIconPath } : {}),
 		category: "public.app-category.utilities",
+		artifactName: `${productName}-${pkg.version}-\${arch}.\${ext}`,
 		target: [
 			{
 				target: "default",
-				arch: ["arm64"],
 			},
 		],
 		// Hardened runtime is required for Apple notarization. The entitlements
@@ -245,7 +295,7 @@ const config: Configuration = {
 	// Windows
 	win: {
 		...(existsSync(winIconPath) ? { icon: winIconPath } : {}),
-		signAndEditExecutable: shouldSignAndEditWindowsExecutable,
+		signAndEditExecutable: hasWindowsSigningConfig,
 		target: [
 			{
 				target: "nsis",

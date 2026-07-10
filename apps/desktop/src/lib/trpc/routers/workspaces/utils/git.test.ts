@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	realpathSync,
@@ -301,7 +302,7 @@ describe("createWorktree hook tolerance", () => {
 			hookPath,
 			"#!/bin/sh\necho 'post-checkout failed' >&2\nexit 1\n",
 		);
-		execSync(`chmod +x "${hookPath}"`);
+		chmodSync(hookPath, 0o755);
 
 		const worktreePath = join(TEST_DIR, "worktree-hook-failure-wt");
 		await createWorktree(

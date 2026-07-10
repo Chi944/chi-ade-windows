@@ -9,6 +9,7 @@ import {
 	LuChevronRight,
 	LuCopy,
 	LuExternalLink,
+	LuMessageSquarePlus,
 	LuPencil,
 	LuUndo2,
 } from "react-icons/lu";
@@ -29,6 +30,9 @@ interface FileDiffHeaderProps {
 	isCopied: boolean;
 	isEditing?: boolean;
 	onToggleEdit?: () => void;
+	annotationCount?: number;
+	onToggleAnnotations?: () => void;
+	annotationsOpen?: boolean;
 	onStage?: () => void;
 	onUnstage?: () => void;
 	onDiscard?: () => void;
@@ -50,6 +54,9 @@ export function FileDiffHeader({
 	isCopied,
 	isEditing,
 	onToggleEdit,
+	annotationCount = 0,
+	onToggleAnnotations,
+	annotationsOpen,
 	onStage,
 	onUnstage,
 	onDiscard,
@@ -137,6 +144,32 @@ export function FileDiffHeader({
 					</TooltipTrigger>
 					<TooltipContent side="bottom" showArrow={false}>
 						{isEditing ? "Switch to read-only" : "Edit file"}
+					</TooltipContent>
+				</Tooltip>
+			)}
+
+			{onToggleAnnotations && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<button
+							type="button"
+							onClick={(event) => {
+								event.stopPropagation();
+								onToggleAnnotations();
+							}}
+							className={cn(
+								"flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-xs transition-colors",
+								annotationsOpen || annotationCount > 0
+									? "bg-violet-500/15 text-violet-400"
+									: "text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground",
+							)}
+						>
+							<LuMessageSquarePlus className="size-3.5" />
+							{annotationCount > 0 && <span>{annotationCount}</span>}
+						</button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom" showArrow={false}>
+						Annotate AI diff
 					</TooltipContent>
 				</Tooltip>
 			)}

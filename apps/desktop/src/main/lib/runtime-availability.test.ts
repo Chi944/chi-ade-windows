@@ -1,10 +1,18 @@
 import { describe, expect, it, mock } from "bun:test";
 
 mock.module("@superset/shared/agent-binaries", () => ({
-	CHECKED_BINARIES: ["claude", "codex", "opencode", "git"],
+	CHECKED_BINARIES: [
+		"claude",
+		"codex",
+		"opencode",
+		"gemini",
+		"copilot",
+		"cursor-agent",
+		"git",
+	],
 }));
 mock.module("main/lib/agent-setup/utils", () => ({
-	findRealBinaries: () => [],
+	findRealBinariesAsync: async () => [],
 }));
 
 const { computeRuntimeAvailability, probeBinaryCommand, probeBinaryVersion } =

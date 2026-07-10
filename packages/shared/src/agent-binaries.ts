@@ -6,7 +6,14 @@ import type { AgentType } from "./agent-command";
  * CLI (see AGENT_PRESET_COMMANDS), so availability of those runtimes gates on
  * `claude` being installed.
  */
-export type AgentBinary = "claude" | "codex" | "opencode" | "gemini" | "git";
+export type AgentBinary =
+	| "claude"
+	| "codex"
+	| "opencode"
+	| "gemini"
+	| "copilot"
+	| "cursor-agent"
+	| "git";
 
 /**
  * Maps an agent runtime to the external binary its launch command invokes. Used
@@ -18,10 +25,8 @@ export const RUNTIME_BINARY: Record<AgentType, AgentBinary> = {
 	codex: "codex",
 	gemini: "gemini",
 	opencode: "opencode",
-	// copilot / cursor-agent aren't offered in the pickers yet; map them to their
-	// own binary name so a future availability check is a one-line change.
-	copilot: "codex",
-	"cursor-agent": "codex",
+	copilot: "copilot",
+	"cursor-agent": "cursor-agent",
 	kimi: "claude",
 	minimax: "claude",
 	glm: "claude",
@@ -67,6 +72,18 @@ export const BINARY_INSTALL: Record<AgentBinary, BinaryInstallInfo> = {
 		command: "npm i -g @google/gemini-cli",
 		url: "https://github.com/google-gemini/gemini-cli",
 	},
+	copilot: {
+		label: "GitHub Copilot CLI",
+		command: "npm install -g @github/copilot",
+		url: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
+		note: "Requires Node.js 22 or later; WinGet and Homebrew are also supported.",
+	},
+	"cursor-agent": {
+		label: "Cursor Agent CLI",
+		command: "curl https://cursor.com/install -fsS | bash",
+		url: "https://docs.cursor.com/en/cli/installation",
+		note: "The official Windows route currently uses WSL.",
+	},
 	git: {
 		label: "Git",
 		command: "xcode-select --install",
@@ -75,11 +92,46 @@ export const BINARY_INSTALL: Record<AgentBinary, BinaryInstallInfo> = {
 	},
 };
 
+export function getBinaryInstallInfo(
+	binary: AgentBinary,
+	platform: string = typeof process === "undefined"
+		? "darwin"
+		: process.platform,
+): BinaryInstallInfo {
+	const info = BINARY_INSTALL[binary];
+	if (binary === "cursor-agent" && platform === "win32") {
+		return {
+			...info,
+			command: "Start-Process 'https://docs.cursor.com/en/cli/installation'",
+			note: "Follow Cursor's current Windows instructions. ADE detects a native cursor-agent.cmd when one is installed; the documented fallback uses WSL.",
+		};
+	}
+	if (binary !== "git") return info;
+	if (platform === "win32") {
+		return {
+			...info,
+			command: "winget install --id Git.Git -e --source winget",
+			note: "Restart ADE after Git for Windows finishes installing.",
+		};
+	}
+	if (platform === "linux") {
+		return {
+			...info,
+			command: "sudo apt-get update && sudo apt-get install -y git",
+			note: "Use your distribution's package manager when apt is unavailable.",
+		};
+	}
+	return info;
+}
+
 /** The binaries surfaced by the runtime-availability query. */
 export const CHECKED_BINARIES = [
 	"claude",
 	"codex",
 	"opencode",
+	"gemini",
+	"copilot",
+	"cursor-agent",
 	"git",
 ] as const satisfies readonly AgentBinary[];
 

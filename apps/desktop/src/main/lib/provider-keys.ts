@@ -7,6 +7,24 @@ import {
 import { safeStorage } from "electron";
 import { localDb } from "./local-db";
 
+let subscriptionProfileEnvironmentResolver: (
+	provider: "claude" | "codex",
+	paneId?: string,
+	workspaceId?: string,
+) => Record<string, string> = () => ({});
+
+export function setSubscriptionProfileEnvironmentResolver(
+	resolver:
+		| ((
+				provider: "claude" | "codex",
+				paneId?: string,
+				workspaceId?: string,
+		  ) => Record<string, string>)
+		| null,
+): void {
+	subscriptionProfileEnvironmentResolver = resolver ?? (() => ({}));
+}
+
 /**
  * Local-first, single-user storage for provider API keys.
  *
@@ -87,11 +105,10 @@ export function getProviderKey(provider: ProviderId): string | null {
 	}
 }
 
-/** Presence-only status for every known provider (safe to return to the renderer). */
+/** Decryptability status for every known provider (safe to return to renderer). */
 export function getProviderKeyStatus(): Record<ProviderId, boolean> {
-	const map = readKeyMap();
 	return Object.fromEntries(
-		PROVIDER_IDS.map((id) => [id, Boolean(map[id])]),
+		PROVIDER_IDS.map((id) => [id, Boolean(getProviderKey(id)?.trim())]),
 	) as Record<ProviderId, boolean>;
 }
 
@@ -150,12 +167,25 @@ function getProviderModelProfiles(): Partial<Record<ModelProviderId, string>> {
  */
 export function getProviderRuntimeEnvironment({
 	runtime,
+	paneId,
+	workspaceId,
 }: {
 	runtime?: string | null;
 	workspaceId: string;
+	paneId?: string;
 }): Record<string, string> {
 	const result: Record<string, string> = {};
 	const effectiveRuntime = runtime;
+	if (effectiveRuntime === "claude" || effectiveRuntime === "codex") {
+		Object.assign(
+			result,
+			subscriptionProfileEnvironmentResolver(
+				effectiveRuntime,
+				paneId,
+				workspaceId,
+			),
+		);
+	}
 	if (
 		effectiveRuntime === "kimi" ||
 		effectiveRuntime === "minimax" ||

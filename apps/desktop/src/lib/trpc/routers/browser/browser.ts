@@ -1,5 +1,6 @@
 import { observable } from "@trpc/server/observable";
 import { session } from "electron";
+import type { DesignSelection } from "main/lib/browser/browser-manager";
 import { browserManager } from "main/lib/browser/browser-manager";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
@@ -71,6 +72,25 @@ export const createBrowserRouter = () => {
 					input.code,
 				);
 				return { result };
+			}),
+
+		setDesignMode: publicProcedure
+			.input(z.object({ paneId: z.string(), enabled: z.boolean() }))
+			.mutation(async ({ input }) => {
+				await browserManager.setDesignMode(input.paneId, input.enabled);
+				return { success: true };
+			}),
+
+		designSelection: publicProcedure
+			.input(z.object({ paneId: z.string() }))
+			.subscription(({ input }) => {
+				return observable<DesignSelection>((emit) => {
+					const handler = (selection: DesignSelection) => emit.next(selection);
+					browserManager.on(`design-selection:${input.paneId}`, handler);
+					return () => {
+						browserManager.off(`design-selection:${input.paneId}`, handler);
+					};
+				});
 			}),
 
 		getConsoleLogs: publicProcedure

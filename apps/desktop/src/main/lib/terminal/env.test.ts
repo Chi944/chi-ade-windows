@@ -815,8 +815,12 @@ describe("env", () => {
 			it("strips inherited provider credentials from unrelated terminals", () => {
 				const previousOpenRouterKey = process.env.OPENROUTER_API_KEY;
 				const previousHuggingFaceToken = process.env.HF_TOKEN;
+				const previousCodexHome = process.env.CODEX_HOME;
+				const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 				process.env.OPENROUTER_API_KEY = "inherited-openrouter-secret";
 				process.env.HF_TOKEN = "inherited-huggingface-secret";
+				process.env.CODEX_HOME = "/inherited/codex";
+				process.env.CLAUDE_CONFIG_DIR = "/inherited/claude";
 
 				try {
 					setProviderEnvironmentResolver(() => ({}));
@@ -827,6 +831,8 @@ describe("env", () => {
 
 					expect(result.OPENROUTER_API_KEY).toBeUndefined();
 					expect(result.HF_TOKEN).toBeUndefined();
+					expect(result.CODEX_HOME).toBeUndefined();
+					expect(result.CLAUDE_CONFIG_DIR).toBeUndefined();
 				} finally {
 					if (previousOpenRouterKey === undefined) {
 						delete process.env.OPENROUTER_API_KEY;
@@ -838,7 +844,27 @@ describe("env", () => {
 					} else {
 						process.env.HF_TOKEN = previousHuggingFaceToken;
 					}
+					if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+					else process.env.CODEX_HOME = previousCodexHome;
+					if (previousClaudeConfigDir === undefined) {
+						delete process.env.CLAUDE_CONFIG_DIR;
+					} else {
+						process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+					}
 				}
+			});
+
+			it("fails closed when a pinned account environment cannot be resolved", () => {
+				setProviderEnvironmentResolver(() => {
+					throw new Error("damaged account profile");
+				});
+
+				expect(() =>
+					buildTerminalEnv({
+						...baseParams,
+						runtime: "claude",
+					}),
+				).toThrow("damaged account profile");
 			});
 
 			it("injects Hugging Face credentials only for its explicit runtime", () => {

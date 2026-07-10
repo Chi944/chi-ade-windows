@@ -17,6 +17,7 @@ import {
 	PROTOCOL_SCHEME,
 } from "shared/constants";
 import { getWorkspaceName } from "shared/env.shared";
+import { removeLegacyAgentCodexAuthFiles } from "./lib/agent-home";
 import { backfillAgentMemory } from "./lib/agent-memory-backfill";
 import { setupAgentHooks } from "./lib/agent-setup";
 import { SUPERSET_HOME_DIR } from "./lib/app-environment";
@@ -32,6 +33,10 @@ import {
 	getIconPath,
 } from "./lib/project-icons";
 import {
+	pruneOrphanedSubscriptionHomes,
+	setSubscriptionProfilesUserDataPathResolver,
+} from "./lib/subscription-profiles";
+import {
 	prewarmTerminalRuntime,
 	reconcileDaemonSessions,
 } from "./lib/terminal";
@@ -43,6 +48,7 @@ console.log("[main] Local database ready:", !!localDb);
 // Local build: set userData to our workspace-specific dir so singleton lock
 // doesn't conflict with the production Superset.app
 app.setPath("userData", SUPERSET_HOME_DIR);
+setSubscriptionProfilesUserDataPathResolver(() => app.getPath("userData"));
 
 // Dev mode: label the app with the workspace name so multiple worktrees are distinguishable
 if (process.env.NODE_ENV === "development") {
@@ -316,6 +322,22 @@ if (!gotTheLock) {
 		// brick window creation. Runs on a macrotask so it can't block this tick.
 		setTimeout(() => {
 			try {
+				const prunedHomes = pruneOrphanedSubscriptionHomes();
+				if (prunedHomes > 0) {
+					console.info(
+						`[main] Pruned ${prunedHomes} orphaned provider ${prunedHomes === 1 ? "home" : "homes"}`,
+					);
+				}
+			} catch (error) {
+				console.error("[main] Provider home cleanup failed:", error);
+			}
+			try {
+				const removedAuthFiles = removeLegacyAgentCodexAuthFiles();
+				if (removedAuthFiles > 0) {
+					console.info(
+						`[main] Removed ${removedAuthFiles} legacy Codex credential ${removedAuthFiles === 1 ? "copy" : "copies"}`,
+					);
+				}
 				backfillAgentMemory();
 			} catch (error) {
 				console.error("[main] Memory backfill failed:", error);

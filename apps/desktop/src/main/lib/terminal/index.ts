@@ -1,4 +1,11 @@
-import { getProviderRuntimeEnvironment } from "main/lib/provider-keys";
+import {
+	getProviderRuntimeEnvironment,
+	setSubscriptionProfileEnvironmentResolver,
+} from "main/lib/provider-keys";
+import {
+	getSubscriptionProfileEnvironment,
+	getSubscriptionProfileEnvironmentForPane,
+} from "main/lib/subscription-profiles";
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { ListSessionsResponse } from "main/lib/terminal-host/types";
 import { DaemonTerminalManager, getDaemonTerminalManager } from "./daemon";
@@ -13,6 +20,11 @@ import {
 // the terminal-host subprocess and must stay free of localDb/electron.
 setProviderEnvironmentResolver((context) =>
 	getProviderRuntimeEnvironment(context),
+);
+setSubscriptionProfileEnvironmentResolver((provider, paneId, workspaceId) =>
+	paneId
+		? getSubscriptionProfileEnvironmentForPane(provider, paneId, workspaceId)
+		: getSubscriptionProfileEnvironment(provider),
 );
 
 export { DaemonTerminalManager, getDaemonTerminalManager };

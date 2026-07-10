@@ -4,9 +4,15 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 
 const moduleRoot = process.env.ADE_SMOKE_MODULE_ROOT;
+const electronNativeRoot = process.env.ADE_ELECTRON_NATIVE_ROOT;
 
 function loadModule(name) {
-	return require(moduleRoot ? path.join(moduleRoot, name) : name);
+	if (moduleRoot) return require(path.join(moduleRoot, name));
+	if (name === "better-sqlite3" && electronNativeRoot) {
+		const preparedModule = path.resolve(electronNativeRoot, name);
+		return require(preparedModule);
+	}
+	return require(name);
 }
 
 function smokeBetterSqlite() {

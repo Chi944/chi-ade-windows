@@ -1,4 +1,4 @@
-import type { TerminalPreset } from "@superset/local-db";
+import type { AgentRuntime, TerminalPreset } from "@superset/local-db";
 import type { WorkspaceInitProgress } from "shared/types/workspace-init";
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
@@ -11,6 +11,8 @@ export interface PendingTerminalSetup {
 	defaultPresets?: TerminalPreset[];
 	/** Agent command to run in a separate pane from the setup script */
 	agentCommand?: string;
+	/** Runtime used for profile isolation, provider env, and cold resume. */
+	agentRuntime?: AgentRuntime;
 }
 
 interface WorkspaceInitState {

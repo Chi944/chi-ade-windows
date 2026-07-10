@@ -1,5 +1,5 @@
 {
-	"name": "@superset/repo",
+	"name": "chi-ade-windows",
 	"version": "0.0.0",
 	"repository": {
 		"type": "git",
@@ -11,7 +11,7 @@
 		"sherif": "^1.10.0",
 		"turbo": "^2.8.7"
 	},
-	"description": "A lean Windows-focused build of the ADE agentic development environment",
+	"description": "A lean, cross-platform agentic development environment for Windows and macOS",
 	"homepage": "https://github.com/Chi944/chi-ade-windows",
 	"license": "SEE LICENSE IN LICENSE.md",
 	"packageManager": "bun@1.3.6",

@@ -4,12 +4,14 @@ import {
 	type CheckedBinary,
 	type RuntimeAvailability,
 } from "@superset/shared/agent-binaries";
-import { findRealBinaries } from "main/lib/agent-setup/utils";
+import { findRealBinariesAsync } from "main/lib/agent-setup/utils";
+import { treeKillAsync } from "main/lib/tree-kill";
 
 const VERSION_PROBE_TIMEOUT_MS = 2_000;
 
 interface ProbeBinaryCommandOptions {
 	timeoutMs?: number;
+	env?: NodeJS.ProcessEnv;
 }
 
 /** Execute a discovered binary safely, including npm .cmd/.bat shims on Windows. */
@@ -50,6 +52,7 @@ export function probeBinaryCommand(
 				stdio: "ignore",
 				windowsHide: true,
 				shell: false,
+				env: options.env,
 			});
 		} catch {
 			settle(false);
@@ -60,13 +63,19 @@ export function probeBinaryCommand(
 		child.once("exit", (code) => settle(code === 0));
 
 		timeout = setTimeout(() => {
-			settle(false);
-			try {
-				child.kill();
-			} catch {
-				// The probe result is already settled; cleanup is best-effort.
-			}
-			child.unref();
+			void (async () => {
+				if (child.pid) {
+					await treeKillAsync(child.pid, "SIGKILL");
+				} else {
+					try {
+						child.kill();
+					} catch {
+						// A process without a pid may already have failed to spawn.
+					}
+				}
+				child.unref();
+				settle(false);
+			})();
 		}, timeoutMs);
 	});
 }
@@ -77,16 +86,16 @@ export function probeBinaryVersion(binaryPath: string): Promise<boolean> {
 }
 
 export async function computeRuntimeAvailability({
-	findBinaries = findRealBinaries,
+	findBinaries = findRealBinariesAsync,
 	probeBinary = probeBinaryVersion,
 }: {
-	findBinaries?: (binary: CheckedBinary) => string[];
+	findBinaries?: (binary: CheckedBinary) => string[] | Promise<string[]>;
 	probeBinary?: (binaryPath: string) => Promise<boolean>;
 } = {}): Promise<RuntimeAvailability> {
 	const entries = await Promise.all(
 		CHECKED_BINARIES.map(async (binary) => {
 			let available = false;
-			for (const binaryPath of findBinaries(binary)) {
+			for (const binaryPath of await findBinaries(binary)) {
 				if (await probeBinary(binaryPath)) {
 					available = true;
 					break;

@@ -15,9 +15,13 @@ import {
 import { TRPCError } from "@trpc/server";
 import { app } from "electron";
 import { quitWithoutConfirmation } from "main/index";
+import { readSelectedCodexAccountUsage } from "main/lib/codex-account-usage";
 import { hasCustomRingtone } from "main/lib/custom-ringtones";
 import { localDb } from "main/lib/local-db";
-import { probeSubscriptionConnections } from "main/lib/provider-connections";
+import {
+	probeSubscriptionConnections,
+	setSubscriptionConnectionEnvironmentResolver,
+} from "main/lib/provider-connections";
 import {
 	clearProviderKey,
 	clearProviderModelProfile,
@@ -26,6 +30,14 @@ import {
 	setProviderKey,
 	setProviderModelProfile,
 } from "main/lib/provider-keys";
+import {
+	createSubscriptionProfile,
+	getSubscriptionProfileEnvironment,
+	listSubscriptionProfiles,
+	removeSubscriptionProfile,
+	SUBSCRIPTION_PROFILE_PROVIDERS,
+	selectSubscriptionProfile,
+} from "main/lib/subscription-profiles";
 import {
 	DEFAULT_AUTO_APPLY_DEFAULT_PRESET,
 	DEFAULT_CONFIRM_ON_QUIT,
@@ -52,6 +64,10 @@ import {
 	normalizeTerminalPresets,
 	type PresetWithUnknownMode,
 } from "./preset-execution-mode";
+
+setSubscriptionConnectionEnvironmentResolver((provider) =>
+	getSubscriptionProfileEnvironment(provider),
+);
 
 function isValidRingtoneId(ringtoneId: string): boolean {
 	if (isBuiltInRingtoneId(ringtoneId)) {
@@ -162,10 +178,10 @@ export const createSettingsRouter = () => {
 		createTerminalPreset: publicProcedure
 			.input(
 				z.object({
-					name: z.string(),
-					description: z.string().optional(),
-					cwd: z.string(),
-					commands: z.array(z.string()),
+					name: z.string().max(120),
+					description: z.string().max(1000).optional(),
+					cwd: z.string().max(4096),
+					commands: z.array(z.string().max(8192)).min(1).max(64),
 					pinnedToBar: z.boolean().optional(),
 					executionMode: z.enum(EXECUTION_MODES).optional(),
 				}),
@@ -190,10 +206,10 @@ export const createSettingsRouter = () => {
 				z.object({
 					id: z.string(),
 					patch: z.object({
-						name: z.string().optional(),
-						description: z.string().optional(),
-						cwd: z.string().optional(),
-						commands: z.array(z.string()).optional(),
+						name: z.string().max(120).optional(),
+						description: z.string().max(1000).optional(),
+						cwd: z.string().max(4096).optional(),
+						commands: z.array(z.string().max(8192)).min(1).max(64).optional(),
 						pinnedToBar: z.boolean().optional(),
 						executionMode: z.enum(EXECUTION_MODES).optional(),
 					}),
@@ -789,11 +805,45 @@ export const createSettingsRouter = () => {
 
 		subscriptionConnections: router({
 			status: publicProcedure.query(() => probeSubscriptionConnections()),
+			profiles: publicProcedure.query(() => listSubscriptionProfiles()),
+			createProfile: publicProcedure
+				.input(
+					z.object({
+						provider: z.enum(SUBSCRIPTION_PROFILE_PROVIDERS),
+						label: z.string().trim().min(1).max(80),
+					}),
+				)
+				.mutation(({ input }) =>
+					createSubscriptionProfile(input.provider, input.label),
+				),
+			selectProfile: publicProcedure
+				.input(
+					z.object({
+						provider: z.enum(SUBSCRIPTION_PROFILE_PROVIDERS),
+						id: z.string().uuid(),
+					}),
+				)
+				.mutation(({ input }) => {
+					selectSubscriptionProfile(input.provider, input.id);
+					return { success: true };
+				}),
+			removeProfile: publicProcedure
+				.input(
+					z.object({
+						provider: z.enum(SUBSCRIPTION_PROFILE_PROVIDERS),
+						id: z.string().uuid(),
+					}),
+				)
+				.mutation(({ input }) => {
+					removeSubscriptionProfile(input.provider, input.id);
+					return { success: true };
+				}),
+			codexUsage: publicProcedure.query(() => readSelectedCodexAccountUsage()),
 		}),
 
 		// TODO: remove telemetry procedures once telemetry_enabled column is dropped
 		getTelemetryEnabled: publicProcedure.query(() => {
-			return true;
+			return false;
 		}),
 
 		setTelemetryEnabled: publicProcedure

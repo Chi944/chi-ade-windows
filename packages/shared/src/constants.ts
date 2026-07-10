@@ -11,22 +11,22 @@ export const PROTOCOL_SCHEMES = {
 // Company
 export const COMPANY = {
 	NAME: "ADE",
-	DOMAIN: "superset.sh",
-	EMAIL_DOMAIN: "@superset.sh",
+	DOMAIN: "github.com",
+	EMAIL_DOMAIN: "@chi-ade.invalid",
 	GITHUB_URL: "https://github.com/Chi944/chi-ade-windows",
-	DOCS_URL: process.env.NEXT_PUBLIC_DOCS_URL || "https://docs.superset.sh",
-	MARKETING_URL: process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh",
-	TERMS_URL: `${process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh"}/terms`,
-	PRIVACY_URL:
-		(process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh") +
-		"/privacy",
-	CHANGELOG_URL:
-		(process.env.NEXT_PUBLIC_MARKETING_URL || "https://superset.sh") +
-		"/changelog",
-	X_URL: "https://x.com/superset_sh",
-	MAIL_TO: "mailto:hello@superset.sh",
+	DOCS_URL:
+		process.env.NEXT_PUBLIC_DOCS_URL ||
+		"https://github.com/Chi944/chi-ade-windows#readme",
+	MARKETING_URL:
+		process.env.NEXT_PUBLIC_MARKETING_URL ||
+		"https://github.com/Chi944/chi-ade-windows",
+	TERMS_URL: "https://github.com/Chi944/chi-ade-windows/blob/main/LICENSE.md",
+	PRIVACY_URL: "https://github.com/Chi944/chi-ade-windows/security",
+	CHANGELOG_URL: "https://github.com/Chi944/chi-ade-windows/releases",
+	X_URL: "https://github.com/Chi944/chi-ade-windows",
+	MAIL_TO: "https://github.com/Chi944/chi-ade-windows/issues/new",
 	REPORT_ISSUE_URL: "https://github.com/Chi944/chi-ade-windows/issues/new",
-	DISCORD_URL: "https://discord.gg/cZeD9WYcV7",
+	DISCORD_URL: "https://github.com/Chi944/chi-ade-windows/discussions",
 } as const;
 
 // Theme
