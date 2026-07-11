@@ -169,6 +169,13 @@
       "when": 1771866677057,
       "tag": "0023_agent_commands_timestamptz",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783786919527,
+      "tag": "0024_migrate_api_key_references",
+      "breakpoints": true
     }
   ]
 }

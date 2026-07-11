@@ -42,9 +42,9 @@ async function verifyToken(req: Request): Promise<AuthInfo | undefined> {
 				body: { key: bearerToken },
 			});
 			if (result.valid && result.key) {
-				const userId = result.key.userId;
+				const userId = result.key.referenceId;
 				if (!userId) {
-					console.error("[mcp/auth] API key missing userId");
+					console.error("[mcp/auth] API key missing user reference");
 					return undefined;
 				}
 				const metadata =
