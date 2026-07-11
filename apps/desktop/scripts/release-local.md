@@ -1,118 +1,99 @@
-# Local release: build, sign, and notarize ADE on your Mac
+# Local stable build on macOS
 
-This is the fallback for producing a **signed + notarized** ADE DMG locally,
-when you can't (or don't want to) run the GitHub Actions release workflow
-(`.github/workflows/release-desktop.yml`). The output is byte-for-byte the same
-kind of artifact CI produces: a Developer ID–signed, Apple-notarized, stapled
-`.dmg` (plus the `.zip` and `latest-mac.yml` update manifest).
+The normal personal and friends path needs no Apple account. Use the manual
+workflow and install guide in [`docs/friends-install.md`](../../../docs/friends-install.md).
+This page is the fallback for a Developer ID signed and Apple-notarized build.
 
-Run everything from `apps/desktop/`.
+Run commands from `apps/desktop/` on the target Mac architecture.
 
----
+## Prerequisites
 
-## 0. Prerequisites (one time)
+- Xcode command line tools: `xcode-select --install`
+- A **Developer ID Application** certificate in the login keychain
+- An Apple ID app-specific password
 
-- **Xcode command line tools** — `xcode-select --install`
-- **A "Developer ID Application" certificate** in your login keychain. Verify:
-  ```bash
-  security find-identity -v -p codesigning | grep "Developer ID Application"
-  ```
-  You want the full identity string, e.g.
-  `Developer ID Application: Your Name (TEAMID1234)`.
-- **An app-specific password** for your Apple ID (create at
-  <https://appleid.apple.com> → Sign-In and Security → App-Specific Passwords).
-  This is NOT your normal Apple ID password.
-
-> Note: this is different from an ad-hoc self-signed identity used for local
-> development. A *stable local* signature can preserve macOS TCC permissions
-> across rebuilds, but it is **not** a Developer ID and cannot be notarized. For
-> a public download you need a real Developer ID Application cert as above.
-
----
-
-## 1. Set the signing environment
-
-Everything is parameterized via env vars — nothing Apple-specific is hardcoded
-in the repo. Fill in your own values:
+Verify the identity:
 
 ```bash
-# Developer ID signing (electron-builder / @electron/osx-sign reads these)
-export CSC_NAME="Developer ID Application: Your Name (TEAMID1234)"
-# ...OR point at an exported .p12 instead of CSC_NAME:
-# export CSC_LINK="$HOME/certs/developer-id.p12"
-# export CSC_KEY_PASSWORD="p12-export-password"
+security find-identity -v -p codesigning | grep "Developer ID Application"
+```
 
-# Notarization (electron-builder runs notarytool with these)
+An ad-hoc signature cannot be notarized and does not replace a Developer ID
+Application certificate.
+
+## Signing environment
+
+Use either a keychain identity:
+
+```bash
+export CSC_NAME="Developer ID Application: Your Name (TEAMID1234)"
+```
+
+or an exported certificate:
+
+```bash
+export CSC_LINK="$HOME/certs/developer-id.p12"
+export CSC_KEY_PASSWORD="p12-export-password"
+```
+
+Then configure notarization:
+
+```bash
 export APPLE_ID="you@example.com"
-export APPLE_APP_SPECIFIC_PASSWORD="abcd-efgh-ijkl-mnop"   # app-specific pw
+export APPLE_APP_SPECIFIC_PASSWORD="abcd-efgh-ijkl-mnop"
 export APPLE_TEAM_ID="TEAMID1234"
 ```
 
-`electron-builder.ts` turns notarization on automatically when `APPLE_TEAM_ID`
-is set, and hardened runtime is already enabled with the entitlements in
-`src/resources/build/`.
+Do not commit or paste these values into logs. `electron-builder.ts` enables
+notarization when `APPLE_TEAM_ID` is present and already enables hardened
+runtime with the required entitlements.
 
----
-
-## 2. Build
+## Build
 
 ```bash
-# Compile the app + prepare native modules (better-sqlite3, node-pty, libsql, …)
 bun run prebuild
-
-# Sign + notarize + package. Uses electron-builder.ts (appId io.github.chi944.ade).
-# --publish never = build locally, do not upload anywhere.
-bun run package -- --publish never --config electron-builder.ts
+bun run package -- --mac --arm64 --publish never --config electron-builder.ts
 ```
 
-Notarization adds a few minutes (electron-builder uploads to Apple, waits, then
-staples the ticket). When it finishes, artifacts are in `apps/desktop/release/`:
+Use `--x64` instead of `--arm64` on an Intel Mac. Notarization adds several
+minutes while electron-builder submits the app, waits for Apple, and staples
+the returned ticket.
 
-- `ADE-<version>-arm64.dmg` — the signed, notarized installer to distribute
-- `ADE-<version>-arm64-mac.zip` — zip (needed for Squirrel auto-update)
-- `latest-mac.yml` — auto-update manifest
+## Verify
 
----
-
-## 3. Verify the signature and notarization
+Adjust the app and DMG paths for the selected architecture and version:
 
 ```bash
 APP="release/mac-arm64/ADE.app"
+DMG="release/ADE-<version>-arm64.dmg"
 
-# Code signature is valid and from your Developer ID
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign -dv --verbose=4 "$APP" 2>&1 | grep Authority
-
-# Gatekeeper accepts it (this is what a downloader's Mac checks)
+codesign -dv --verbose=4 "$APP" 2>&1 | grep "Authority=Developer ID Application:"
+codesign -dv --verbose=4 "$APP" 2>&1 | grep -E "flags=.*runtime"
 spctl --assess --type execute --verbose=4 "$APP"
-
-# Notarization ticket is stapled to the DMG
-xcrun stapler validate "release/ADE-<version>-arm64.dmg"
+xcrun stapler validate "$APP"
+test -f "$DMG"
 ```
 
-Expected: `codesign` reports `satisfies its Designated Requirement`, `spctl`
-prints `accepted` / `source=Notarized Developer ID`, and `stapler` prints
-`The validate action worked!`.
+Gatekeeper should report `accepted` with `source=Notarized Developer ID`, and
+stapler should validate the app ticket. The stable GitHub workflow enforces the
+same checks.
 
----
+## Create a stable release
 
-## 4. Ship it
+Stable tags use the exact `vMAJOR.MINOR.PATCH` form. Follow
+[`apps/desktop/RELEASE.md`](../RELEASE.md); the workflow creates a draft and
+requires a separate manual promotion after review.
 
-Attach the `.dmg`, `.zip`, and `latest-mac.yml` to a GitHub Release on the
-public repo (see `RELEASE.md`). A viewer who downloads the `.dmg` can open it
-with no Gatekeeper warning.
+## Unsigned smoke build
 
----
-
-## Unsigned smoke test (no cert needed)
-
-To only confirm the app *packages* (not for distribution — it will be blocked by
-Gatekeeper on other Macs):
+For an unsigned local smoke only:
 
 ```bash
 bun run prebuild
-CSC_IDENTITY_AUTO_DISCOVERY=false bun run build -- --config electron-builder.ts
+CSC_IDENTITY_AUTO_DISCOVERY=false bun run package -- --mac --arm64 --publish never --config electron-builder.ts
 ```
 
-`CSC_IDENTITY_AUTO_DISCOVERY=false` and an unset `APPLE_TEAM_ID` make
-electron-builder skip both signing and notarization.
+An unsigned build is expected to be blocked on first launch on another Mac.
+Use Apple's supported **Open Anyway** flow from the friend install guide; do not
+disable Gatekeeper.

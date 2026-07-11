@@ -1,165 +1,123 @@
 /**
- * Build-time guard for native runtime dependencies.
- *
- * This fails early when:
- * 1) libsql internals are accidentally bundled into dist/main (dynamic require risk)
- * 2) required native runtime packages are missing from apps/desktop/node_modules
+ * Ensure every bare import left by Electron Vite has a deliberate packaging
+ * rule. This prevents a build from succeeding locally and then failing after
+ * an unlisted dependency is omitted from the minimal production ASAR.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { join } from "node:path";
 
 const projectRoot = join(import.meta.dirname, "..");
+const allowedRuntimeImports = new Set([
+	"better-sqlite3",
+	"electron",
+	"node-pty",
+]);
+const builtins = new Set(
+	builtinModules.flatMap((name) => [name, name.replace(/^node:/, "")]),
+);
 
 function fail(message: string): never {
-	console.error(`[validate:native-runtime] ${message}`);
-	process.exit(1);
-}
-
-function assertExists(path: string, reason: string): void {
-	if (!existsSync(path)) {
-		fail(`${reason}\nMissing path: ${path}`);
-	}
-}
-
-function validateLibsqlNotBundled(): void {
-	const sourceMapPath = join(projectRoot, "dist", "main", "index.js.map");
-	assertExists(
-		sourceMapPath,
-		"Main bundle sourcemap not found. Run `bun run compile:app` first.",
-	);
-
-	const sourceMap = readFileSync(sourceMapPath, "utf8");
-	if (sourceMap.includes("node_modules/.bun/libsql@")) {
-		fail(
-			[
-				"Detected bundled `libsql` sources in dist/main/index.js.map.",
-				"This usually causes runtime dynamic require failures in packaged apps.",
-				"Ensure `libsql` stays in `rollupOptions.external` for the main process.",
-			].join("\n"),
-		);
-	}
-
-	const distMainDir = join(projectRoot, "dist", "main");
-	assertExists(
-		distMainDir,
-		"Main bundle output not found. Run `bun run compile:app` first.",
-	);
-
-	const jsFiles = collectFiles(distMainDir).filter((filePath) =>
-		filePath.endsWith(".js"),
-	);
-	for (const filePath of jsFiles) {
-		const content = readFileSync(filePath, "utf8");
-		const hasDynamicLibsqlRequirePattern = /@libsql\/\$\{target\}/.test(
-			content,
-		);
-		if (
-			hasDynamicLibsqlRequirePattern ||
-			content.includes("commonjsRequire(`@libsql/")
-		) {
-			fail(
-				[
-					"Detected dynamic `@libsql/<platform>` require logic in bundled JS output.",
-					"This indicates libsql internals were bundled instead of externalized.",
-					`Offending file: ${filePath}`,
-				].join("\n"),
-			);
-		}
-	}
-
-	console.log(
-		"[validate:native-runtime] OK: libsql is externalized from main bundle",
-	);
+	throw new Error(`[validate:native-runtime] ${message}`);
 }
 
 function collectFiles(rootDir: string): string[] {
-	const entries = readdirSync(rootDir, { withFileTypes: true });
 	const files: string[] = [];
-	for (const entry of entries) {
-		const fullPath = join(rootDir, entry.name);
-		if (entry.isDirectory()) {
-			files.push(...collectFiles(fullPath));
-			continue;
-		}
-		files.push(fullPath);
+	for (const entry of readdirSync(rootDir, { withFileTypes: true })) {
+		const path = join(rootDir, entry.name);
+		if (entry.isDirectory()) files.push(...collectFiles(path));
+		else if (entry.isFile()) files.push(path);
 	}
 	return files;
 }
 
-function getPlatformLibsqlCandidates(): string[] {
-	if (process.platform === "darwin") {
-		return [
-			process.arch === "arm64" ? "@libsql/darwin-arm64" : "@libsql/darwin-x64",
-		];
-	}
-
-	if (process.platform === "linux") {
-		if (process.arch === "arm64") {
-			return ["@libsql/linux-arm64-gnu", "@libsql/linux-arm64-musl"];
-		}
-		if (process.arch === "arm") {
-			return ["@libsql/linux-arm-gnueabihf", "@libsql/linux-arm-musleabihf"];
-		}
-		return ["@libsql/linux-x64-gnu", "@libsql/linux-x64-musl"];
-	}
-
-	if (process.platform === "win32") {
-		return ["@libsql/win32-x64-msvc"];
-	}
-
-	return [];
-}
-
-function validateNativeModulesPrepared(): void {
-	const nodeModulesDir = join(projectRoot, "node_modules");
-	assertExists(
-		nodeModulesDir,
-		"node_modules not found. Run `bun install` and `bun run copy:native-modules` first.",
-	);
-
-	const requiredModules = [
-		"libsql/package.json",
-		"@neon-rs/load/package.json",
-		"detect-libc/package.json",
+function collectBareImports(): Set<string> {
+	const distDirs = [
+		join(projectRoot, "dist", "main"),
+		join(projectRoot, "dist", "preload"),
 	];
-	for (const modulePath of requiredModules) {
-		assertExists(
-			join(nodeModulesDir, modulePath),
-			"Required native runtime dependency is missing.",
-		);
-	}
+	const imports = new Set<string>();
+	const literalImport = /(?:require|import)\(\s*["']([^"']+)["']\s*\)/g;
 
-	const platformCandidates = getPlatformLibsqlCandidates();
-	if (platformCandidates.length === 0) {
-		console.warn(
-			`[validate:native-runtime] Skipping platform-specific @libsql check for ${process.platform}/${process.arch}`,
-		);
-		return;
+	for (const distDir of distDirs) {
+		if (!existsSync(distDir)) {
+			fail(`Build output is missing: ${distDir}. Run compile:app first.`);
+		}
+		for (const path of collectFiles(distDir).filter((file) =>
+			file.endsWith(".js"),
+		)) {
+			const source = readFileSync(path, "utf8");
+			for (const match of source.matchAll(literalImport)) {
+				const specifier = match[1];
+				if (
+					specifier.startsWith(".") ||
+					specifier.startsWith("/") ||
+					specifier.startsWith("node:") ||
+					builtins.has(specifier)
+				) {
+					continue;
+				}
+				imports.add(specifier);
+			}
+		}
 	}
-
-	const hasPlatformPackage = platformCandidates.some((pkg) =>
-		existsSync(join(nodeModulesDir, pkg, "package.json")),
-	);
-	if (!hasPlatformPackage) {
-		fail(
-			[
-				"Missing platform-specific @libsql package.",
-				`Expected one of: ${platformCandidates.join(", ")}`,
-				"Run `bun run copy:native-modules` and ensure optional dependencies are materialized.",
-			].join("\n"),
-		);
-	}
-
-	console.log(
-		`[validate:native-runtime] OK: platform libsql package present (${platformCandidates.join(" | ")})`,
-	);
+	return imports;
 }
 
 function main(): void {
-	validateLibsqlNotBundled();
-	validateNativeModulesPrepared();
-	console.log("[validate:native-runtime] All checks passed");
+	const bareImports = collectBareImports();
+	const unexpected = [...bareImports].filter(
+		(specifier) => !allowedRuntimeImports.has(specifier),
+	);
+	if (unexpected.length > 0) {
+		fail(
+			`Unlisted bare imports in build output: ${unexpected.sort().join(", ")}`,
+		);
+	}
+
+	for (const requiredImport of allowedRuntimeImports) {
+		if (!bareImports.has(requiredImport)) {
+			fail(
+				`Expected runtime import is absent from build output: ${requiredImport}`,
+			);
+		}
+	}
+
+	const mainSourceMap = readFileSync(
+		join(projectRoot, "dist", "main", "index.js.map"),
+		"utf8",
+	);
+	if (!mainSourceMap.includes("node_modules/.bun/js-yaml@4.3.0")) {
+		fail("The main bundle is not using the patched js-yaml 4.3.0 runtime");
+	}
+	if (mainSourceMap.includes("node_modules/.bun/js-yaml@4.1.1")) {
+		fail("The vulnerable js-yaml 4.1.1 runtime leaked into the main bundle");
+	}
+
+	const requiredPaths = [
+		join(
+			projectRoot,
+			".cache",
+			"electron-native",
+			"node_modules",
+			"better-sqlite3",
+			"build",
+			"Release",
+			"better_sqlite3.node",
+		),
+		join(projectRoot, "node_modules", "bindings", "package.json"),
+		join(projectRoot, "node_modules", "file-uri-to-path", "package.json"),
+		join(projectRoot, "node_modules", "node-pty", "package.json"),
+	];
+	for (const path of requiredPaths) {
+		if (!existsSync(path))
+			fail(`Required packaged runtime file is missing: ${path}`);
+	}
+
+	console.log(
+		`[validate:native-runtime] Runtime imports are explicit: ${[...bareImports].sort().join(", ")}`,
+	);
 }
 
 main();

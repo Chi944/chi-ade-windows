@@ -8,7 +8,36 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate stable release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact tag, desktop version, and main ancestry
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Stable releases require an exact vMAJOR.MINOR.PATCH tag"
+            exit 1
+          }
+          EXPECTED_TAG="v$(node -p "require('./apps/desktop/package.json').version")"
+          test "$TAG_NAME" = "$EXPECTED_TAG" || {
+            echo "::error::Tag $TAG_NAME does not match apps/desktop version $EXPECTED_TAG"
+            exit 1
+          }
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Stable release tags must point to a commit already merged into main"
+            exit 1
+          }
+
   build:
+    needs: validate
     uses: ./.github/workflows/build-desktop.yml
     with:
       channel: stable
@@ -29,26 +58,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify tag matches desktop version
-        run: |
-          [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::Stable releases require an exact vMAJOR.MINOR.PATCH tag"
-            exit 1
-          }
-          EXPECTED_TAG="v$(node -p "require('./apps/desktop/package.json').version")"
-          test "${{ github.ref_name }}" = "$EXPECTED_TAG" || {
-            echo "::error::Tag ${{ github.ref_name }} does not match apps/desktop version $EXPECTED_TAG"
-            exit 1
-          }
-
       - name: Find previous release tag
         id: prev_tag
         run: |
           CURRENT_TAG="${{ github.ref_name }}"
-          # Get all desktop tags sorted by version, find the one before current
-          PREVIOUS_TAG=$(git tag -l 'v*' | sort -V | grep -B1 "^${CURRENT_TAG}$" | head -1)
-          if [ "$PREVIOUS_TAG" = "$CURRENT_TAG" ] || [ -z "$PREVIOUS_TAG" ]; then
-            # Current tag is the first or no previous found, get the oldest desktop tag
+          # Consider exact stable tags only, sorted by semantic version.
+          PREVIOUS_TAG=$(git tag --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | awk -v current="$CURRENT_TAG" '$0 == current { print previous; exit } { previous = $0 }')
+          if [ -z "$PREVIOUS_TAG" ]; then
             PREVIOUS_TAG=""
           fi
           echo "current_tag=${CURRENT_TAG}" >> $GITHUB_OUTPUT
@@ -122,6 +138,14 @@ jobs:
           test -n "$(find . -maxdepth 1 -name '*x64*.zip' -type f -print -quit)" || { echo "::error::Missing Intel Mac ZIP"; exit 1; }
           sha256sum * > SHA256SUMS.txt
 
+      - name: Verify updater manifest paths and SHA-512 digests
+        run: |
+          node .github/scripts/verify-update-manifests.cjs \
+            release-artifacts/latest.yml \
+            release-artifacts/latest-arm64-mac.yml \
+            release-artifacts/latest-x64-mac.yml \
+            release-artifacts/latest-linux.yml
+
       - name: Generate release notes
         id: release_notes
         env:
@@ -147,7 +171,7 @@ jobs:
           echo "$NOTES" > release_notes.md
           echo "Release notes generated"
 
-      - name: Create Release
+      - name: Create draft release for manual promotion
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -155,4 +179,5 @@ jobs:
             release-artifacts/* \
             --title "ADE ${{ github.ref_name }}" \
             --notes-file release_notes.md \
+            --draft \
             --verify-tag

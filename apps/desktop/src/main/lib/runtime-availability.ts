@@ -63,19 +63,20 @@ export function probeBinaryCommand(
 		child.once("exit", (code) => settle(code === 0));
 
 		timeout = setTimeout(() => {
-			void (async () => {
-				if (child.pid) {
-					await treeKillAsync(child.pid, "SIGKILL");
-				} else {
-					try {
-						child.kill();
-					} catch {
-						// A process without a pid may already have failed to spawn.
-					}
-				}
-				child.unref();
-				settle(false);
-			})();
+			const pid = child.pid;
+			child.unref();
+			settle(false);
+
+			if (pid) {
+				void treeKillAsync(pid, "SIGKILL");
+				return;
+			}
+
+			try {
+				child.kill();
+			} catch {
+				// A process without a pid may already have failed to spawn.
+			}
 		}, timeoutMs);
 	});
 }

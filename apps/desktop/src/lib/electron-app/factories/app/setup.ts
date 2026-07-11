@@ -1,6 +1,11 @@
 import { app, BrowserWindow, shell } from "electron";
 import { env } from "main/env.main";
 import { loadReactDevToolsExtension } from "main/lib/extensions";
+import {
+	configureWebviewSessionSecurity,
+	secureWebviewEmbedder,
+	secureWebviewGuest,
+} from "main/lib/webview-security";
 import { PLATFORM } from "shared/constants";
 import { makeAppId } from "shared/utils";
 import { ignoreConsoleWarnings } from "../../utils/ignore-console-warnings";
@@ -11,6 +16,17 @@ export async function makeAppSetup(
 	createWindow: () => Promise<BrowserWindow>,
 	restoreWindows?: () => Promise<void>,
 ) {
+	// Register before creating the main window so its webview attachment boundary is
+	// protected before renderer code can create a guest.
+	app.on("web-contents-created", (_, contents) => {
+		configureWebviewSessionSecurity(contents.session);
+		if (contents.getType() === "webview") {
+			secureWebviewGuest(contents);
+			return;
+		}
+		secureWebviewEmbedder(contents);
+	});
+
 	await loadReactDevToolsExtension();
 
 	// Restore windows from previous session if available

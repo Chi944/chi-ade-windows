@@ -46,6 +46,6 @@ describe("runtime availability", () => {
 		);
 
 		expect(result).toBe(false);
-		expect(Date.now() - startedAt).toBeLessThan(1_000);
+		expect(Date.now() - startedAt).toBeLessThan(500);
 	});
 });

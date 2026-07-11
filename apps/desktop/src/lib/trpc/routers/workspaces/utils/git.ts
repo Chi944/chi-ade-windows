@@ -3,10 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-
-import friendlyWords = require("friendly-words");
-
 import type { BranchPrefixMode } from "@superset/local-db";
+import friendlyWords from "friendly-words";
 import simpleGit, { type StatusResult } from "simple-git";
 import { runWithPostCheckoutHookTolerance } from "../../utils/git-hook-tolerance";
 import { execWithShellEnv, getProcessEnvWithShellPath } from "./shell-env";

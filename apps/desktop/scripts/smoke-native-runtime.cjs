@@ -25,23 +25,6 @@ function smokeBetterSqlite() {
 	}
 }
 
-function smokeLibsql() {
-	const Database = loadModule("libsql");
-	const db = new Database(":memory:");
-	try {
-		assert.equal(db.prepare("select 1 as value").get().value, 1);
-	} finally {
-		db.close();
-	}
-}
-
-function smokeAstGrep() {
-	const { parse } = loadModule("@ast-grep/napi");
-	const tree = parse("typescript", "const value = 1;");
-	assert.equal(typeof tree.root, "function");
-	assert.equal(tree.root().kind(), "program");
-}
-
 async function smokePty(options = {}) {
 	const pty = loadModule("node-pty");
 	const shell = process.platform === "win32" ? "powershell.exe" : "/bin/sh";
@@ -72,8 +55,6 @@ async function smokePty(options = {}) {
 
 async function main() {
 	smokeBetterSqlite();
-	smokeLibsql();
-	smokeAstGrep();
 	await smokePty();
 	if (process.platform === "win32") {
 		// Keep the winpty fallback healthy for systems where ConPTY is unavailable.

@@ -509,8 +509,48 @@ async function downloadRemoteBuffer(
 			],
 			EDITOR_TIMEOUT_MS,
 		);
-		return fs.readFile(destination);
+		return readBoundedDownloadedFile(destination, maxBytes);
 	});
+}
+
+export async function readBoundedDownloadedFile(
+	filePath: string,
+	maxBytes: number,
+): Promise<Buffer> {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+		throw new Error("Downloaded file limit must be a non-negative integer");
+	}
+
+	const file = await fs.open(filePath, "r");
+	try {
+		const metadata = await file.stat();
+		if (!metadata.isFile()) {
+			throw new UnsupportedRemoteFileTypeError(
+				"Downloaded payload is not a regular file",
+			);
+		}
+		if (metadata.size > maxBytes) throw new RemoteFileTooLargeError();
+
+		// Read at most one byte beyond the limit. This catches a payload that grows
+		// after the post-transfer stat without ever loading an unbounded file into
+		// the Electron main process.
+		const bounded = Buffer.allocUnsafe(maxBytes + 1);
+		let total = 0;
+		while (total < bounded.length) {
+			const { bytesRead } = await file.read(
+				bounded,
+				total,
+				bounded.length - total,
+				total,
+			);
+			if (bytesRead === 0) break;
+			total += bytesRead;
+		}
+		if (total > maxBytes) throw new RemoteFileTooLargeError();
+		return bounded.subarray(0, total);
+	} finally {
+		await file.close();
+	}
 }
 
 function revisionFor(buffer: Buffer): string {

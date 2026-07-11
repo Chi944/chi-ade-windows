@@ -142,12 +142,31 @@ jobs:
           export ADE_SMOKE_MODULE_ROOT="$APP_DIR/Contents/Resources/app.asar/node_modules"
           "$APP_DIR/Contents/MacOS/$EXECUTABLE" scripts/smoke-native-runtime.cjs
 
-      - name: Verify signature
+      - name: Enforce macOS package storage budget
+        working-directory: apps/desktop
+        env:
+          ADE_TARGET_ARCH: ${{ matrix.arch }}
+        run: bun run validate:package-footprint
+
+      - name: Verify Developer ID signature, hardened runtime, Gatekeeper, and notarization ticket
         if: inputs.channel == 'stable'
         working-directory: apps/desktop
         run: |
           APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
+          test -n "$APP_DIR" || { echo "::error::Packaged .app not found"; exit 1; }
           codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+          SIGNING_DETAILS=$(codesign -dv --verbose=4 "$APP_DIR" 2>&1)
+          echo "$SIGNING_DETAILS"
+          grep -q 'Authority=Developer ID Application:' <<< "$SIGNING_DETAILS" || {
+            echo "::error::App is not signed with a Developer ID Application identity"
+            exit 1
+          }
+          grep -Eq 'flags=.*runtime' <<< "$SIGNING_DETAILS" || {
+            echo "::error::Hardened runtime flag is missing"
+            exit 1
+          }
+          spctl --assess --type execute --verbose=4 "$APP_DIR"
+          xcrun stapler validate "$APP_DIR"
 
       - name: Verify app-update.yml exists
         working-directory: apps/desktop
@@ -386,7 +405,15 @@ jobs:
           $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
           $exeName = if ("${{ inputs.channel }}" -eq "canary") { "ADE Canary.exe" } else { "ADE.exe" }
           $exe = (Resolve-Path "apps/desktop/release/win-unpacked/$exeName").Path
-          & $exe apps/desktop/scripts/smoke-native-runtime.cjs
+          $smokeScript = (Resolve-Path "apps/desktop/scripts/smoke-native-runtime.cjs").Path
+          $process = Start-Process -FilePath $exe -ArgumentList @($smokeScript) -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "Packaged Windows runtime smoke failed with exit code $($process.ExitCode)" }
+
+      - name: Enforce Windows package storage budget
+        working-directory: apps/desktop
+        env:
+          ADE_TARGET_ARCH: x64
+        run: bun run validate:package-footprint
 
       - name: Verify Windows installer + update manifest exist
         working-directory: apps/desktop
@@ -398,6 +425,25 @@ jobs:
           }
           if (-not (Test-Path release/latest.yml)) {
             Write-Error "No Windows auto-update manifest generated in apps/desktop/release"
+          }
+
+      - name: Verify stable Windows Authenticode signatures
+        if: inputs.channel == 'stable'
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter "*.exe" -File |
+            Where-Object Name -NotLike "*.__uninstaller.exe" |
+            Select-Object -First 1
+          if (-not $installer) { throw "Stable Windows installer not found" }
+
+          $app = Get-Item "release/win-unpacked/ADE.exe"
+          foreach ($target in @($installer, $app)) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $target.FullName
+            if ($signature.Status -ne "Valid" -or -not $signature.SignerCertificate) {
+              throw "Invalid Authenticode signature for $($target.Name): $($signature.Status)"
+            }
+            Write-Host "Valid Authenticode signature: $($target.Name) [$($signature.SignerCertificate.Subject)]"
           }
 
       - name: Upload Windows installer artifact

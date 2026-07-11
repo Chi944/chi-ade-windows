@@ -59,8 +59,8 @@ jobs:
         run: bun run scripts/lint-changed.ts
 
   test:
-    name: Isolated Windows-fork tests
-    runs-on: ubuntu-latest
+    name: Complete desktop tests - Windows
+    runs-on: windows-latest
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -79,23 +79,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen
 
-      - name: Test focused suites in isolated processes
-        run: |
-          bun test packages/shared/src/agent-command.test.ts
-          bun test apps/desktop/src/main/lib/cli-process-env.test.ts apps/desktop/src/main/lib/subscription-profiles.test.ts apps/desktop/src/main/lib/codex-account-usage.test.ts
-          bun test apps/desktop/src/main/lib/provider-keys.test.ts apps/desktop/src/main/lib/provider-connections.test.ts apps/desktop/src/main/lib/runtime-availability.test.ts
-          bun test apps/desktop/src/renderer/stores/diff-annotations.test.ts apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/utils.test.ts
-          bun test apps/desktop/src/lib/trpc/routers/external/helpers.test.ts apps/desktop/src/lib/trpc/routers/external/index.test.ts
-          bun test apps/desktop/src/lib/trpc/routers/workspaces/procedures/create-agent.test.ts
-          bun test apps/desktop/src/main/lib/agent-home.test.ts apps/desktop/src/main/lib/agent-repo.test.ts apps/desktop/src/main/lib/agent-scaffold.test.ts
-          env -u OPENROUTER_API_KEY bun test apps/desktop/src/main/lib/terminal/env.test.ts
-          bun test apps/desktop/src/main/lib/static-ports/loader.test.ts
-          bun test apps/desktop/src/main/lib/agent-setup/shell-wrappers.test.ts
-          bun test apps/desktop/src/lib/trpc/routers/workspaces/utils/teardown.test.ts
-          bun test apps/desktop/src/main/lib/terminal-host/headless-emulator.test.ts apps/desktop/src/main/terminal-host/session.test.ts
-          bun test apps/desktop/src/main/lib/terminal/service/service-manager.test.ts
-          bun test apps/desktop/src/main/terminal-host/service.test.ts
-          bun test apps/desktop/src/main/terminal-host/session-lifecycle.test.ts
+      - name: Test every desktop suite in isolated processes
+        run: bun run apps/desktop/scripts/test-complete.ts
+
+      - name: Test shared runtime contracts
+        run: bun test packages/shared/src
 
   typecheck:
     name: Typecheck
@@ -198,10 +186,15 @@ jobs:
           test -x /usr/bin/sftp
 
       - name: Assert remote filesystem test discovery
-        run: bun -e "if (!(await Bun.file('apps/desktop/src/main/lib/remote/filesystem.test.ts').exists())) throw new Error('Remote filesystem tests are missing')"
+        run: >-
+          bun -e "for (const file of ['apps/desktop/src/main/lib/remote/filesystem.test.ts', 'apps/desktop/src/main/lib/remote/filesystem.integration.test.ts']) if (!(await Bun.file(file).exists())) throw new Error('Remote filesystem test is missing: ' + file)"
 
       - name: Test remote filesystem and SSH worktree transport
         run: bun test apps/desktop/src/main/lib/remote/ssh.test.ts apps/desktop/src/main/lib/remote/filesystem.test.ts
+
+      - name: Test live loopback OpenSSH and SFTP
+        if: runner.os == 'macOS'
+        run: bash .github/scripts/test-loopback-sftp.sh
 
       - name: Typecheck desktop
         run: bun run --cwd apps/desktop typecheck
@@ -218,6 +211,12 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: bun run --cwd apps/desktop package -- --dir ${{ matrix.package_args }} --publish never --config electron-builder.ts
 
+      - name: Enforce packaged directory storage budget
+        env:
+          ADE_PACKAGE_DIR_ONLY: "true"
+          ADE_TARGET_ARCH: ${{ matrix.target_arch }}
+        run: bun run --cwd apps/desktop validate:package-footprint
+
       - name: Smoke packaged Windows runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -225,7 +224,10 @@ jobs:
           $env:ELECTRON_RUN_AS_NODE = "1"
           $asar = (Resolve-Path "apps/desktop/release/win-unpacked/resources/app.asar").Path
           $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
-          & (Resolve-Path "apps/desktop/release/win-unpacked/ADE.exe").Path apps/desktop/scripts/smoke-native-runtime.cjs
+          $exe = (Resolve-Path "apps/desktop/release/win-unpacked/ADE.exe").Path
+          $smokeScript = (Resolve-Path "apps/desktop/scripts/smoke-native-runtime.cjs").Path
+          $process = Start-Process -FilePath $exe -ArgumentList @($smokeScript) -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) { throw "Packaged Windows runtime smoke failed with exit code $($process.ExitCode)" }
 
       - name: Smoke packaged macOS runtime
         if: runner.os == 'macOS'

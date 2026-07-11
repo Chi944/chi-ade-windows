@@ -5,5 +5,5 @@ declare module "friendly-words" {
 		teams: string[];
 		collections: string[];
 	};
-	export = friendlyWords;
+	export default friendlyWords;
 }

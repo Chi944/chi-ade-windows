@@ -8,7 +8,12 @@ import { publicProcedure, router } from "../..";
 export const createBrowserRouter = () => {
 	return router({
 		register: publicProcedure
-			.input(z.object({ paneId: z.string(), webContentsId: z.number() }))
+			.input(
+				z.object({
+					paneId: z.string(),
+					webContentsId: z.number().int().positive(),
+				}),
+			)
 			.mutation(({ input }) => {
 				browserManager.register(input.paneId, input.webContentsId);
 				return { success: true };
