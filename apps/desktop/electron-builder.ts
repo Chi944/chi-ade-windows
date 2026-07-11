@@ -275,7 +275,7 @@ const config: Configuration = {
 		...(existsSync(macIconPath) ? { icon: macIconPath } : {}),
 		category: "public.app-category.utilities",
 		// Electron 42 supports macOS 12 (Electron 44 removes it). Declaring the
-		// deployment floor prevents friends on older systems from installing an
+		// deployment floor prevents users on older systems from installing an
 		// app that Chromium cannot run, while keeping Monterey compatibility.
 		minimumSystemVersion: "12.0.0",
 		artifactName: `${productName}-${pkg.version}-\${arch}.\${ext}`,

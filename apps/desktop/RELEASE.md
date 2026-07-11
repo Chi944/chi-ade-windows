@@ -2,23 +2,26 @@
 
 There are two deliberately separate distribution paths.
 
-## Personal and friends artifacts
+## Personal distribution builds
 
-Run **Actions → Personal and Friends Build → Run workflow** on the branch or
-commit you want to share. The workflow packages unsigned installers for:
+Run **Actions → Personal Distribution Build → Run workflow** on the branch or
+commit you want to package. The workflow creates unsigned installers for:
 
 - Windows x64
 - macOS Apple Silicon (`arm64`)
 - macOS Intel (`x64`)
 
-Each artifact contains a `SHA256SUMS-*.txt` file and expires after 14 days. The
-workflow uploads Actions artifacts only; it does not create or publish a GitHub
-Release and it never receives signing secrets. See
-[`docs/friends-install.md`](../../docs/friends-install.md) before sharing one.
+Each platform artifact contains a `SHA256SUMS-*.txt` file. Actions keeps these
+staging artifacts for 14 days to limit storage, then deletes them automatically.
+After all platform checks pass, the workflow also copies the installers and
+checksums into a draft prerelease. That private archive remains available to the
+repository owner until it is manually deleted and never receives signing
+secrets. See [`docs/personal-install.md`](../../docs/personal-install.md) before
+distributing a build.
 
 Unsigned personal builds are installed manually. Their in-app updater still
-checks the latest **published** GitHub Release, so an Actions artifact is not an
-update channel.
+checks the latest **published stable** GitHub Release. Draft personal archives
+are not an update channel.
 
 ## Signed stable release
 

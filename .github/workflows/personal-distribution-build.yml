@@ -1,6 +1,6 @@
-name: Personal and Friends Build
+name: Personal Distribution Build
 
-run-name: Personal build from ${{ github.ref_name }} by @${{ github.actor }}
+run-name: Personal distribution build from ${{ github.ref_name }} by @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: personal-friends-${{ github.ref }}
+  group: personal-distribution-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -197,3 +197,79 @@ jobs:
             apps/desktop/release/${{ matrix.checksum_name }}
           retention-days: 14
           if-no-files-found: error
+
+  archive:
+    name: Archive persistent draft
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download validated installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: personal-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release inventory and checksums
+        shell: bash
+        run: |
+          cd release-assets
+
+          require_count() {
+            local pattern="$1"
+            local expected="$2"
+            local actual
+            actual=$(find . -maxdepth 1 -type f -name "$pattern" -print | wc -l | tr -d ' ')
+            if [ "$actual" -ne "$expected" ]; then
+              echo "::error::Expected $expected file(s) matching $pattern, found $actual"
+              exit 1
+            fi
+          }
+
+          require_count '*.exe' 1
+          require_count '*.dmg' 2
+          require_count '*.zip' 2
+          require_count 'SHA256SUMS-*.txt' 3
+
+          for checksum in SHA256SUMS-*.txt; do
+            sha256sum --check "$checksum"
+          done
+
+          sha256sum ./*.exe ./*.dmg ./*.zip > SHA256SUMS.txt
+
+      - name: Resolve desktop version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create persistent draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: personal-v${{ steps.version.outputs.version }}-run.${{ github.run_id }}.${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
+          name: ADE ${{ steps.version.outputs.version }} Personal Distribution Build ${{ github.run_number }}.${{ github.run_attempt }}
+          body: |
+            Unsigned personal distribution build from `${{ github.sha }}`.
+
+            The installers passed the workflow's typecheck, compile, native-runtime smoke, package-footprint, signature-state, and checksum checks. This draft is retained until manually deleted and is excluded from ADE's stable update feed.
+
+            Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          draft: true
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/*.zip
+            release-assets/SHA256SUMS*.txt

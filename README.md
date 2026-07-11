@@ -18,7 +18,7 @@
 
 ![chi-ade-windows workspace with a local preview and split PowerShell terminal](docs/screenshots/workspace.png)
 
-> Version 0.4 is intended for personal and friends testing. Use the manual **Personal and Friends Build** workflow for checked Windows and macOS artifacts; see the [friend install guide](docs/friends-install.md).
+> Version 0.4 is intended for private testing. Use the manual **Personal Distribution Build** workflow for validated Windows and macOS installers; see the [personal install guide](docs/personal-install.md).
 
 ## One workspace, many agents
 
@@ -106,7 +106,7 @@ Packaged builds check the latest published GitHub Release at startup, every four
 
 ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a published release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The Personal and Friends workflow uploads temporary Actions artifacts without publishing a release or update manifest. Those builds are updated by sharing a new installer manually. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
+The Personal Distribution workflow uses 14-day Actions artifacts as temporary staging, then copies the validated installers and checksums into a persistent draft prerelease. Drafts remain available to the repository owner until manually deleted, are not public downloads, and are excluded from the in-app update feed. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
 
 ## Storage and privacy
 

@@ -1,19 +1,21 @@
 # Install a personal ADE build
 
-Personal and Friends builds are unsigned, temporary test artifacts. Share them
-only with people who trust you and use repositories with backups. A checksum
-detects a changed download, but it does not provide a verified Apple or Windows
-publisher identity.
+Personal distribution builds are unsigned test packages. Distribute them only
+to trusted users and use repositories with backups. A checksum detects a
+changed download, but it does not provide a verified Apple or Windows publisher
+identity.
 
 The macOS builds support macOS 12 Monterey or newer. Windows builds target
 64-bit Windows 10 and Windows 11.
 
 ## Get the correct artifact
 
-The owner runs **GitHub → Actions → Personal and Friends Build → Run workflow**,
-waits for all three jobs to pass, and downloads the artifact to share:
+The owner runs **GitHub → Actions → Personal Distribution Build → Run
+workflow** and waits for the three package jobs plus the archive job to pass.
+The workflow provides both temporary Actions artifacts and a persistent draft
+prerelease:
 
-| Computer | Artifact |
+| Computer | Package |
 | --- | --- |
 | Windows on Intel or AMD | `personal-windows-x64` |
 | Mac with an Apple M1, M2, M3, M4, or later Apple chip | `personal-macos-arm64` |
@@ -22,7 +24,13 @@ waits for all three jobs to pass, and downloads the artifact to share:
 On a Mac, choose **Apple menu → About This Mac**. A **Chip** value beginning
 with Apple means `arm64`; an **Intel Processor** means `x64`.
 
-Verify the files after extracting the downloaded Actions artifact:
+Actions staging artifacts expire after 14 days. The draft prerelease contains
+the same validated installers and checksums and remains available to the
+repository owner until manually deleted. Because this repository is public,
+publishing the draft would make its unsigned files public; keep it as a draft
+and distribute downloaded files through a trusted channel.
+
+Verify the downloaded files:
 
 ```bash
 cd /path/to/extracted-artifact
@@ -60,7 +68,7 @@ publisher, continue only after confirming the checksum and sender.
 
 ## Updates
 
-Actions artifacts are not published releases and do not form an update feed.
-For a newer personal build, the owner reruns the workflow and shares the new
-installer and checksum. ADE's in-app updater only offers versions the owner has
-separately promoted as published GitHub Releases.
+Temporary Actions artifacts and persistent draft archives do not form an update
+feed. For a newer personal build, the owner reruns the workflow and distributes
+the new installer and checksum. ADE's in-app updater only offers versions the
+owner has separately promoted as published stable GitHub Releases.

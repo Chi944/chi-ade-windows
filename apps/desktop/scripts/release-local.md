@@ -1,7 +1,7 @@
 # Local stable build on macOS
 
-The normal personal and friends path needs no Apple account. Use the manual
-workflow and install guide in [`docs/friends-install.md`](../../../docs/friends-install.md).
+The personal distribution path needs no Apple account. Use the manual workflow
+and install guide in [`docs/personal-install.md`](../../../docs/personal-install.md).
 This page is the fallback for a Developer ID signed and Apple-notarized build.
 
 Run commands from `apps/desktop/` on the target Mac architecture.
@@ -95,5 +95,5 @@ CSC_IDENTITY_AUTO_DISCOVERY=false bun run package -- --mac --arm64 --publish nev
 ```
 
 An unsigned build is expected to be blocked on first launch on another Mac.
-Use Apple's supported **Open Anyway** flow from the friend install guide; do not
+Use Apple's supported **Open Anyway** flow from the personal install guide; do not
 disable Gatekeeper.
