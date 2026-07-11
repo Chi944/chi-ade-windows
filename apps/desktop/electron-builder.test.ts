@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { getNodePtyFiles } from "./electron-builder";
+import config, { getNodePtyFiles } from "./electron-builder";
+
+describe("platform package identity", () => {
+	it("uses a filesystem-safe Linux executable name", () => {
+		expect(config.linux).toMatchObject({ executableName: "ade" });
+	});
+});
 
 describe("node-pty package filters", () => {
 	it.each([

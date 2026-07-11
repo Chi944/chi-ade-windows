@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import simpleGit from "simple-git";
 import {
@@ -40,7 +41,7 @@ export async function resolveExistingAgentRepo(
 
 	let selectedPath: string;
 	try {
-		selectedPath = realpathSync(sourcePath);
+		selectedPath = await realpath(sourcePath);
 	} catch {
 		throw new Error(`Existing repository path does not exist: ${sourcePath}`);
 	}
@@ -54,15 +55,12 @@ export async function resolveExistingAgentRepo(
 	const git = simpleGit(selectedPath);
 	let worktreePath: string;
 	try {
-		const gitRoot = (await git.revparse(["--show-toplevel"])).trim();
-		worktreePath = realpathSync(gitRoot);
-		const normalizedSelected =
-			process.platform === "win32" ? selectedPath.toLowerCase() : selectedPath;
-		const normalizedRoot =
-			process.platform === "win32" ? worktreePath.toLowerCase() : worktreePath;
-		if (normalizedRoot !== normalizedSelected) {
+		const prefix = (await git.revparse(["--show-prefix"])).trim();
+		if (prefix) {
 			throw new Error("Selected path is only inside a repository");
 		}
+		const gitRoot = (await git.revparse(["--show-toplevel"])).trim();
+		worktreePath = await realpath(gitRoot);
 	} catch {
 		throw new Error(
 			`Path is not a Git repository or worktree: ${selectedPath}`,

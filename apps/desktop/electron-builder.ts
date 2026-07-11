@@ -322,6 +322,7 @@ const config: Configuration = {
 	// Linux
 	linux: {
 		...(existsSync(linuxIconPath) ? { icon: linuxIconPath } : {}),
+		executableName: "ade",
 		category: "Utility",
 		synopsis: pkg.description,
 		target: ["AppImage"],
