@@ -67,11 +67,30 @@ jobs:
       - name: Smoke native runtime
         run: bun run --cwd apps/desktop smoke:native
 
-      - name: Package unsigned installer
+      - name: Package unsigned Windows installer
+        if: runner.os == 'Windows'
         env:
           ADE_TARGET_ARCH: ${{ matrix.target_arch }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: bun run --cwd apps/desktop package -- ${{ matrix.package_args }} --publish never --config electron-builder.ts
+
+      - name: Package unsigned macOS installers
+        if: runner.os == 'macOS'
+        env:
+          ADE_TARGET_ARCH: ${{ matrix.target_arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          for attempt in 1 2; do
+            if bun run --cwd apps/desktop package -- ${{ matrix.package_args }} --publish never --config electron-builder.ts; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 2 ]; then
+              echo "::error::macOS packaging failed twice"
+              exit 1
+            fi
+            echo "::warning::macOS packaging hit a transient failure; retrying once after temporary disk images settle"
+            sleep 15
+          done
 
       - name: Confirm macOS build has no Developer ID signature
         if: runner.os == 'macOS'
