@@ -69,7 +69,8 @@ export function getNodePtyFiles(
 		? [
 				"package.json",
 				"LICENSE",
-				"lib/**/*",
+				"lib/**/*.js",
+				"!lib/**/*.test.js",
 				"prebuilds/win32-x64/**/*",
 				"!prebuilds/win32-x64/**/*.pdb",
 			]
@@ -77,7 +78,8 @@ export function getNodePtyFiles(
 			? [
 					"package.json",
 					"LICENSE",
-					"lib/**/*",
+					"lib/**/*.js",
+					"!lib/**/*.test.js",
 					`prebuilds/darwin-${assertMacNodePtyArch(arch)}/**/*`,
 				]
 			: ["**/*"];
@@ -183,10 +185,6 @@ const config: Configuration = {
 		"**/node_modules/bindings/**/*",
 		"**/node_modules/file-uri-to-path/**/*",
 		"**/node_modules/node-pty/**/*",
-		// ast-grep native bindings (package + platform binary package)
-		"**/node_modules/@ast-grep/napi*/**/*",
-		// libsql native bindings are loaded from @libsql/<platform>
-		"**/node_modules/@libsql/**/*",
 		// Sound files must be unpacked so external audio players (afplay, paplay, etc.) can access them
 		"**/resources/sounds/**/*",
 		// Tray icon must be unpacked so Electron Tray can load it
@@ -220,6 +218,10 @@ const config: Configuration = {
 		"!dist/**/*.map",
 		// Migrations are copied outside ASAR via extraResources below.
 		"!dist/resources/migrations/**/*",
+		// Electron Vite bundles JavaScript dependencies. Prevent electron-builder
+		// from also traversing the entire workspace production graph; the native
+		// and CommonJS runtime exceptions are copied explicitly below.
+		"!node_modules/**/*",
 		"package.json",
 		{
 			from: pkg.resources,
@@ -234,7 +236,12 @@ const config: Configuration = {
 		{
 			from: betterSqliteSource,
 			to: "node_modules/better-sqlite3",
-			filter: ["**/*"],
+			filter: [
+				"package.json",
+				"LICENSE",
+				"lib/**/*.js",
+				"build/Release/better_sqlite3.node",
+			],
 		},
 		// better-sqlite3 uses `bindings` package to locate its native .node file
 		{
@@ -255,38 +262,6 @@ const config: Configuration = {
 			// source trees, and binaries for other platforms add about 59 MiB.
 			filter: nodePtyFiles,
 		},
-		// ast-grep native bindings (package + platform binary package)
-		{
-			from: "node_modules/@ast-grep",
-			to: "node_modules/@ast-grep",
-			filter: ["**/*"],
-		},
-		{
-			from: "node_modules/libsql",
-			to: "node_modules/libsql",
-			filter: ["**/*"],
-		},
-		{
-			from: "node_modules/@libsql",
-			to: "node_modules/@libsql",
-			filter: ["**/*"],
-		},
-		{
-			from: "node_modules/@neon-rs",
-			to: "node_modules/@neon-rs",
-			filter: ["**/*"],
-		},
-		{
-			from: "node_modules/detect-libc",
-			to: "node_modules/detect-libc",
-			filter: ["**/*"],
-		},
-		// friendly-words is a CommonJS module that Vite doesn't bundle
-		{
-			from: "node_modules/friendly-words",
-			to: "node_modules/friendly-words",
-			filter: ["**/*"],
-		},
 		"!**/.DS_Store",
 	],
 
@@ -299,6 +274,10 @@ const config: Configuration = {
 	mac: {
 		...(existsSync(macIconPath) ? { icon: macIconPath } : {}),
 		category: "public.app-category.utilities",
+		// Electron 42 supports macOS 12 (Electron 44 removes it). Declaring the
+		// deployment floor prevents friends on older systems from installing an
+		// app that Chromium cannot run, while keeping Monterey compatibility.
+		minimumSystemVersion: "12.0.0",
 		artifactName: `${productName}-${pkg.version}-\${arch}.\${ext}`,
 		target: [
 			{
@@ -343,6 +322,7 @@ const config: Configuration = {
 	// Linux
 	linux: {
 		...(existsSync(linuxIconPath) ? { icon: linuxIconPath } : {}),
+		executableName: "ade",
 		category: "Utility",
 		synopsis: pkg.description,
 		target: ["AppImage"],
@@ -352,7 +332,9 @@ const config: Configuration = {
 	// Windows
 	win: {
 		...(existsSync(winIconPath) ? { icon: winIconPath } : {}),
-		signAndEditExecutable: hasWindowsSigningConfig,
+		// Personal builds keep ADE's icon and version resources while remaining
+		// unsigned. Stable builds enable signing when all certificate inputs exist.
+		signExecutable: hasWindowsSigningConfig,
 		target: [
 			{
 				target: "nsis",

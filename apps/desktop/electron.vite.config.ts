@@ -102,19 +102,15 @@ export default defineConfig({
 				output: {
 					dir: resolve(devPath, "main"),
 				},
-				external: [
-					"electron",
-					"better-sqlite3",
-					"node-pty",
-					"pg-native",
-					"@ast-grep/napi",
-					"libsql",
-				],
+				external: ["electron", "better-sqlite3", "node-pty"],
 				plugins: [sentryPlugin].filter(Boolean),
 			},
 		},
 		resolve: {
 			alias: {
+				// electron-updater accepts js-yaml 4.x. Pin the bundled copy to the
+				// patched workspace version instead of Bun's stale nested 4.1 lock.
+				"js-yaml": resolve(__dirname, "../../node_modules/js-yaml/index.js"),
 				// @xterm/headless 6.0.0 has a packaging bug: `module` field points to
 				// non-existent `lib/xterm.mjs`. Force Vite to use the CJS entry instead.
 				"@xterm/headless": "@xterm/headless/lib-headless/xterm-headless.js",

@@ -6,6 +6,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import simpleGit from "simple-git";
@@ -63,7 +64,7 @@ describe("setupAgentRepo existing source", () => {
 			source: { type: "existing", path: join(repoPath, ".") },
 		});
 
-		expect(result.worktreePath).toBe(realpathSync(repoPath));
+		expect(result.worktreePath).toBe(await realpath(repoPath));
 		expect(result.branch).toBe("feature/existing");
 		expect(result.memoryDir).toBe(getAgentMemoryDir(agentId));
 		expect(existsSync(result.memoryDir)).toBe(true);
@@ -89,10 +90,26 @@ describe("setupAgentRepo existing source", () => {
 			source: { type: "existing", path: linkedPath },
 		});
 
-		expect(result.worktreePath).toBe(realpathSync(linkedPath));
+		expect(result.worktreePath).toBe(await realpath(linkedPath));
 		expect(result.branch).toBe("feature/linked");
 		expect(existsSync(getAgentWorktreePath(agentId))).toBe(false);
 	}, 15_000);
+
+	it("rejects a directory nested inside a repository", async () => {
+		const agentId = "nested-repo-directory";
+		const repoPath = join(TEST_ROOT, "repos", "nested-project");
+		const nestedPath = join(repoPath, "src");
+		await createRepo(repoPath, "main");
+		mkdirSync(nestedPath, { recursive: true });
+
+		await expect(
+			setupAgentRepo({
+				agentId,
+				source: { type: "existing", path: nestedPath },
+			}),
+		).rejects.toThrow("not a Git repository or worktree");
+		expect(existsSync(getAgentMemoryDir(agentId))).toBe(false);
+	});
 
 	it("rejects a missing path without creating an agent home", async () => {
 		const agentId = "missing-repo";

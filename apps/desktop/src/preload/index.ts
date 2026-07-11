@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { exposeElectronTRPC } from "trpc-electron/main";
+import {
+	assertRendererIpcEventChannel,
+	isValidDeepLinkPath,
+	type RendererIpcEventChannel,
+} from "./ipc-policy";
 
 declare const __APP_VERSION__: string;
 
@@ -19,39 +24,41 @@ const API = {
 	appVersion: __APP_VERSION__,
 };
 
-// Store mapping of user listeners to wrapped listeners for proper cleanup
-type IpcListener = (...args: unknown[]) => void;
-const listenerMap = new WeakMap<IpcListener, IpcListener>();
+type DeepLinkListener = (path: string) => void;
+type WrappedIpcListener = Parameters<typeof ipcRenderer.on>[1];
+
+// Store mapping of user listeners to wrapped listeners for proper cleanup.
+const listenerMap = new WeakMap<DeepLinkListener, WrappedIpcListener>();
 
 /**
  * IPC renderer API
  * Note: Primary IPC communication uses tRPC. This API is for low-level IPC needs.
  */
 const ipcRendererAPI = {
-	// biome-ignore lint/suspicious/noExplicitAny: IPC invoke requires any for dynamic channel types
-	invoke: (channel: string, ...args: any[]) =>
-		ipcRenderer.invoke(channel, ...args),
+	on: (channel: RendererIpcEventChannel, listener: DeepLinkListener) => {
+		assertRendererIpcEventChannel(channel);
+		if (typeof listener !== "function") {
+			throw new TypeError("IPC listener must be a function");
+		}
 
-	// biome-ignore lint/suspicious/noExplicitAny: IPC send requires any for dynamic channel types
-	send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args),
-
-	// biome-ignore lint/suspicious/noExplicitAny: IPC listener requires any for dynamic event types
-	on: (channel: string, listener: (...args: any[]) => void) => {
-		// biome-ignore lint/suspicious/noExplicitAny: IPC event wrapper requires any
-		const wrappedListener = (_event: any, ...args: any[]) => {
-			listener(...args);
+		const wrappedListener: WrappedIpcListener = (_event, ...args) => {
+			if (args.length !== 1 || !isValidDeepLinkPath(args[0])) return;
+			listener(args[0]);
 		};
 		listenerMap.set(listener, wrappedListener);
 		ipcRenderer.on(channel, wrappedListener);
 	},
 
-	// biome-ignore lint/suspicious/noExplicitAny: IPC listener requires any for dynamic event types
-	off: (channel: string, listener: (...args: any[]) => void) => {
-		const wrappedListener = listenerMap.get(listener as IpcListener);
+	off: (channel: RendererIpcEventChannel, listener: DeepLinkListener) => {
+		assertRendererIpcEventChannel(channel);
+		if (typeof listener !== "function") {
+			throw new TypeError("IPC listener must be a function");
+		}
+
+		const wrappedListener = listenerMap.get(listener);
 		if (wrappedListener) {
-			// biome-ignore lint/suspicious/noExplicitAny: Electron IPC API requires this cast
-			ipcRenderer.removeListener(channel, wrappedListener as any);
-			listenerMap.delete(listener as IpcListener);
+			ipcRenderer.removeListener(channel, wrappedListener);
+			listenerMap.delete(listener);
 		}
 	},
 };

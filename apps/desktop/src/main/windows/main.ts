@@ -124,7 +124,13 @@ export async function MainWindow() {
 		titleBarStyle: "hidden",
 		trafficLightPosition: { x: 16, y: 16 },
 		webPreferences: {
+			allowRunningInsecureContent: false,
+			contextIsolation: true,
+			nodeIntegration: false,
 			preload: join(__dirname, "../preload/index.js"),
+			sandbox: true,
+			webSecurity: true,
+			// Required by BrowserPane; all guests are constrained in webview-security.ts.
 			webviewTag: true,
 			// Isolate Electron session from system browser cookies
 			// This ensures desktop uses bearer token auth, not web cookies

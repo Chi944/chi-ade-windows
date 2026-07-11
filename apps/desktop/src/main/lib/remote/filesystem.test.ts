@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
 	buildRemoteEditorCommitCommand,
 	buildSftpArgs,
@@ -7,6 +10,7 @@ import {
 	normalizeRemoteRelativePath,
 	parseDirectoryRecords,
 	parseRemoteFileMetadata,
+	readBoundedDownloadedFile,
 	resolveSystemSftpExecutable,
 	validateRemoteEntryName,
 } from "./filesystem";
@@ -123,6 +127,22 @@ describe("remote filesystem transport", () => {
 		expect(() => parseRemoteFileMetadata(Buffer.from("f\0NaN\0"))).toThrow(
 			"Invalid remote file metadata response",
 		);
+	});
+
+	it("rechecks downloaded payload size before loading it into memory", async () => {
+		const directory = await fs.mkdtemp(path.join(tmpdir(), "ade-sftp-limit-"));
+		const payload = path.join(directory, "payload");
+		try {
+			await fs.writeFile(payload, "12345", "utf8");
+			expect(await readBoundedDownloadedFile(payload, 5)).toEqual(
+				Buffer.from("12345"),
+			);
+
+			await fs.writeFile(payload, "123456", "utf8");
+			await expect(readBoundedDownloadedFile(payload, 5)).rejects.toThrow();
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects names that could change path scope or batch structure", () => {

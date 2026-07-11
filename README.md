@@ -18,7 +18,7 @@
 
 ![chi-ade-windows workspace with a local preview and split PowerShell terminal](docs/screenshots/workspace.png)
 
-> Version 0.4 is currently available from source. The latest public installer remains Windows-only v0.2.1 until signed Windows and notarized macOS v0.4 artifacts are published.
+> Version 0.4 is intended for personal and friends testing. Use the manual **Personal and Friends Build** workflow for checked Windows and macOS artifacts; see the [friend install guide](docs/friends-install.md).
 
 ## One workspace, many agents
 
@@ -31,7 +31,7 @@
 - **AI diff annotations** attach persistent notes to exact file/side/line locations and combine unresolved notes into one review prompt.
 - **Drag files to agents** pastes safely shell-quoted Explorer or Finder paths into a terminal.
 - **Custom appearance** includes a deep true-black theme and editable UI and terminal colours.
-- **User-controlled updates** announce new releases; nothing downloads or installs until you choose it.
+- **User-controlled updates** announce published releases; nothing downloads or installs until you choose it.
 - **Remote and extensible by default** uses the operating system's OpenSSH client and a declarative local extension registry instead of bundling another runtime.
 
 ## Gallery
@@ -98,15 +98,15 @@ Provider API tokens entered in ADE are encrypted with Electron secure storage an
 
 ## Updates
 
-Packaged builds check GitHub Releases at startup, every four hours, and when you choose **Check for Updates**:
+Packaged builds check the latest published GitHub Release at startup, every four hours, and when you choose **Check for Updates**:
 
 1. ADE tells you a version is available.
 2. You choose **Download** and can watch its progress.
 3. You choose **Install & Restart** when ready.
 
-ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
+ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a published release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The public v0.2.1 build predates this updater, so moving from v0.2.1 to v0.4 requires one manual installer download. Once v0.4 is installed, the in-app flow handles later published versions.
+The Personal and Friends workflow uploads temporary Actions artifacts without publishing a release or update manifest. Those builds are updated by sharing a new installer manually. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
 
 ## Storage and privacy
 
@@ -126,9 +126,9 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 | Platform | Status |
 | --- | --- |
-| Windows x64 | v0.4 compiles and packages locally and in GitHub Actions; packaged native-runtime and migration smokes pass. The latest public release remains v0.2.1. |
-| macOS Apple Silicon | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15`; a public release still requires Apple signing and notarization. |
-| macOS Intel | GitHub Actions compiles, packages, and passes the packaged native-runtime smoke on `macos-15-intel`; a public release still requires Apple signing and notarization. |
+| Windows x64 | Personal workflow produces an unsigned installer and checksum; packaged native-runtime smoke passes before upload. |
+| macOS Apple Silicon | Personal workflow packages and smoke-tests on `macos-15`, then uploads an unsigned DMG, ZIP, and checksums. |
+| macOS Intel | Personal workflow packages and smoke-tests on `macos-15-intel`, then uploads an unsigned DMG, ZIP, and checksums. |
 
 ## SSH status
 

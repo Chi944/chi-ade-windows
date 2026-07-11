@@ -1,113 +1,89 @@
-# Desktop App Release Process
+# Desktop builds and releases
 
-## Quick Start
+There are two deliberately separate distribution paths.
 
-From the monorepo root:
+## Personal and friends artifacts
 
-```bash
-./apps/desktop/create-release.sh
-```
+Run **Actions → Personal and Friends Build → Run workflow** on the branch or
+commit you want to share. The workflow packages unsigned installers for:
 
-The script will:
-1. Show current version and prompt for new version (patch/minor/major/custom)
-2. Update `package.json` version
-3. Create and push a `desktop-v<version>` tag
-4. Monitor the GitHub Actions build
-5. Create a **draft release** for review
+- Windows x64
+- macOS Apple Silicon (`arm64`)
+- macOS Intel (`x64`)
 
-### Options
+Each artifact contains a `SHA256SUMS-*.txt` file and expires after 14 days. The
+workflow uploads Actions artifacts only; it does not create or publish a GitHub
+Release and it never receives signing secrets. See
+[`docs/friends-install.md`](../../docs/friends-install.md) before sharing one.
 
-```bash
-# Interactive version selection (recommended)
-./apps/desktop/create-release.sh
+Unsigned personal builds are installed manually. Their in-app updater still
+checks the latest **published** GitHub Release, so an Actions artifact is not an
+update channel.
 
-# Explicit version
-./apps/desktop/create-release.sh 0.0.50
+## Signed stable release
 
-# Auto-publish (skip draft)
-./apps/desktop/create-release.sh --publish
-./apps/desktop/create-release.sh 0.0.50 --publish
-```
+Stable releases require Windows signing credentials plus an Apple Developer ID
+Application certificate and Apple notarization credentials in the protected
+`production` environment:
 
-To publish a draft:
+- `MAC_CERTIFICATE` and `MAC_CERTIFICATE_PASSWORD`
+- `APPLE_ID`, `APPLE_ID_PASSWORD`, and `APPLE_TEAM_ID`
+- `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD`
 
-```bash
-gh release edit desktop-v0.0.50 --draft=false
-```
+The stable workflow fails closed if any required credential is absent. Its
+macOS jobs verify the Developer ID signature, hardened runtime, Gatekeeper
+assessment, and stapled notarization ticket. The Windows job verifies both the
+installer and installed executable Authenticode signatures, and the release job
+recomputes every updater manifest's referenced SHA-512 before creating a draft.
 
-### Requirements
+The release helper requires authenticated GitHub CLI (`gh`), `jq`, and a clean
+local `main` branch that exactly matches `origin/main`.
 
-- GitHub CLI (`gh`) installed and authenticated
-- Clean git working directory
-
-## Manual Release
-
-If you prefer not to use the script:
+From a clean, up-to-date `main` branch, run:
 
 ```bash
-git tag desktop-v1.0.0
-git push origin desktop-v1.0.0
+./apps/desktop/create-release.sh 0.4.1
 ```
 
-This creates a draft release. Publish it manually at GitHub Releases.
-
-## Auto-update
-
-Auto-update is DISABLED for the v1 public launch (see
-`src/main/lib/auto-updater.ts`, `AUTO_UPDATE_ENABLED = false`). Once enabled, the
-app checks for updates at launch and every few hours using the public repo's
-Releases. Replace `ade` (and confirm the owner) below:
-
-- **macOS manifest**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/latest-mac.yml`
-- **Linux manifest**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/latest-linux.yml`
-- **Windows manifest**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/latest.yml`
-- **macOS installer**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/ADE-arm64.dmg`
-- **Linux installer**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/ADE-x64.AppImage`
-- **Windows installer**: `https://github.com/Chi944/chi-ade-windows/releases/latest/download/ADE-x64.exe`
-
-The workflow creates stable-named copies (without version) so these URLs always point to the latest build.
-
-To turn auto-update on: set `RELEASE_REPO_NAME` and flip `AUTO_UPDATE_ENABLED`
-to `true` in `src/main/lib/auto-updater.ts`, then ship a build.
-
-## Code Signing
-
-macOS code signing uses these repository secrets:
-
-- `MAC_CERTIFICATE` / `MAC_CERTIFICATE_PASSWORD`
-- `APPLE_ID` / `APPLE_ID_PASSWORD` / `APPLE_TEAM_ID`
-
-Windows code signing uses the standard electron-builder variables when present:
-
-- `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`
-- or `CSC_LINK` / `CSC_KEY_PASSWORD`
-- or Azure Trusted Signing variables
-
-## Local Testing
+The script updates the desktop version and root lockfile together, pushes
+`main`, and creates the exact `vMAJOR.MINOR.PATCH` tag expected by
+`release-desktop.yml`. Published versions are immutable; only an unpublished
+draft can be rebuilt with the same version. The workflow always creates a
+**draft** release. Inspect the release notes, checksums, installers, and workflow
+result, then promote it as a separate manual action:
 
 ```bash
-cd apps/desktop
-bun run clean:dev
-bun run compile:app
-bun run package
+gh release edit v0.4.1 --draft=false
 ```
 
-Output: `apps/desktop/release/`
+Only published stable releases are visible through `/releases/latest` and the
+in-app updater. Packaged builds check that feed, but downloads and installation
+remain user initiated.
 
-Linux output should include:
+## Local package smoke
 
-- `*.AppImage`
-- `*-linux.yml` (auto-update manifest)
+Build on the native operating system:
 
-Windows output should include:
+```bash
+bun install --frozen
+bun run --cwd apps/desktop typecheck
+bun run --cwd apps/desktop compile:app
+bun run --cwd apps/desktop smoke:native
+```
 
-- `ADE-<version>-x64.exe`
-- `latest.yml` (auto-update manifest)
+Then package with one target:
 
-## Troubleshooting
+```bash
+# Apple Silicon
+CSC_IDENTITY_AUTO_DISCOVERY=false bun run --cwd apps/desktop package -- --mac --arm64 --publish never --config electron-builder.ts
 
-- **Linux auto-update not working**: Verify `release/*-linux.yml` is uploaded to the GitHub release
-- **Windows auto-update not working**: Verify `release/latest.yml` and the matching `.exe` are uploaded to the GitHub release
-- **Build icon warnings/failures**: Add icons under `src/resources/build/icons/` (`icon.icns`, `icon.ico`, optional Linux `.png`)
-- **Native module errors**: Ensure `node-pty` is in externals in both `electron.vite.config.ts` and `electron-builder.ts`
-- **Windows symlink errors while packaging**: Run from Developer Mode/elevated shell, or leave executable editing disabled for unsigned local builds
+# Intel Mac
+CSC_IDENTITY_AUTO_DISCOVERY=false bun run --cwd apps/desktop package -- --mac --x64 --publish never --config electron-builder.ts
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+bun run --cwd apps/desktop package -- --win --x64 --publish never --config electron-builder.ts
+```

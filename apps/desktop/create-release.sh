@@ -4,30 +4,26 @@
 # Based on apps/desktop/RELEASE.md
 #
 # Usage:
-#   ./create-release.sh [version] [--publish] [--merge]
+#   ./create-release.sh [version]
 #   Example: ./create-release.sh              # Interactive version selection
 #   Example: ./create-release.sh 0.0.1        # Explicit version
-#   Example: ./create-release.sh 0.0.1 --publish
-#   Example: ./create-release.sh --publish    # Interactive + auto-publish
-#   Example: ./create-release.sh --publish --merge  # Auto-publish and merge PR
 #
 # This script will:
 # 1. Prompt for version if not provided (patch/minor/major/custom)
 # 2. Verify prerequisites (clean git, GitHub CLI authenticated)
-# 3. Delete existing release/tag if republishing same version
+# 3. Optionally rebuild an unpublished draft; published versions are immutable
 # 4. Update package.json version
-# 5. Push changes and create a PR if not on main branch
+# 5. Push the version commit from main
 # 6. Create and push a git tag to trigger the release workflow
 # 7. Monitor the GitHub Actions workflow in real-time
-# 8. Leave release as draft (default) or auto-publish with --publish flag
-# 9. With --merge flag: merge the PR and delete the branch after publishing
+# 8. Leave the signed release as a draft for manual review and promotion
 #
 # Features:
 # - Interactive version selection with patch/minor/major options
-# - Supports republishing: Running with same version will clean up and rebuild
+# - Supports rebuilding an unpublished draft without replacing a published version
 # - Draft by default for review before publishing
-# - Use --publish flag to auto-publish when build completes
-# - Use --merge flag to merge the PR and delete the branch after publishing
+# - Stable tags use the exact vMAJOR.MINOR.PATCH format
+# - Publishing is deliberately a separate, manual action
 #
 # Requirements:
 # - GitHub CLI (gh) installed and authenticated
@@ -85,25 +81,17 @@ increment_major() {
 
 # Parse arguments
 VERSION=""
-AUTO_PUBLISH=false
-AUTO_MERGE=false
 
 for arg in "$@"; do
     case $arg in
-        --publish)
-            AUTO_PUBLISH=true
-            ;;
-        --merge)
-            AUTO_MERGE=true
-            ;;
         -*)
-            error "Unknown option: $arg\nUsage: $0 [version] [--publish] [--merge]"
+            error "Unknown option: $arg\nUsage: $0 [version]"
             ;;
         *)
             if [ -z "$VERSION" ]; then
                 VERSION="$arg"
             else
-                error "Unexpected argument: $arg\nUsage: $0 [version] [--publish] [--merge]"
+                error "Unexpected argument: $arg\nUsage: $0 [version]"
             fi
             ;;
     esac
@@ -117,11 +105,11 @@ if [ -z "$VERSION" ]; then
     fi
 
     # Fetch the latest desktop release version from GitHub
-    # Desktop releases use tags like "desktop-v0.0.1"
-    LATEST_TAG=$(gh release list --json tagName --jq '[.[] | select(.tagName | startswith("desktop-v"))] | .[0].tagName' 2>/dev/null || echo "")
+    # Stable desktop releases use tags like "v0.4.0".
+    LATEST_TAG=$(gh release list --limit 100 --json tagName --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(.tagName | ltrimstr("v") | split(".") | map(tonumber)) | last | .tagName // ""' 2>/dev/null || echo "")
     if [ -n "$LATEST_TAG" ]; then
-        # Extract version from tag (e.g., "desktop-v0.0.1" -> "0.0.1")
-        CURRENT_VERSION="${LATEST_TAG#desktop-v}"
+        # Extract version from tag (e.g., "v0.4.0" -> "0.4.0")
+        CURRENT_VERSION="${LATEST_TAG#v}"
     else
         # Fallback to local package.json if no releases exist yet
         warn "No existing desktop releases found. Using local package.json version."
@@ -171,7 +159,11 @@ if [ -z "$VERSION" ]; then
     info "Selected version: ${VERSION}"
 fi
 
-TAG_NAME="desktop-v${VERSION}"
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    error "Invalid version format. Expected: MAJOR.MINOR.PATCH (e.g., 1.2.3)"
+fi
+
+TAG_NAME="v${VERSION}"
 DESKTOP_DIR="apps/desktop"
 
 # Check if gh CLI is installed
@@ -197,6 +189,19 @@ if [ ! -f "package.json" ] || [ ! -d "apps/desktop" ]; then
     error "Please run this script from the monorepo root directory"
 fi
 
+if [ -n "$(git status --porcelain)" ]; then
+    error "The working tree must be clean before creating a stable release"
+fi
+
+if [ "$(git branch --show-current)" != "main" ]; then
+    error "Stable releases must be created from the main branch"
+fi
+
+git fetch --no-tags origin main:refs/remotes/origin/main
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    error "Local main must exactly match origin/main before creating a stable release"
+fi
+
 # Navigate to desktop app directory
 cd "${DESKTOP_DIR}"
 
@@ -208,30 +213,36 @@ if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
 
     # Check if there's also a GitHub release
     if gh release view "${TAG_NAME}" &>/dev/null; then
-        RELEASE_STATUS=$(gh release view "${TAG_NAME}" --json isDraft --jq 'if .isDraft then "draft" else "published"' 2>/dev/null || echo "unknown")
+        RELEASE_IS_DRAFT=$(gh release view "${TAG_NAME}" --json isDraft --jq '.isDraft')
+        RELEASE_STATUS=$([ "$RELEASE_IS_DRAFT" = "true" ] && echo "draft" || echo "published")
         echo -e "  GitHub release: ${YELLOW}${RELEASE_STATUS}${NC}"
+        if [ "$RELEASE_IS_DRAFT" != "true" ]; then
+            error "Published releases are immutable. Create a new patch version instead of replacing ${TAG_NAME}."
+        fi
     else
-        echo -e "  GitHub release: ${YELLOW}none${NC}"
+        error "Existing tag ${TAG_NAME} is not attached to a draft release; refusing automated deletion"
     fi
     echo ""
 
     # Ask user what to do
     echo "What would you like to do?"
-    echo "  1) Republish - Delete existing release/tag and create new one"
+    echo "  1) Rebuild draft - Delete the unpublished draft/tag and create it again"
     echo "  2) Cancel - Exit without changes"
     echo ""
     read -p "Enter choice [1-2]: " choice
 
     case $choice in
         1)
-            info "Cleaning up for republish..."
+            info "Cleaning up unpublished draft..."
 
-            # Delete the GitHub release if it exists
-            if gh release view "${TAG_NAME}" &>/dev/null; then
-                info "Deleting existing GitHub release..."
-                gh release delete "${TAG_NAME}" --yes
-                success "Deleted existing release"
+            # Re-check immediately before deletion and fail closed on API errors.
+            RELEASE_IS_DRAFT=$(gh release view "${TAG_NAME}" --json isDraft --jq '.isDraft')
+            if [ "$RELEASE_IS_DRAFT" != "true" ]; then
+                error "Refusing to delete published release ${TAG_NAME}; create a new patch version"
             fi
+            info "Deleting existing draft release..."
+            gh release delete "${TAG_NAME}" --yes
+            success "Deleted existing draft release"
 
             # Delete remote tag
             info "Deleting remote tag..."
@@ -262,60 +273,20 @@ else
     jq ".version = \"${VERSION}\"" package.json > "${TMP_FILE}" && mv "${TMP_FILE}" package.json
     # Format package.json to match project conventions (jq reformats the JSON)
     bunx biome format --write package.json
+    (cd ../.. && bun install --lockfile-only)
     success "Updated package.json from ${CURRENT_VERSION} to ${VERSION}"
 
-    # Commit the version change
-    git add package.json
+    # Commit the workspace version and matching frozen-install lockfile.
+    git add package.json ../../bun.lock
     git commit -m "chore(desktop): bump version to ${VERSION}"
     success "Committed version change"
 fi
 
-# 4. Push changes and create PR if needed
+# 4. Push the version commit
 info "Pushing changes to remote..."
 CURRENT_BRANCH=$(git branch --show-current)
 git push -u origin "HEAD:${CURRENT_BRANCH}"
 success "Changes pushed to ${CURRENT_BRANCH}"
-
-# Create PR if not on main branch
-MAIN_BRANCH="main"
-PR_NUMBER=""
-if [ "${CURRENT_BRANCH}" != "${MAIN_BRANCH}" ]; then
-    # Check if PR already exists for this branch
-    EXISTING_PR=$(gh pr list --head "${CURRENT_BRANCH}" --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-    if [ -n "$EXISTING_PR" ]; then
-        info "PR #${EXISTING_PR} already exists for branch ${CURRENT_BRANCH}"
-        PR_NUMBER="$EXISTING_PR"
-    else
-        # Check if there are any commits ahead of main before trying to create PR
-        COMMITS_AHEAD=$(git rev-list --count "${MAIN_BRANCH}..HEAD" 2>/dev/null || echo "0")
-        if [ "$COMMITS_AHEAD" = "0" ]; then
-            warn "No commits ahead of ${MAIN_BRANCH}. Skipping PR creation."
-            warn "The tag will still be created and trigger the release workflow."
-        else
-            info "Creating pull request..."
-            # Disable set -e temporarily to capture exit code
-            set +e
-            PR_URL=$(gh pr create \
-                --title "chore(desktop): bump version to ${VERSION}" \
-                --body "Bumps desktop app version to ${VERSION}.
-
-This PR was automatically created by the release script." \
-                --base "${MAIN_BRANCH}" \
-                --head "${CURRENT_BRANCH}" 2>&1)
-            PR_EXIT_CODE=$?
-            set -e
-
-            if [ $PR_EXIT_CODE -eq 0 ]; then
-                success "Pull request created: ${PR_URL}"
-                # Extract PR number from URL
-                PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-            else
-                warn "Could not create PR: ${PR_URL}"
-            fi
-        fi
-    fi
-fi
 
 # 5. Create and push tag
 info "Creating tag ${TAG_NAME}..."
@@ -389,7 +360,7 @@ fi
 
 echo ""
 
-# 7. Wait for release and publish it
+# 7. Wait for the draft release
 info "Waiting for draft release to be created..."
 
 # Retry logic for draft release (it may take time to be created)
@@ -412,49 +383,12 @@ if [ -z "$RELEASE_FOUND" ]; then
     echo "  Check releases at: https://github.com/${REPO}/releases"
 else
     RELEASE_URL="https://github.com/${REPO}/releases/tag/${TAG_NAME}"
-    LATEST_URL="https://github.com/${REPO}/releases/latest"
+    success "Draft release created!"
 
-    if [ "$AUTO_PUBLISH" = true ]; then
-        # Publish the release
-        info "Publishing release..."
-        gh release edit "${TAG_NAME}" --draft=false
-        success "Release published!"
-
-        # Merge the PR if one exists and --merge flag was provided
-        if [ "$AUTO_MERGE" = true ] && [ -n "$PR_NUMBER" ]; then
-            info "Merging PR #${PR_NUMBER}..."
-            if gh pr merge "${PR_NUMBER}" --squash --delete-branch; then
-                success "PR #${PR_NUMBER} merged and branch deleted"
-            else
-                warn "Could not merge PR #${PR_NUMBER}. You may need to merge it manually."
-            fi
-        fi
-
-        echo ""
-        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${GREEN}🎉 Release Published!${NC}"
-        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo ""
-        echo -e "${BLUE}Release URL:${NC} ${RELEASE_URL}"
-        echo -e "${BLUE}Latest URL:${NC}  ${LATEST_URL}"
-        echo ""
-        echo -e "${BLUE}Direct download:${NC}"
-        echo "  • ${LATEST_URL}/download/ADE-arm64.dmg"
-        echo "  • ${LATEST_URL}/download/ADE-x64.AppImage"
-        echo "  • ${LATEST_URL}/download/ADE-x64.exe"
-        echo ""
-    else
-        success "Draft release created!"
-
-        echo ""
-        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${GREEN}📝 Draft Release Ready for Review${NC}"
-        echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo ""
-        echo -e "${BLUE}Review URL:${NC} ${RELEASE_URL}"
-        echo ""
-        echo "To publish:"
-        echo "  gh release edit ${TAG_NAME} --draft=false"
-        echo ""
-    fi
+    echo ""
+    echo -e "${BLUE}Review URL:${NC} ${RELEASE_URL}"
+    echo ""
+    echo "After verifying signatures, checksums, release notes, and installers, promote it manually:"
+    echo "  gh release edit ${TAG_NAME} --draft=false"
+    echo ""
 fi

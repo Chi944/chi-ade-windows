@@ -242,7 +242,8 @@ export const apikeys = authSchema.table(
 		start: text("start"),
 		prefix: text("prefix"),
 		key: text("key").notNull(),
-		userId: uuid("user_id")
+		configId: text("config_id").notNull().default("default"),
+		referenceId: uuid("reference_id")
 			.notNull()
 			.references(() => users.id, { onDelete: "cascade" }),
 		refillInterval: integer("refill_interval"),
@@ -266,7 +267,8 @@ export const apikeys = authSchema.table(
 	},
 	(table) => [
 		index("apikeys_key_idx").on(table.key),
-		index("apikeys_user_id_idx").on(table.userId),
+		index("apikeys_config_id_idx").on(table.configId),
+		index("apikeys_reference_id_idx").on(table.referenceId),
 	],
 );
 

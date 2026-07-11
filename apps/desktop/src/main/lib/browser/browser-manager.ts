@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { app, clipboard, webContents } from "electron";
+import { isAllowedWebviewUrl } from "../webview-security";
 
 interface ConsoleEntry {
 	level: "log" | "warn" | "error" | "info" | "debug";
@@ -185,16 +186,20 @@ class BrowserManager extends EventEmitter {
 		}
 		this.paneWebContentsIds.set(paneId, webContentsId);
 		const wc = webContents.fromId(webContentsId);
-		if (wc) {
-			wc.setBackgroundThrottling(false);
-			wc.setWindowOpenHandler(({ url }) => {
-				if (url && url !== "about:blank") {
-					this.emit(`new-window:${paneId}`, url);
-				}
-				return { action: "deny" as const };
-			});
-			this.setupConsoleCapture(paneId, wc);
+		if (!wc || wc.isDestroyed() || wc.getType() !== "webview") {
+			this.paneWebContentsIds.delete(paneId);
+			throw new Error(
+				"Only attached webviews can be registered as browser panes",
+			);
 		}
+		wc.setBackgroundThrottling(false);
+		wc.setWindowOpenHandler(({ url }) => {
+			if (url && url !== "about:blank" && isAllowedWebviewUrl(url)) {
+				this.emit(`new-window:${paneId}`, url);
+			}
+			return { action: "deny" as const };
+		});
+		this.setupConsoleCapture(paneId, wc);
 	}
 
 	unregister(paneId: string): void {
@@ -219,7 +224,7 @@ class BrowserManager extends EventEmitter {
 		const id = this.paneWebContentsIds.get(paneId);
 		if (id == null) return null;
 		const wc = webContents.fromId(id);
-		if (!wc || wc.isDestroyed()) return null;
+		if (!wc || wc.isDestroyed() || wc.getType() !== "webview") return null;
 		return wc;
 	}
 

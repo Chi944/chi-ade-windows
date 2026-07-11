@@ -1,3 +1,4 @@
+import { apiKey } from "@better-auth/api-key";
 import { expo } from "@better-auth/expo";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { stripe } from "@better-auth/stripe";
@@ -17,12 +18,7 @@ import { canInvite, type OrganizationRole } from "@superset/shared/auth";
 import { Client } from "@upstash/qstash";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import {
-	apiKey,
-	bearer,
-	customSession,
-	organization,
-} from "better-auth/plugins";
+import { bearer, customSession, organization } from "better-auth/plugins";
 import { jwt } from "better-auth/plugins/jwt";
 import { and, count, desc, eq } from "drizzle-orm";
 import type Stripe from "stripe";
@@ -131,6 +127,7 @@ export const auth = betterAuth({
 			enableMetadata: true,
 			enableSessionForAPIKeys: true,
 			defaultPrefix: "sk_live_",
+			references: "user",
 		}),
 		jwt({
 			jwks: {
