@@ -12,20 +12,21 @@ The macOS builds support macOS 12 Monterey or newer. Windows builds target
 
 The owner runs **GitHub → Actions → Personal Distribution Build → Run
 workflow** and waits for the three package jobs plus the archive job to pass.
-The workflow provides both temporary Actions artifacts and a persistent draft
-prerelease:
+The workflow temporarily transfers each platform package through Actions, then
+collects them in a persistent draft prerelease:
 
-| Computer | Package |
-| --- | --- |
-| Windows on Intel or AMD | `personal-windows-x64` |
-| Mac with an Apple M1, M2, M3, M4, or later Apple chip | `personal-macos-arm64` |
-| Mac with an Intel processor | `personal-macos-x64` |
+| Computer | Draft Release files | Checksum |
+| --- | --- | --- |
+| Windows on Intel or AMD | `ADE-<version>-x64.exe` | `SHA256SUMS-windows-x64.txt` |
+| Mac with an Apple M1, M2, M3, M4, or later Apple chip | `ADE-<version>-arm64.dmg` or `.zip` | `SHA256SUMS-macos-arm64.txt` |
+| Mac with an Intel processor | `ADE-<version>-x64.dmg` or `.zip` | `SHA256SUMS-macos-x64.txt` |
 
 On a Mac, choose **Apple menu → About This Mac**. A **Chip** value beginning
 with Apple means `arm64`; an **Intel Processor** means `x64`.
 
-Actions staging artifacts expire after 14 days. The draft prerelease contains
-the same validated installers and checksums and remains available to the
+Actions staging artifacts are deleted after the draft is created, with a
+one-day expiry as a cleanup fallback. Download from the draft prerelease, which
+contains the validated installers and checksums and remains available to the
 repository owner until manually deleted. Because this repository is public,
 publishing the draft would make its unsigned files public; keep it as a draft
 and distribute downloaded files through a trusted channel.

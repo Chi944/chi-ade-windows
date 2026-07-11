@@ -11,13 +11,14 @@ commit you want to package. The workflow creates unsigned installers for:
 - macOS Apple Silicon (`arm64`)
 - macOS Intel (`x64`)
 
-Each platform artifact contains a `SHA256SUMS-*.txt` file. Actions keeps these
-staging artifacts for 14 days to limit storage, then deletes them automatically.
-After all platform checks pass, the workflow also copies the installers and
-checksums into a draft prerelease. That private archive remains available to the
-repository owner until it is manually deleted and never receives signing
-secrets. See [`docs/personal-install.md`](../../docs/personal-install.md) before
-distributing a build.
+Each platform artifact contains a `SHA256SUMS-*.txt` file and exists only to
+transfer packages into the archive job. After all platform checks pass, the
+workflow copies the installers and checksums into a draft prerelease and deletes
+the temporary artifacts. A one-day retention period is the fallback if cleanup
+cannot run. The private draft remains available to the repository owner until it
+is manually deleted and never receives signing secrets. See
+[`docs/personal-install.md`](../../docs/personal-install.md) before distributing
+a build.
 
 Unsigned personal builds are installed manually. Their in-app updater still
 checks the latest **published stable** GitHub Release. Draft personal archives

@@ -183,7 +183,7 @@ jobs:
             apps/desktop/release/*.exe
             !apps/desktop/release/*.__uninstaller.exe
             apps/desktop/release/${{ matrix.checksum_name }}
-          retention-days: 14
+          retention-days: 1
           if-no-files-found: error
 
       - name: Upload macOS installers
@@ -195,7 +195,7 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/${{ matrix.checksum_name }}
-          retention-days: 14
+          retention-days: 1
           if-no-files-found: error
 
   archive:
@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      actions: read
+      actions: write
       contents: write
 
     steps:
@@ -273,3 +273,35 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/SHA256SUMS*.txt
+
+      - name: Delete temporary staging artifacts
+        uses: actions/github-script@v9
+        with:
+          retries: 3
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              {
+                ...context.repo,
+                run_id: context.runId,
+                per_page: 100,
+              },
+            );
+            const stagingArtifacts = artifacts.filter(({ name }) =>
+              name.startsWith("personal-"),
+            );
+            if (stagingArtifacts.length !== 3) {
+              throw new Error(
+                `Expected 3 personal-* staging artifacts, found ${stagingArtifacts.length}`,
+              );
+            }
+
+            for (const artifact of stagingArtifacts) {
+              await github.rest.actions.deleteArtifact({
+                ...context.repo,
+                artifact_id: artifact.id,
+              });
+              core.info(`Deleted temporary artifact ${artifact.name}`);
+            }
+
+            core.info(`Deleted ${stagingArtifacts.length} staging artifact(s)`);

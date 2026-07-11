@@ -106,7 +106,7 @@ Packaged builds check the latest published GitHub Release at startup, every four
 
 ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a published release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The Personal Distribution workflow uses 14-day Actions artifacts as temporary staging, then copies the validated installers and checksums into a persistent draft prerelease. Drafts remain available to the repository owner until manually deleted, are not public downloads, and are excluded from the in-app update feed. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
+The Personal Distribution workflow uses Actions artifacts only to transfer packages between jobs. After copying the validated installers and checksums into a persistent draft prerelease, it deletes the temporary artifacts; a one-day expiry is the fallback if cleanup cannot run. Drafts remain available to the repository owner until manually deleted, are not public downloads, and are excluded from the in-app update feed. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
 
 ## Storage and privacy
 
