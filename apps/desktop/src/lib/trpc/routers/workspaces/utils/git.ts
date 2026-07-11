@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, realpath, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { BranchPrefixMode } from "@superset/local-db";
 import friendlyWords from "friendly-words";
@@ -54,14 +54,26 @@ async function isWorktreeRegistered({
 			{ env, timeout: 10_000 },
 		);
 
-		const expectedPath = resolve(worktreePath);
+		const expectedPath = await realpath(worktreePath);
+		const comparableExpectedPath =
+			process.platform === "win32" ? expectedPath.toLowerCase() : expectedPath;
 		for (const line of stdout.split("\n")) {
 			if (!line.startsWith("worktree ")) {
 				continue;
 			}
 
 			const listedPath = line.slice("worktree ".length).trim();
-			if (resolve(listedPath) === expectedPath) {
+			let canonicalListedPath: string;
+			try {
+				canonicalListedPath = await realpath(listedPath);
+			} catch {
+				continue;
+			}
+			const comparableListedPath =
+				process.platform === "win32"
+					? canonicalListedPath.toLowerCase()
+					: canonicalListedPath;
+			if (comparableListedPath === comparableExpectedPath) {
 				return true;
 			}
 		}

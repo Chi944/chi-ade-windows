@@ -80,6 +80,7 @@
 		"mermaid": "11.16.0",
 		"next": "16.2.10",
 		"node-forge": "1.4.0",
+		"node-abi": "3.94.0",
 		"path-to-regexp": "8.4.2",
 		"picomatch": "4.0.5",
 		"postcss": "8.5.16",
