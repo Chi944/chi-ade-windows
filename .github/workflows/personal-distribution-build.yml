@@ -1,6 +1,6 @@
-name: Personal Distribution Build
+name: Direct Download Build
 
-run-name: Personal distribution build from ${{ github.ref_name }} by @${{ github.actor }}
+run-name: Direct download build from ${{ github.ref_name }} by @${{ github.actor }}
 
 on:
   workflow_dispatch:
@@ -9,11 +9,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: personal-distribution-${{ github.ref }}
-  cancel-in-progress: true
+  group: direct-download
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate publication branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        run: |
+          test "$GITHUB_REF" = "refs/heads/main" || {
+            echo "::error::Direct downloads can only be published from main"
+            exit 1
+          }
+
+      - name: Require protected rolling release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/${{ github.repository }}/git/ref/tags/personal-latest" --silent
+
   package:
+    needs: validate
     name: Package unsigned - ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -25,19 +42,19 @@ jobs:
             runner: windows-latest
             target_arch: x64
             package_args: --win --x64
-            artifact_name: personal-windows-x64
+            artifact_name: direct-windows-x64
             checksum_name: SHA256SUMS-windows-x64.txt
           - name: macOS Apple Silicon
             runner: macos-15
             target_arch: arm64
             package_args: --mac --arm64
-            artifact_name: personal-macos-arm64
+            artifact_name: direct-macos-arm64
             checksum_name: SHA256SUMS-macos-arm64.txt
           - name: macOS Intel
             runner: macos-15-intel
             target_arch: x64
             package_args: --mac --x64
-            artifact_name: personal-macos-x64
+            artifact_name: direct-macos-x64
             checksum_name: SHA256SUMS-macos-x64.txt
 
     steps:
@@ -174,11 +191,7 @@ jobs:
             echo "::error::macOS DMG not found"
             exit 1
           }
-          test -n "$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)" || {
-            echo "::error::macOS ZIP not found"
-            exit 1
-          }
-          shasum -a 256 ./*.dmg ./*.zip > "$CHECKSUM_NAME"
+          shasum -a 256 ./*.dmg > "$CHECKSUM_NAME"
 
       - name: Upload Windows installer
         if: runner.os == 'Windows'
@@ -199,13 +212,12 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: |
             apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
             apps/desktop/release/${{ matrix.checksum_name }}
           retention-days: 1
           if-no-files-found: error
 
   archive:
-    name: Archive persistent draft
+    name: Publish rolling direct downloads
     needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -220,7 +232,7 @@ jobs:
       - name: Download validated installers
         uses: actions/download-artifact@v8
         with:
-          pattern: personal-*
+          pattern: direct-*
           path: release-assets
           merge-multiple: true
 
@@ -242,14 +254,29 @@ jobs:
 
           require_count '*.exe' 1
           require_count '*.dmg' 2
-          require_count '*.zip' 2
+          require_count '*.zip' 0
           require_count 'SHA256SUMS-*.txt' 3
+          require_count '*-arm64.dmg' 1
+          require_count '*-x64.dmg' 1
 
           for checksum in SHA256SUMS-*.txt; do
             sha256sum --check "$checksum"
           done
 
-          sha256sum ./*.exe ./*.dmg ./*.zip > SHA256SUMS.txt
+          WINDOWS_INSTALLER=$(find . -maxdepth 1 -type f -name '*.exe' -print -quit)
+          MACOS_APPLE_SILICON=$(find . -maxdepth 1 -type f -name '*-arm64.dmg' -print -quit)
+          MACOS_INTEL=$(find . -maxdepth 1 -type f -name '*-x64.dmg' -print -quit)
+
+          mv "$WINDOWS_INSTALLER" ADE-Windows-x64.exe
+          mv "$MACOS_APPLE_SILICON" ADE-macOS-Apple-Silicon.dmg
+          mv "$MACOS_INTEL" ADE-macOS-Intel.dmg
+          rm SHA256SUMS-*.txt
+
+          sha256sum \
+            ADE-Windows-x64.exe \
+            ADE-macOS-Apple-Silicon.dmg \
+            ADE-macOS-Intel.dmg \
+            > SHA256SUMS.txt
 
       - name: Resolve desktop version
         id: version
@@ -258,27 +285,13 @@ jobs:
           VERSION=$(node -p "require('./apps/desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create persistent draft release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: personal-v${{ steps.version.outputs.version }}-run.${{ github.run_id }}.${{ github.run_attempt }}
-          target_commitish: ${{ github.sha }}
-          name: ADE ${{ steps.version.outputs.version }} Personal Distribution Build ${{ github.run_number }}.${{ github.run_attempt }}
-          body: |
-            Unsigned personal distribution build from `${{ github.sha }}`.
-
-            The installers passed the workflow's typecheck, compile, native-runtime smoke, package-footprint, signature-state, and checksum checks. This draft is retained until manually deleted and is excluded from ADE's stable update feed.
-
-            Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          draft: true
-          prerelease: true
-          make_latest: false
-          fail_on_unmatched_files: true
-          files: |
-            release-assets/*.exe
-            release-assets/*.dmg
-            release-assets/*.zip
-            release-assets/SHA256SUMS*.txt
+      - name: Publish verified rolling direct downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_DIR: release-assets
+        shell: bash
+        run: bash .github/scripts/publish-direct-downloads.sh
 
       - name: Delete temporary staging artifacts
         uses: actions/github-script@v9
@@ -294,11 +307,11 @@ jobs:
               },
             );
             const stagingArtifacts = artifacts.filter(({ name }) =>
-              name.startsWith("personal-"),
+              name.startsWith("direct-"),
             );
             if (stagingArtifacts.length !== 3) {
               throw new Error(
-                `Expected 3 personal-* staging artifacts, found ${stagingArtifacts.length}`,
+                `Expected 3 direct-* staging artifacts, found ${stagingArtifacts.length}`,
               );
             }
 

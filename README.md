@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Chi944/chi-ade-windows/releases">Releases</a>
+  <a href="https://github.com/Chi944/chi-ade-windows/releases/tag/personal-latest">Downloads</a>
   · <a href="https://github.com/Chi944/chi-ade-windows/actions/workflows/ci.yml">Build status</a>
   · <a href="https://github.com/Chi944/chi-ade-windows/issues">Issues</a>
   · <a href="LICENSE.md">License</a>
@@ -18,7 +18,15 @@
 
 ![chi-ade-windows workspace with a local preview and split PowerShell terminal](docs/screenshots/workspace.png)
 
-> Version 0.4 is intended for private testing. Use the manual **Personal Distribution Build** workflow for validated Windows and macOS installers; see the [personal install guide](docs/personal-install.md).
+## Download ADE
+
+| Platform | Installer |
+| --- | --- |
+| Windows 10/11 x64 | [Download the Windows installer](https://github.com/Chi944/chi-ade-windows/releases/download/personal-latest/ADE-Windows-x64.exe) |
+| macOS Apple Silicon | [Download the Apple Silicon DMG](https://github.com/Chi944/chi-ade-windows/releases/download/personal-latest/ADE-macOS-Apple-Silicon.dmg) |
+| macOS Intel | [Download the Intel DMG](https://github.com/Chi944/chi-ade-windows/releases/download/personal-latest/ADE-macOS-Intel.dmg) |
+
+These validated builds are unsigned, so Windows SmartScreen or macOS Gatekeeper may ask for confirmation. See the short [install guide](docs/personal-install.md).
 
 ## One workspace, many agents
 
@@ -98,7 +106,7 @@ Provider API tokens entered in ADE are encrypted with Electron secure storage an
 
 ## Updates
 
-Packaged builds check the latest published GitHub Release at startup, every four hours, and when you choose **Check for Updates**:
+Packaged builds check the latest published stable GitHub Release at startup, every four hours, and when you choose **Check for Updates**:
 
 1. ADE tells you a version is available.
 2. You choose **Download** and can watch its progress.
@@ -106,7 +114,7 @@ Packaged builds check the latest published GitHub Release at startup, every four
 
 ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a published release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The Personal Distribution workflow uses Actions artifacts only to transfer packages between jobs. After copying the validated installers and checksums into a persistent draft prerelease, it deletes the temporary artifacts; a one-day expiry is the fallback if cleanup cannot run. Drafts remain available to the repository owner until manually deleted, are not public downloads, and are excluded from the in-app update feed. The in-app flow applies only after the owner separately reviews and publishes a signed stable release.
+The Direct Download workflow uses Actions artifacts only to transfer packages between jobs. After publishing the validated Windows installer, two macOS DMGs, and their checksum to the rolling `personal-latest` prerelease, it deletes the temporary artifacts; a one-day expiry is the cleanup fallback. Release downloads remain available until replaced by a newer validated build. This unsigned prerelease is excluded from the signed stable update feed.
 
 ## Storage and privacy
 
@@ -126,9 +134,9 @@ Design Mode is limited to `localhost`, `*.localhost`, and `127.0.0.1`. It exclud
 
 | Platform | Status |
 | --- | --- |
-| Windows x64 | Personal workflow produces an unsigned installer and checksum; packaged native-runtime smoke passes before upload. |
-| macOS Apple Silicon | Personal workflow packages and smoke-tests on `macos-15`, then uploads an unsigned DMG, ZIP, and checksums. |
-| macOS Intel | Personal workflow packages and smoke-tests on `macos-15-intel`, then uploads an unsigned DMG, ZIP, and checksums. |
+| Windows x64 | Direct Download workflow publishes an unsigned installer and checksum after packaged native-runtime smoke. |
+| macOS Apple Silicon | Direct Download workflow packages and smoke-tests on `macos-15`, then publishes an unsigned DMG and checksum. |
+| macOS Intel | Direct Download workflow packages and smoke-tests on `macos-15-intel`, then publishes an unsigned DMG and checksum. |
 
 ## SSH status
 
