@@ -23,6 +23,17 @@ export interface SubscriptionProfile {
 	createdAt: number;
 }
 
+export type SubscriptionProfileEnvironmentResolution =
+	| {
+			source: "system";
+			environment: Record<string, string>;
+	  }
+	| {
+			source: "profile";
+			profileId: string;
+			environment: Record<string, string>;
+	  };
+
 interface SubscriptionProfilesFile {
 	version: 1;
 	profiles: SubscriptionProfile[];
@@ -130,29 +141,6 @@ function ensureProfileHome(
 function unboundHomeName(scope: string): string {
 	const suffix = createHash("sha256").update(scope).digest("hex").slice(0, 32);
 	return `unbound-${suffix}`;
-}
-
-function ensureUnboundHome(
-	provider: SubscriptionProfileProvider,
-	scope: string,
-): string {
-	const providerRoot = ensureProviderRoot(provider);
-	const directoryName = unboundHomeName(scope);
-	const home = join(providerRoot, directoryName);
-	if (!existsSync(home)) mkdirSync(home, { mode: 0o700 });
-	if (lstatSync(home).isSymbolicLink()) {
-		throw new Error("Refusing to use a linked unbound account directory");
-	}
-	const realHome = realpathSync(home);
-	const homeRelative = relative(providerRoot, realHome);
-	if (
-		homeRelative !== directoryName ||
-		homeRelative.startsWith(`..${sep}`) ||
-		isAbsolute(homeRelative)
-	) {
-		throw new Error("Unbound account path is outside ADE's data directory");
-	}
-	return realHome;
 }
 
 function removeUnboundHomeDirectory(
@@ -445,9 +433,14 @@ export function createSubscriptionProfile(
 
 export function selectSubscriptionProfile(
 	provider: SubscriptionProfileProvider,
-	id: string,
+	id: string | null,
 ): void {
 	const state = readState();
+	if (id === null) {
+		delete state.selected[provider];
+		writeState(state);
+		return;
+	}
 	if (
 		!state.profiles.some(
 			(profile) => profile.id === id && profile.provider === provider,
@@ -562,19 +555,21 @@ export function getSubscriptionProfileHome(
 
 export function getSubscriptionProfileEnvironment(
 	provider: SubscriptionProfileProvider,
-): Record<string, string> {
+): SubscriptionProfileEnvironmentResolution {
 	const profile = getSelectedSubscriptionProfile(provider);
-	const home = profile
-		? ensureProfileHome(profile)
-		: ensureUnboundHome(provider, "no-selected-profile");
-	return environmentForHome(provider, home);
+	if (!profile) return { source: "system", environment: {} };
+	return {
+		source: "profile",
+		profileId: profile.id,
+		environment: environmentForHome(provider, ensureProfileHome(profile)),
+	};
 }
 
 export function getSubscriptionProfileEnvironmentForPane(
 	provider: SubscriptionProfileProvider,
 	paneId: string,
 	workspaceId?: string,
-): Record<string, string> {
+): SubscriptionProfileEnvironmentResolution {
 	if (!paneId || paneId.length > 200)
 		throw new Error("Invalid terminal pane ID");
 	if (workspaceId !== undefined && (!workspaceId || workspaceId.length > 200)) {
@@ -620,17 +615,17 @@ export function getSubscriptionProfileEnvironmentForPane(
 		}
 	}
 	if (!binding.profileId) {
-		return environmentForHome(
-			provider,
-			ensureUnboundHome(provider, `pane:${paneId}`),
-		);
+		return { source: "system", environment: {} };
 	}
 	const profile = state.profiles.find(
 		(item) => item.id === binding.profileId && item.provider === provider,
 	);
 	if (!profile) throw new Error("Bound account profile not found");
-	const home = ensureProfileHome(profile);
-	return environmentForHome(provider, home);
+	return {
+		source: "profile",
+		profileId: profile.id,
+		environment: environmentForHome(provider, ensureProfileHome(profile)),
+	};
 }
 
 /**
@@ -675,9 +670,9 @@ export function releaseSubscriptionProfileWorkspace(
 }
 
 /**
- * Removes profileless CLI homes that no longer have a pane binding. This keeps
- * cache/history left by older ADE versions or interrupted evictions bounded.
- * The shared status-only home remains available for provider usage checks.
+ * Removes legacy profileless CLI homes that no longer have a pane binding.
+ * System accounts now use each CLI's native home, but old cache/history remains
+ * bounded while the former status-only home is retained conservatively.
  */
 export function pruneOrphanedSubscriptionHomes(): number {
 	// A missing metadata file may indicate recovery/data loss, not a clean first

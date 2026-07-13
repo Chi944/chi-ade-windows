@@ -43,6 +43,23 @@ try {
 			`Migration smoke test is missing tables: ${missing.join(", ")}`,
 		);
 	}
+
+	const projectColumns = sqlite.prepare("PRAGMA table_info(projects)").all();
+	const pinnedColumn = projectColumns.find(
+		(column) => column.name === "is_pinned",
+	);
+	if (!pinnedColumn) {
+		throw new Error("Migration smoke test is missing projects.is_pinned");
+	}
+	if (pinnedColumn.notnull !== 1) {
+		throw new Error("projects.is_pinned must be NOT NULL");
+	}
+	const pinnedDefault = String(pinnedColumn.dflt_value)
+		.replace(/[()'"]/g, "")
+		.toLowerCase();
+	if (pinnedDefault !== "false" && pinnedDefault !== "0") {
+		throw new Error("projects.is_pinned must default to false");
+	}
 	console.log(`Migration smoke passed (${requiredTables.join(", ")})`);
 } finally {
 	sqlite.close();

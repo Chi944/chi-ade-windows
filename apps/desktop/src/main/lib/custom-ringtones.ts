@@ -25,7 +25,9 @@ const CUSTOM_RINGTONE_METADATA_PATH = join(
 	`${CUSTOM_RINGTONE_FILE_STEM}.json`,
 );
 const MAX_CUSTOM_RINGTONE_SIZE_BYTES = 20 * 1024 * 1024;
-const ALLOWED_AUDIO_EXTENSIONS = new Set([".mp3", ".wav", ".ogg"]);
+// MP3 and WAV are supported by both Windows WPF MediaPlayer and macOS afplay.
+// Ogg is intentionally excluded because afplay cannot decode it reliably.
+const ALLOWED_AUDIO_EXTENSIONS = new Set([".mp3", ".wav"]);
 
 interface CustomRingtoneMetadata {
 	name?: string;
@@ -179,7 +181,7 @@ export async function importCustomRingtoneFromPath(
 	sourcePath: string,
 ): Promise<CustomRingtoneInfo> {
 	if (!isAllowedAudioExtension(sourcePath)) {
-		throw new Error("Only .mp3, .wav, and .ogg files are supported");
+		throw new Error("Only .mp3 and .wav files are supported");
 	}
 
 	const sourceStat = statSync(sourcePath);

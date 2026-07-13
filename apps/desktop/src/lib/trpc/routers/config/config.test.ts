@@ -11,6 +11,7 @@ const category: SelectProject = {
 	name: "Windows Projects",
 	color: "default",
 	tabOrder: 0,
+	isPinned: false,
 	lastOpenedAt: Date.now(),
 	createdAt: Date.now(),
 	configToastDismissed: false,

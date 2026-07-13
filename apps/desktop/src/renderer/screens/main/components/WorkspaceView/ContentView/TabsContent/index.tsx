@@ -33,7 +33,7 @@ export function TabsContent() {
 	}, [activeTabId, allTabs]);
 
 	return (
-		<div className="flex-1 min-h-0 flex overflow-hidden">
+		<div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
 			{tabToRender ? <TabView tab={tabToRender} /> : <EmptyTabView />}
 		</div>
 	);

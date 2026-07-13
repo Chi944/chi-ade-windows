@@ -36,3 +36,10 @@ describe("node-pty package filters", () => {
 		expect(files).toContain("!prebuilds/win32-x64/**/*.pdb");
 	});
 });
+
+describe("sound resource packaging", () => {
+	it("keeps one unpacked runtime copy of notification sounds", () => {
+		expect(config.asarUnpack).toContain("**/resources/sounds/**/*");
+		expect(config.files).toContain("!dist/resources/sounds/**/*");
+	});
+});

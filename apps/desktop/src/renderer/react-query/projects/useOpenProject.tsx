@@ -1,6 +1,8 @@
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef } from "react";
 import type { ElectronRouterOutputs } from "renderer/lib/electron-trpc";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { navigateToWorkspace } from "renderer/routes/_authenticated/_dashboard/utils/workspace-navigation";
 import { useGitInitDialogStore } from "renderer/stores/git-init-dialog";
 import { processOpenNewResults } from "./processOpenNewResults";
 import { useOpenFromPath } from "./useOpenFromPath";
@@ -19,6 +21,7 @@ export function useOpenProject() {
 	const openFromPathMutation = useOpenFromPath();
 	const initGitAndOpen = electronTrpc.projects.initGitAndOpen.useMutation();
 	const utils = electronTrpc.useUtils();
+	const navigate = useNavigate();
 
 	const pendingRef = useRef<PendingGitInit | null>(null);
 
@@ -156,8 +159,35 @@ export function useOpenProject() {
 		[openFromPathMutation, showDialog],
 	);
 
+	const openNewAndNavigate = useCallback(async (): Promise<Project[]> => {
+		const openedProjects = await openNew();
+		if (openedProjects.length === 0) return openedProjects;
+
+		await utils.workspaces.getAllGrouped.invalidate();
+		try {
+			const groups = await utils.workspaces.getAllGrouped.fetch();
+			const openedProjectIds = new Set(
+				openedProjects.map((project) => project.id),
+			);
+			const firstWorkspace = groups
+				.filter((group) => openedProjectIds.has(group.project.id))
+				.flatMap((group) => group.workspaces)[0];
+
+			if (firstWorkspace) {
+				await navigateToWorkspace(firstWorkspace.id, navigate);
+			} else {
+				await navigate({ to: "/workspaces" });
+			}
+		} catch {
+			await navigate({ to: "/workspaces" });
+		}
+
+		return openedProjects;
+	}, [navigate, openNew, utils]);
+
 	return {
 		openNew,
+		openNewAndNavigate,
 		openFromPath,
 		isPending:
 			openNewMutation.isPending ||

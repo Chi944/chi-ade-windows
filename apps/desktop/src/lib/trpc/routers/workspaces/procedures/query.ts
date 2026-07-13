@@ -13,6 +13,7 @@ import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
 import { localDb } from "main/lib/local-db";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
+import { compareProjectOrder } from "../../projects/project-order";
 import { getWorkspace } from "../utils/db-helpers";
 import { getWorkspacePath } from "../utils/worktree";
 
@@ -151,7 +152,7 @@ export function getWorkspacesInVisualOrder(): string[] {
 		.from(projects)
 		.where(isNotNull(projects.tabOrder))
 		.all()
-		.sort((a, b) => (a.tabOrder ?? 0) - (b.tabOrder ?? 0));
+		.sort(compareProjectOrder);
 
 	const allWorkspaces = localDb
 		.select()
@@ -256,6 +257,7 @@ export const createQueryProcedures = () => {
 						mainRepoPath: string;
 						hideImage: boolean;
 						iconUrl: string | null;
+						isPinned: boolean;
 					};
 					workspaces: Array<{
 						id: string;
@@ -290,6 +292,7 @@ export const createQueryProcedures = () => {
 						mainRepoPath: project.mainRepoPath,
 						hideImage: project.hideImage ?? false,
 						iconUrl: project.iconUrl ?? null,
+						isPinned: project.isPinned,
 					},
 					workspaces: [],
 				});
@@ -324,8 +327,8 @@ export const createQueryProcedures = () => {
 				}
 			}
 
-			return Array.from(groupsMap.values()).sort(
-				(a, b) => a.project.tabOrder - b.project.tabOrder,
+			return Array.from(groupsMap.values()).sort((a, b) =>
+				compareProjectOrder(a.project, b.project),
 			);
 		}),
 

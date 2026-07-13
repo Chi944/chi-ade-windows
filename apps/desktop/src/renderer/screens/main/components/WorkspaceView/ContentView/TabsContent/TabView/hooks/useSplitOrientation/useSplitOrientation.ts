@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useState } from "react";
+import { chooseAutoSplitOrientation } from "renderer/stores/tabs/split-orientation";
 
 export type SplitOrientation = "vertical" | "horizontal";
 
@@ -14,7 +15,7 @@ export function useSplitOrientation(
 
 		const updateOrientation = () => {
 			const { width, height } = container.getBoundingClientRect();
-			setSplitOrientation(width >= height ? "vertical" : "horizontal");
+			setSplitOrientation(chooseAutoSplitOrientation({ width, height }));
 		};
 
 		updateOrientation();

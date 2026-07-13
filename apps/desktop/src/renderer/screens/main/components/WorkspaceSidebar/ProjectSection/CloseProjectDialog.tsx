@@ -33,14 +33,14 @@ export function CloseProjectDialog({
 			<AlertDialogContent className="max-w-[340px] gap-0 p-0">
 				<AlertDialogHeader className="px-4 pt-4 pb-2">
 					<AlertDialogTitle className="font-medium">
-						Close team "{projectName}"?
+						Close project "{projectName}"?
 					</AlertDialogTitle>
 					<AlertDialogDescription asChild>
 						<div className="text-muted-foreground space-y-1.5">
 							<span className="block">
 								This will close {workspaceCount} agent
 								{workspaceCount !== 1 ? "s" : ""} and kill all active terminals
-								in this team.
+								in this project.
 							</span>
 							<span className="block">
 								Your files and git history will remain on disk.
@@ -64,7 +64,7 @@ export function CloseProjectDialog({
 						className="h-7 px-3 text-xs"
 						onClick={handleConfirm}
 					>
-						Close Team
+						Close Project
 					</Button>
 				</AlertDialogFooter>
 			</AlertDialogContent>

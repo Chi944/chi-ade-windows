@@ -2,6 +2,19 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 const MIB = 1024 * 1024;
+const REQUIRED_SOUND_FILES = [
+	"agentisdonewoman.mp3",
+	"arcade.mp3",
+	"codecompleteafrican.mp3",
+	"codecompleteafrobeat.mp3",
+	"codecompleteedm.mp3",
+	"comebacktothecode.mp3",
+	"ping.mp3",
+	"shabalabadingdong.mp3",
+	"shamisen.mp3",
+	"supersetdoowap.mp3",
+	"supersetquick.mp3",
+] as const;
 
 const LIMITS = {
 	win32: {
@@ -157,6 +170,23 @@ export function validatePackageFootprint({
 	const expectedUnpackedEntries = ["dist", "node_modules", "resources"];
 	if (unpackedEntries.join("\0") !== expectedUnpackedEntries.join("\0")) {
 		fail(`Unexpected app.asar.unpacked entries: ${unpackedEntries.join(", ")}`);
+	}
+
+	const runtimeSounds = join(appUnpacked, "resources", "sounds");
+	assertExists(runtimeSounds, "Unpacked runtime sounds");
+	for (const file of REQUIRED_SOUND_FILES) {
+		assertExists(join(runtimeSounds, file), "Runtime sound file");
+	}
+	const duplicateCompiledSounds = join(
+		appUnpacked,
+		"dist",
+		"resources",
+		"sounds",
+	);
+	if (existsSync(duplicateCompiledSounds)) {
+		fail(
+			`Duplicate compiled sound resources must not be packaged: ${duplicateCompiledSounds}`,
+		);
 	}
 
 	const native = expectedNativePackages(platform, arch);

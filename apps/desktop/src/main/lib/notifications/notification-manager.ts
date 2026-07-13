@@ -56,6 +56,12 @@ export class NotificationManager {
 
 	handleAgentLifecycle(event: AgentLifecycleEvent): void {
 		if (event.eventType === "Start") return;
+
+		// Sound is an independent completion cue. Native notification support and
+		// visible-pane suppression control only the popup, not the user's selected
+		// ringtone (the setting promises a sound whenever a task completes).
+		this.deps.playSound();
+
 		if (!this.deps.isSupported()) return;
 
 		if (this.shouldSuppressForVisiblePane(event)) return;
@@ -76,8 +82,6 @@ export class NotificationManager {
 
 		const key = event.paneId ?? `_anon_${this.counter++}`;
 		this.track(key, notification);
-
-		this.deps.playSound();
 
 		notification.on("click", () => {
 			this.deps.onNotificationClick({

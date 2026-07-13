@@ -39,7 +39,7 @@ import {
  * A quiet row of model logos below the session tab strip. Clicking a logo opens
  * a new session in the current agent's worktree running that model's CLI. The
  * OpenRouter-proxied models (Kimi / MiniMax / GLM) first gate on a stored
- * OpenRouter key; the trailing "+" manages that key.
+ * OpenRouter key; the trailing Provider Hub button manages connections.
  */
 export function ModelBar() {
 	const { workspaceId } = useParams({ strict: false });
@@ -179,9 +179,9 @@ export function ModelBar() {
 	};
 
 	return (
-		<div className="flex h-9 shrink-0 items-center gap-0.5 border-b bg-background px-2">
+		<div className="flex h-9 min-w-0 shrink-0 items-center gap-0.5 overflow-hidden border-b bg-background px-2">
 			<div
-				className={`flex items-center gap-0.5 ${
+				className={`hide-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto ${
 					ready ? "" : "pointer-events-none opacity-40"
 				}`}
 			>
@@ -210,7 +210,7 @@ export function ModelBar() {
 									}
 									disabled={!ready}
 									onClick={() => handleModelClick(model)}
-									className="group relative flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted"
+									className="group relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted"
 								>
 									{modelProvider ? (
 										<ProviderIcon
@@ -267,7 +267,7 @@ export function ModelBar() {
 								aria-label={`New session — ${preset.name}`}
 								disabled={!ready}
 								onClick={() => launchPreset(preset)}
-								className="group flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+								className="group flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
 							>
 								<SquareTerminalIcon className="h-4 w-4" />
 							</button>
@@ -282,21 +282,22 @@ export function ModelBar() {
 				))}
 			</div>
 
-			<div className="mx-1 h-4 w-px bg-border" />
+			<div className="mx-1 h-4 w-px shrink-0 bg-border" />
 
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<button
 						type="button"
-						aria-label="Add or manage models"
+						aria-label="Open Provider Hub"
 						onClick={() => setDialog({ mode: "manage" })}
-						className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+						className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
 					>
-						<HiOutlinePlus className="h-4 w-4" />
+						<HiOutlinePlus className="h-3.5 w-3.5" />
+						<span>Providers</span>
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="bottom" showArrow={false}>
-					Add or manage models
+					Open Provider Hub
 				</TooltipContent>
 			</Tooltip>
 

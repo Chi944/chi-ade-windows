@@ -92,6 +92,7 @@ describe("NotificationManager", () => {
 		it("ignores Start events", () => {
 			manager.handleAgentLifecycle(makeEvent({ eventType: "Start" }));
 			expect(manager.activeCount).toBe(0);
+			expect(deps.playSound).not.toHaveBeenCalled();
 		});
 
 		it("shows notification for Stop events", () => {
@@ -112,6 +113,7 @@ describe("NotificationManager", () => {
 			const localManager = new NotificationManager(localDeps);
 			localManager.handleAgentLifecycle(makeEvent());
 			expect(localManager.activeCount).toBe(0);
+			expect(localDeps.playSound).toHaveBeenCalledTimes(1);
 		});
 
 		it("plays sound on notification", () => {
@@ -191,6 +193,7 @@ describe("NotificationManager", () => {
 				}),
 			);
 			expect(localManager.activeCount).toBe(0);
+			expect(localDeps.playSound).toHaveBeenCalledTimes(1);
 		});
 
 		it("does not suppress when window is not focused", () => {

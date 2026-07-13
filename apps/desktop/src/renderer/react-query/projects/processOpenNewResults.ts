@@ -42,8 +42,8 @@ export function processOpenNewResults({
 	if (showSuccessToast && successes.length > 0) {
 		toast.success(
 			successes.length === 1
-				? "Team opened"
-				: `${successes.length} teams opened`,
+				? "Project opened"
+				: `${successes.length} projects opened`,
 		);
 	}
 

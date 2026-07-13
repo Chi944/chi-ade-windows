@@ -70,6 +70,7 @@ const {
 	getGeminiSettingsJsonContent,
 	getMastraHooksJsonContent,
 } = await import("./agent-wrappers");
+const { buildWindowsWrapperScript } = await import("./agent-wrappers-common");
 
 describe("agent-wrappers copilot", () => {
 	beforeEach(() => {
@@ -165,6 +166,30 @@ describe("agent-wrappers copilot", () => {
 		);
 		expect(execLine).not.toContain("{{NOTIFY_PATH}}");
 		expect(wrapper).toContain(execLine);
+	});
+
+	it("prefers a Windows PATHEXT shim over npm's extensionless POSIX shim", () => {
+		if (process.platform !== "win32") return;
+		const realBinDir = path.join(TEST_ROOT, "real-bin");
+		const wrapperPath = path.join(TEST_BIN_DIR, "codex.cjs");
+		mkdirSync(realBinDir, { recursive: true });
+		writeFileSync(
+			path.join(realBinDir, "codex"),
+			"#!/bin/sh\necho wrong-extensionless-shim\n",
+		);
+		writeFileSync(
+			path.join(realBinDir, "codex.cmd"),
+			"@echo off\r\necho real-codex-cmd\r\n",
+		);
+		writeFileSync(wrapperPath, buildWindowsWrapperScript("codex"));
+
+		const testPath = `${TEST_BIN_DIR}${path.delimiter}${realBinDir}${path.delimiter}${process.env.Path || process.env.PATH || ""}`;
+		const output = execFileSync(process.execPath, [wrapperPath], {
+			env: { ...process.env, Path: testPath, PATH: testPath },
+			encoding: "utf8",
+		});
+
+		expect(output.trim()).toBe("real-codex-cmd");
 	});
 
 	it("creates mastracode wrapper passthrough", () => {

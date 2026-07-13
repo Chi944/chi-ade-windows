@@ -1,10 +1,30 @@
 import { describe, expect, it } from "bun:test";
 import {
+	buildCodexAppServerLaunch,
 	getCodexUsageReadError,
 	parseCodexRateLimitWindows,
 } from "./codex-account-usage";
 
 describe("Codex account usage", () => {
+	it("launches a Windows npm shim with verbatim cmd quoting", () => {
+		expect(
+			buildCodexAppServerLaunch(
+				"C:\\Users\\Ada Lovelace\\AppData\\Roaming\\npm\\codex.cmd",
+				"win32",
+				"C:\\Windows\\System32\\cmd.exe",
+			),
+		).toEqual({
+			executable: "C:\\Windows\\System32\\cmd.exe",
+			args: [
+				"/d",
+				"/s",
+				"/c",
+				'""C:\\Users\\Ada Lovelace\\AppData\\Roaming\\npm\\codex.cmd" app-server"',
+			],
+			windowsVerbatimArguments: true,
+		});
+	});
+
 	it("keeps both primary and secondary rate-limit windows", () => {
 		const windows = parseCodexRateLimitWindows({
 			rateLimitsByLimitId: {

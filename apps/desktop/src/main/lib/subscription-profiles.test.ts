@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -34,6 +35,15 @@ const PRUNE_TEST_ROOT = `${TEST_ROOT}-prune`;
 const CAP_TEST_ROOT = `${TEST_ROOT}-cap`;
 const WORKSPACE_TEST_ROOT = `${TEST_ROOT}-workspace`;
 
+function legacyUnboundHome(
+	root: string,
+	provider: "claude" | "codex",
+	scope: string,
+): string {
+	const suffix = createHash("sha256").update(scope).digest("hex").slice(0, 32);
+	return join(root, provider, `unbound-${suffix}`);
+}
+
 describe("subscription profiles", () => {
 	beforeAll(() => {
 		setSubscriptionProfilesRootForTests(TEST_ROOT);
@@ -49,28 +59,32 @@ describe("subscription profiles", () => {
 		rmSync(WORKSPACE_TEST_ROOT, { recursive: true, force: true });
 	});
 
-	it("releases inactive and restorable homes for a deleted workspace", () => {
+	it("releases workspace bindings without deleting named account homes", () => {
 		setSubscriptionProfilesRootForTests(WORKSPACE_TEST_ROOT);
 		try {
+			const claudeProfile = createSubscriptionProfile("claude", "Personal");
+			const codexProfile = createSubscriptionProfile("codex", "Personal");
 			const paneA = getSubscriptionProfileEnvironmentForPane(
 				"claude",
 				"workspace-pane-a",
 				"workspace-delete",
-			).CLAUDE_CONFIG_DIR;
+			).environment.CLAUDE_CONFIG_DIR;
 			const paneB = getSubscriptionProfileEnvironmentForPane(
 				"codex",
 				"workspace-pane-b",
 				"workspace-delete",
-			).CODEX_HOME;
+			).environment.CODEX_HOME;
 			const retainedPane = getSubscriptionProfileEnvironmentForPane(
 				"codex",
 				"workspace-pane-c",
 				"workspace-keep",
-			).CODEX_HOME;
+			).environment.CODEX_HOME;
 
 			expect(releaseSubscriptionProfileWorkspace("workspace-delete")).toBe(2);
-			expect(existsSync(paneA)).toBe(false);
-			expect(existsSync(paneB)).toBe(false);
+			expect(paneA).toBe(getSubscriptionProfileHome(claudeProfile));
+			expect(paneB).toBe(getSubscriptionProfileHome(codexProfile));
+			expect(existsSync(paneA)).toBe(true);
+			expect(existsSync(paneB)).toBe(true);
 			expect(existsSync(retainedPane)).toBe(true);
 			expect(releaseSubscriptionProfileWorkspace("workspace-delete")).toBe(0);
 		} finally {
@@ -78,42 +92,45 @@ describe("subscription profiles", () => {
 		}
 	});
 
-	it("uses isolated homes instead of global provider accounts when unbound", () => {
+	it("uses the native system account when no named profile is selected", () => {
 		setSubscriptionProfilesRootForTests(UNBOUND_TEST_ROOT);
 		try {
-			const statusHome =
-				getSubscriptionProfileEnvironment("claude").CLAUDE_CONFIG_DIR;
-			const paneA = getSubscriptionProfileEnvironmentForPane(
-				"codex",
-				"pane-a",
-			).CODEX_HOME;
-			const paneB = getSubscriptionProfileEnvironmentForPane(
-				"codex",
-				"pane-b",
-			).CODEX_HOME;
+			const status = getSubscriptionProfileEnvironment("claude");
+			const paneA = getSubscriptionProfileEnvironmentForPane("codex", "pane-a");
+			const paneB = getSubscriptionProfileEnvironmentForPane("codex", "pane-b");
 
-			expect(statusHome).toContain(UNBOUND_TEST_ROOT);
-			expect(paneA).toContain(UNBOUND_TEST_ROOT);
-			expect(paneA).not.toBe(paneB);
-			expect(existsSync(statusHome)).toBe(true);
-			expect(existsSync(paneA)).toBe(true);
+			expect(status).toEqual({ source: "system", environment: {} });
+			expect(paneA).toEqual({ source: "system", environment: {} });
+			expect(paneB).toEqual({ source: "system", environment: {} });
+			expect(listSubscriptionProfiles().selected).toEqual({});
 		} finally {
 			setSubscriptionProfilesRootForTests(TEST_ROOT);
 		}
 	});
 
-	it("prunes orphaned unbound homes while preserving active and status homes", () => {
+	it("prunes legacy unbound homes while preserving active and status homes", () => {
 		setSubscriptionProfilesRootForTests(PRUNE_TEST_ROOT);
 		try {
-			const statusHome = getSubscriptionProfileEnvironment("codex").CODEX_HOME;
-			const activeHome = getSubscriptionProfileEnvironmentForPane(
+			getSubscriptionProfileEnvironmentForPane("codex", "active-pane");
+			getSubscriptionProfileEnvironmentForPane("codex", "orphan-pane");
+			const statusHome = legacyUnboundHome(
+				PRUNE_TEST_ROOT,
 				"codex",
-				"active-pane",
-			).CODEX_HOME;
-			const orphanHome = getSubscriptionProfileEnvironmentForPane(
+				"no-selected-profile",
+			);
+			const activeHome = legacyUnboundHome(
+				PRUNE_TEST_ROOT,
 				"codex",
-				"orphan-pane",
-			).CODEX_HOME;
+				"pane:active-pane",
+			);
+			const orphanHome = legacyUnboundHome(
+				PRUNE_TEST_ROOT,
+				"codex",
+				"pane:orphan-pane",
+			);
+			for (const home of [statusHome, activeHome, orphanHome]) {
+				mkdirSync(home, { recursive: true });
+			}
 
 			const metadataPath = join(PRUNE_TEST_ROOT, "profiles.json");
 			const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
@@ -131,10 +148,13 @@ describe("subscription profiles", () => {
 			expect(existsSync(activeHome)).toBe(false);
 			expect(releaseSubscriptionProfilePane("active-pane")).toBe(false);
 
-			const recoveredHome = getSubscriptionProfileEnvironmentForPane(
+			getSubscriptionProfileEnvironmentForPane("codex", "recovered-pane");
+			const recoveredHome = legacyUnboundHome(
+				PRUNE_TEST_ROOT,
 				"codex",
-				"recovered-pane",
-			).CODEX_HOME;
+				"pane:recovered-pane",
+			);
+			mkdirSync(recoveredHome, { recursive: true });
 			rmSync(metadataPath);
 			expect(pruneOrphanedSubscriptionHomes()).toBe(0);
 			expect(existsSync(recoveredHome)).toBe(true);
@@ -146,10 +166,7 @@ describe("subscription profiles", () => {
 	it("refuses to evict a live binding when the safety cap is reached", () => {
 		setSubscriptionProfilesRootForTests(CAP_TEST_ROOT);
 		try {
-			const oldestHome = getSubscriptionProfileEnvironmentForPane(
-				"claude",
-				"pane-0",
-			).CLAUDE_CONFIG_DIR;
+			getSubscriptionProfileEnvironmentForPane("claude", "pane-0");
 			const metadataPath = join(CAP_TEST_ROOT, "profiles.json");
 			const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
 				bindings: Record<string, unknown>;
@@ -166,7 +183,10 @@ describe("subscription profiles", () => {
 			expect(() =>
 				getSubscriptionProfileEnvironmentForPane("claude", "pane-over-cap"),
 			).toThrow("Too many remembered terminal sessions");
-			expect(existsSync(oldestHome)).toBe(true);
+			const unchangedMetadata = JSON.parse(
+				readFileSync(metadataPath, "utf8"),
+			) as { bindings: Record<string, unknown> };
+			expect(Object.keys(unchangedMetadata.bindings)).toHaveLength(5000);
 		} finally {
 			setSubscriptionProfilesRootForTests(TEST_ROOT);
 		}
@@ -178,17 +198,20 @@ describe("subscription profiles", () => {
 
 		expect(getSelectedSubscriptionProfile("codex")?.id).toBe(work.id);
 		expect(
-			getSubscriptionProfileEnvironmentForPane("codex", "pane-a").CODEX_HOME,
+			getSubscriptionProfileEnvironmentForPane("codex", "pane-a").environment
+				.CODEX_HOME,
 		).toBe(getSubscriptionProfileHome(work));
 		selectSubscriptionProfile("codex", personal.id);
-		expect(getSubscriptionProfileEnvironment("codex").CODEX_HOME).toBe(
-			getSubscriptionProfileHome(personal),
-		);
 		expect(
-			getSubscriptionProfileEnvironmentForPane("codex", "pane-a").CODEX_HOME,
+			getSubscriptionProfileEnvironment("codex").environment.CODEX_HOME,
+		).toBe(getSubscriptionProfileHome(personal));
+		expect(
+			getSubscriptionProfileEnvironmentForPane("codex", "pane-a").environment
+				.CODEX_HOME,
 		).toBe(getSubscriptionProfileHome(work));
 		expect(
-			getSubscriptionProfileEnvironmentForPane("codex", "pane-b").CODEX_HOME,
+			getSubscriptionProfileEnvironmentForPane("codex", "pane-b").environment
+				.CODEX_HOME,
 		).toBe(getSubscriptionProfileHome(personal));
 
 		removeSubscriptionProfile("codex", personal.id);
@@ -197,6 +220,16 @@ describe("subscription profiles", () => {
 		expect(listSubscriptionProfiles().profiles).toHaveLength(1);
 		expect(releaseSubscriptionProfilePane("pane-a")).toBe(true);
 		expect(existsSync(getSubscriptionProfileHome(work))).toBe(true);
+
+		selectSubscriptionProfile("codex", null);
+		expect(getSelectedSubscriptionProfile("codex")).toBeNull();
+		expect(getSubscriptionProfileEnvironment("codex")).toEqual({
+			source: "system",
+			environment: {},
+		});
+		expect(
+			getSubscriptionProfileEnvironmentForPane("codex", "pane-system"),
+		).toEqual({ source: "system", environment: {} });
 	});
 
 	it("refuses to recursively remove a linked profile directory", () => {

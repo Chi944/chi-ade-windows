@@ -51,6 +51,7 @@ export function probeBinaryCommand(
 			child = spawn(executable, args, {
 				stdio: "ignore",
 				windowsHide: true,
+				windowsVerbatimArguments: isWindowsScript,
 				shell: false,
 				env: options.env,
 			});

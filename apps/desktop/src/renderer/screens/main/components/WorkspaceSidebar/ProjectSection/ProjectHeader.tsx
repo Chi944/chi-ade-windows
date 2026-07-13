@@ -8,6 +8,11 @@ import {
 	ContextMenuSubTrigger,
 	ContextMenuTrigger,
 } from "@superset/ui/context-menu";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@superset/ui/hover-card";
 import { toast } from "@superset/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@superset/ui/tooltip";
 import { cn } from "@superset/ui/utils";
@@ -20,6 +25,8 @@ import {
 	LuImageOff,
 	LuPalette,
 	LuPencil,
+	LuPin,
+	LuPinOff,
 	LuSettings,
 	LuX,
 } from "react-icons/lu";
@@ -34,6 +41,7 @@ import {
 import { STROKE_WIDTH } from "../constants";
 import { RenameInput } from "../RenameInput";
 import { CloseProjectDialog } from "./CloseProjectDialog";
+import { ProjectHoverCardContent } from "./ProjectHoverCard";
 import { ProjectThumbnail } from "./ProjectThumbnail";
 
 interface ProjectHeaderProps {
@@ -44,12 +52,14 @@ interface ProjectHeaderProps {
 	mainRepoPath: string;
 	hideImage: boolean;
 	iconUrl: string | null;
+	isPinned: boolean;
 	/** Whether the project section is collapsed (workspaces hidden) */
 	isCollapsed: boolean;
 	/** Whether the sidebar is in collapsed mode (icon-only view) */
 	isSidebarCollapsed?: boolean;
 	onToggleCollapse: () => void;
 	workspaceCount: number;
+	threadCount: number;
 	onNewWorkspace: () => void;
 }
 
@@ -61,10 +71,12 @@ export function ProjectHeader({
 	mainRepoPath,
 	hideImage,
 	iconUrl,
+	isPinned,
 	isCollapsed,
 	isSidebarCollapsed = false,
 	onToggleCollapse,
 	workspaceCount,
+	threadCount,
 	onNewWorkspace,
 }: ProjectHeaderProps) {
 	const utils = electronTrpc.useUtils();
@@ -133,6 +145,7 @@ export function ProjectHeader({
 	};
 
 	const handleOpenInFinder = () => {
+		if (!mainRepoPath) return;
 		openInFinder.mutate(mainRepoPath);
 	};
 
@@ -141,7 +154,8 @@ export function ProjectHeader({
 	};
 
 	const updateProject = useUpdateProject({
-		onError: (error) => toast.error(`Failed to update color: ${error.message}`),
+		onError: (error) =>
+			toast.error(`Failed to update project: ${error.message}`),
 	});
 
 	const handleColorChange = (color: string) => {
@@ -151,6 +165,23 @@ export function ProjectHeader({
 	const handleToggleImage = () => {
 		updateProject.mutate({ id: projectId, patch: { hideImage: !hideImage } });
 	};
+
+	const handleTogglePin = () => {
+		updateProject.mutate({ id: projectId, patch: { isPinned: !isPinned } });
+	};
+
+	const projectHoverCard = (
+		<HoverCardContent side="right" align="start" className="w-72">
+			<ProjectHoverCardContent
+				projectName={projectName}
+				githubOwner={githubOwner}
+				mainRepoPath={mainRepoPath}
+				agentCount={workspaceCount}
+				threadCount={threadCount}
+				isPinned={isPinned}
+			/>
+		</HoverCardContent>
+	);
 
 	// Color picker submenu used in both collapsed and expanded context menus
 	const colorPickerSubmenu = (
@@ -186,19 +217,19 @@ export function ProjectHeader({
 		</ContextMenuSub>
 	);
 
-	// Collapsed sidebar: show just the thumbnail with tooltip and context menu
+	// Collapsed sidebar: show just the thumbnail with hover details and context menu
 	if (isSidebarCollapsed) {
 		return (
 			<>
 				<ContextMenu>
-					<Tooltip delayDuration={300}>
-						<ContextMenuTrigger asChild>
-							<TooltipTrigger asChild>
+					<HoverCard openDelay={300} closeDelay={100}>
+						<HoverCardTrigger asChild>
+							<ContextMenuTrigger asChild>
 								<button
 									type="button"
 									onClick={onToggleCollapse}
 									className={cn(
-										"flex items-center justify-center size-8 rounded-md",
+										"relative flex items-center justify-center size-8 rounded-md",
 										"hover:bg-muted/50 transition-colors",
 									)}
 								>
@@ -209,32 +240,41 @@ export function ProjectHeader({
 										githubOwner={githubOwner}
 										iconUrl={iconUrl}
 									/>
+									{isPinned && (
+										<LuPin className="absolute -right-0.5 -top-0.5 size-3 text-muted-foreground" />
+									)}
 								</button>
-							</TooltipTrigger>
-						</ContextMenuTrigger>
-						<TooltipContent className="flex flex-col gap-0.5">
-							<span className="font-medium">{projectName}</span>
-							<span className="text-xs text-muted-foreground">
-								{workspaceCount} agent{workspaceCount !== 1 ? "s" : ""}
-							</span>
-						</TooltipContent>
-					</Tooltip>
+							</ContextMenuTrigger>
+						</HoverCardTrigger>
+						{projectHoverCard}
+					</HoverCard>
 					<ContextMenuContent>
+						<ContextMenuItem onSelect={handleTogglePin}>
+							{isPinned ? (
+								<LuPinOff className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
+							) : (
+								<LuPin className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
+							)}
+							{isPinned ? "Unpin" : "Pin"}
+						</ContextMenuItem>
 						<ContextMenuItem onSelect={rename.startRename}>
 							<LuPencil className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
 							Rename
 						</ContextMenuItem>
 						<ContextMenuSeparator />
-						<ContextMenuItem onSelect={handleOpenInFinder}>
+						<ContextMenuItem
+							onSelect={handleOpenInFinder}
+							disabled={!mainRepoPath}
+						>
 							<LuFolderOpen
 								className="size-4 mr-2"
 								strokeWidth={STROKE_WIDTH}
 							/>
-							Open in Finder
+							Show in folder
 						</ContextMenuItem>
 						<ContextMenuItem onSelect={handleOpenSettings}>
 							<LuSettings className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
-							Team Settings
+							Project Settings
 						</ContextMenuItem>
 						{colorPickerSubmenu}
 						<ContextMenuSeparator />
@@ -247,7 +287,7 @@ export function ProjectHeader({
 								className="size-4 mr-2 text-destructive"
 								strokeWidth={STROKE_WIDTH}
 							/>
-							{closeProject.isPending ? "Closing..." : "Close Team"}
+							{closeProject.isPending ? "Closing..." : "Close Project"}
 						</ContextMenuItem>
 					</ContextMenuContent>
 				</ContextMenu>
@@ -293,25 +333,36 @@ export function ProjectHeader({
 								/>
 							</div>
 						) : (
-							<button
-								type="button"
-								onClick={onToggleCollapse}
-								onDoubleClick={rename.startRename}
-								className="flex items-center gap-2 flex-1 min-w-0 py-0.5 text-left cursor-pointer"
-							>
-								<ProjectThumbnail
-									projectId={projectId}
-									projectName={projectName}
-									projectColor={projectColor}
-									githubOwner={githubOwner}
-									hideImage={hideImage}
-									iconUrl={iconUrl}
-								/>
-								<span className="truncate">{projectName}</span>
-								<span className="text-xs text-muted-foreground tabular-nums font-normal">
-									({workspaceCount})
-								</span>
-							</button>
+							<HoverCard openDelay={300} closeDelay={100}>
+								<HoverCardTrigger asChild>
+									<button
+										type="button"
+										onClick={onToggleCollapse}
+										onDoubleClick={rename.startRename}
+										className="flex items-center gap-2 flex-1 min-w-0 py-0.5 text-left cursor-pointer"
+									>
+										<ProjectThumbnail
+											projectId={projectId}
+											projectName={projectName}
+											projectColor={projectColor}
+											githubOwner={githubOwner}
+											hideImage={hideImage}
+											iconUrl={iconUrl}
+										/>
+										<span className="truncate">{projectName}</span>
+										{isPinned && (
+											<LuPin
+												className="size-3.5 shrink-0 text-muted-foreground"
+												strokeWidth={STROKE_WIDTH}
+											/>
+										)}
+										<span className="text-xs text-muted-foreground tabular-nums font-normal">
+											({workspaceCount})
+										</span>
+									</button>
+								</HoverCardTrigger>
+								{projectHoverCard}
+							</HoverCard>
 						)}
 
 						{/* Add workspace button */}
@@ -352,14 +403,25 @@ export function ProjectHeader({
 					</div>
 				</ContextMenuTrigger>
 				<ContextMenuContent>
+					<ContextMenuItem onSelect={handleTogglePin}>
+						{isPinned ? (
+							<LuPinOff className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
+						) : (
+							<LuPin className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
+						)}
+						{isPinned ? "Unpin" : "Pin"}
+					</ContextMenuItem>
 					<ContextMenuItem onSelect={rename.startRename}>
 						<LuPencil className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
 						Rename
 					</ContextMenuItem>
 					<ContextMenuSeparator />
-					<ContextMenuItem onSelect={handleOpenInFinder}>
+					<ContextMenuItem
+						onSelect={handleOpenInFinder}
+						disabled={!mainRepoPath}
+					>
 						<LuFolderOpen className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
-						Open in Finder
+						Show in folder
 					</ContextMenuItem>
 					<ContextMenuItem onSelect={handleOpenSettings}>
 						<LuSettings className="size-4 mr-2" strokeWidth={STROKE_WIDTH} />
@@ -384,7 +446,7 @@ export function ProjectHeader({
 							className="size-4 mr-2 text-destructive"
 							strokeWidth={STROKE_WIDTH}
 						/>
-						{closeProject.isPending ? "Closing..." : "Close Team"}
+						{closeProject.isPending ? "Closing..." : "Close Project"}
 					</ContextMenuItem>
 				</ContextMenuContent>
 			</ContextMenu>

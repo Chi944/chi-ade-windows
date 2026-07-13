@@ -38,6 +38,9 @@ export const projects = sqliteTable(
 		name: text("name").notNull(),
 		color: text("color").notNull(),
 		tabOrder: integer("tab_order"),
+		isPinned: integer("is_pinned", { mode: "boolean" })
+			.notNull()
+			.default(false),
 		lastOpenedAt: integer("last_opened_at")
 			.notNull()
 			.$defaultFn(() => Date.now()),

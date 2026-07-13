@@ -6,12 +6,21 @@ import {
 } from "@superset/shared/agent-command";
 import { safeStorage } from "electron";
 import { localDb } from "./local-db";
+import type { SubscriptionProfileEnvironmentResolution } from "./subscription-profiles";
+
+export interface ProviderRuntimeEnvironmentResolution {
+	environment: Record<string, string>;
+	subscriptionSource: "system" | "profile" | null;
+}
 
 let subscriptionProfileEnvironmentResolver: (
 	provider: "claude" | "codex",
 	paneId?: string,
 	workspaceId?: string,
-) => Record<string, string> = () => ({});
+) => SubscriptionProfileEnvironmentResolution = () => ({
+	source: "system",
+	environment: {},
+});
 
 export function setSubscriptionProfileEnvironmentResolver(
 	resolver:
@@ -19,10 +28,11 @@ export function setSubscriptionProfileEnvironmentResolver(
 				provider: "claude" | "codex",
 				paneId?: string,
 				workspaceId?: string,
-		  ) => Record<string, string>)
+		  ) => SubscriptionProfileEnvironmentResolution)
 		| null,
 ): void {
-	subscriptionProfileEnvironmentResolver = resolver ?? (() => ({}));
+	subscriptionProfileEnvironmentResolver =
+		resolver ?? (() => ({ source: "system", environment: {} }));
 }
 
 /**
@@ -173,18 +183,19 @@ export function getProviderRuntimeEnvironment({
 	runtime?: string | null;
 	workspaceId: string;
 	paneId?: string;
-}): Record<string, string> {
-	const result: Record<string, string> = {};
+}): ProviderRuntimeEnvironmentResolution {
+	const environment: Record<string, string> = {};
+	let subscriptionSource: ProviderRuntimeEnvironmentResolution["subscriptionSource"] =
+		null;
 	const effectiveRuntime = runtime;
 	if (effectiveRuntime === "claude" || effectiveRuntime === "codex") {
-		Object.assign(
-			result,
-			subscriptionProfileEnvironmentResolver(
-				effectiveRuntime,
-				paneId,
-				workspaceId,
-			),
+		const resolution = subscriptionProfileEnvironmentResolver(
+			effectiveRuntime,
+			paneId,
+			workspaceId,
 		);
+		Object.assign(environment, resolution.environment);
+		subscriptionSource = resolution.source;
 	}
 	if (
 		effectiveRuntime === "kimi" ||
@@ -192,12 +203,12 @@ export function getProviderRuntimeEnvironment({
 		effectiveRuntime === "glm"
 	) {
 		const openRouterKey = getProviderKey("openrouter");
-		if (openRouterKey) result.OPENROUTER_API_KEY = openRouterKey;
-		return result;
+		if (openRouterKey) environment.OPENROUTER_API_KEY = openRouterKey;
+		return { environment, subscriptionSource };
 	}
 
 	if (effectiveRuntime !== "huggingface" && effectiveRuntime !== "ollama") {
-		return result;
+		return { environment, subscriptionSource };
 	}
 
 	// Read the encrypted profile here as an integrity check. The selected model
@@ -206,8 +217,8 @@ export function getProviderRuntimeEnvironment({
 
 	if (effectiveRuntime === "huggingface") {
 		const huggingFaceToken = getProviderKey("huggingface");
-		if (huggingFaceToken) result.HF_TOKEN = huggingFaceToken;
+		if (huggingFaceToken) environment.HF_TOKEN = huggingFaceToken;
 	}
 
-	return result;
+	return { environment, subscriptionSource };
 }

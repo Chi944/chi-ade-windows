@@ -1,6 +1,3 @@
-import type { ChildProcess } from "node:child_process";
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { TRPCError } from "@trpc/server";
 import type { BrowserWindow, OpenDialogOptions } from "electron";
 import { dialog } from "electron";
@@ -10,6 +7,10 @@ import {
 	importCustomRingtoneFromPath,
 } from "main/lib/custom-ringtones";
 import { getSoundPath } from "main/lib/sound-paths";
+import {
+	type SoundPlaybackHandle,
+	startSoundPlayback,
+} from "main/lib/sound-player";
 import {
 	CUSTOM_RINGTONE_ID,
 	getRingtoneFilename,
@@ -25,7 +26,7 @@ import { publicProcedure, router } from "../..";
  */
 let currentSession: {
 	id: number;
-	process: ChildProcess | null;
+	playback: SoundPlaybackHandle;
 } | null = null;
 let nextSessionId = 0;
 
@@ -34,10 +35,7 @@ let nextSessionId = 0;
  */
 function stopCurrentSound(): void {
 	if (currentSession) {
-		if (currentSession.process) {
-			// Use SIGKILL for immediate termination (afplay doesn't always respond to SIGTERM)
-			currentSession.process.kill("SIGKILL");
-		}
+		currentSession.playback.stop();
 		currentSession = null;
 	}
 }
@@ -46,56 +44,26 @@ function stopCurrentSound(): void {
  * Plays a sound file using platform-specific commands.
  * Uses session tracking to prevent race conditions with fallback audio players.
  */
-function playSoundFile(soundPath: string): void {
-	if (!existsSync(soundPath)) {
-		console.warn(`[ringtone] Sound file not found: ${soundPath}`);
-		return;
-	}
-
+async function playSoundFile(soundPath: string): Promise<void> {
 	// Stop any currently playing sound first
 	stopCurrentSound();
 
 	// Create a new session for this play operation
 	const sessionId = nextSessionId++;
-	currentSession = { id: sessionId, process: null };
+	const playback = startSoundPlayback(soundPath, {
+		onComplete: () => {
+			if (currentSession?.id === sessionId) currentSession = null;
+		},
+		onError: () => {
+			if (currentSession?.id === sessionId) currentSession = null;
+		},
+	});
+	currentSession = { id: sessionId, playback };
 
-	if (process.platform === "darwin") {
-		currentSession.process = execFile("afplay", [soundPath], () => {
-			// Only clear if this session is still active
-			if (currentSession?.id === sessionId) {
-				currentSession = null;
-			}
-		});
-	} else if (process.platform === "win32") {
-		currentSession.process = execFile(
-			"powershell",
-			["-c", `(New-Object Media.SoundPlayer '${soundPath}').PlaySync()`],
-			() => {
-				if (currentSession?.id === sessionId) {
-					currentSession = null;
-				}
-			},
-		);
-	} else {
-		// Linux - try common audio players with race-safe fallback
-		currentSession.process = execFile("paplay", [soundPath], (error) => {
-			// Check if this session is still active before proceeding
-			if (currentSession?.id !== sessionId) {
-				return; // Session was stopped, don't start fallback
-			}
-
-			if (error) {
-				// paplay failed, try aplay as fallback
-				currentSession.process = execFile("aplay", [soundPath], () => {
-					if (currentSession?.id === sessionId) {
-						currentSession = null;
-					}
-				});
-			} else {
-				currentSession = null;
-			}
-		});
-	}
+	// Windows resolves only after WPF has decoded the file, so a broken or
+	// unsupported selection is reported to the renderer instead of appearing to
+	// play successfully. Other platforms resolve when their native player spawns.
+	await playback.started;
 }
 
 function getRingtoneSoundPath(ringtoneId: string): string | null {
@@ -129,13 +97,24 @@ export const createRingtoneRouter = (getWindow: () => BrowserWindow | null) => {
 		 */
 		preview: publicProcedure
 			.input(z.object({ ringtoneId: z.string() }))
-			.mutation(({ input }) => {
+			.mutation(async ({ input }) => {
 				const soundPath = getRingtoneSoundPath(input.ringtoneId);
 				if (!soundPath) {
 					return { success: true as const };
 				}
 
-				playSoundFile(soundPath);
+				try {
+					await playSoundFile(soundPath);
+				} catch (error) {
+					throw new TRPCError({
+						code: "INTERNAL_SERVER_ERROR",
+						message:
+							error instanceof Error
+								? error.message
+								: "Failed to play notification sound",
+						cause: error,
+					});
+				}
 				return { success: true as const };
 			}),
 
@@ -165,7 +144,7 @@ export const createRingtoneRouter = (getWindow: () => BrowserWindow | null) => {
 				filters: [
 					{
 						name: "Audio",
-						extensions: ["mp3", "wav", "ogg"],
+						extensions: ["mp3", "wav"],
 					},
 				],
 			};
@@ -199,11 +178,13 @@ export const createRingtoneRouter = (getWindow: () => BrowserWindow | null) => {
  * Plays the notification sound based on the selected ringtone.
  * This is used by the notification system.
  */
-export function playNotificationRingtone(ringtoneId: string): void {
+export async function playNotificationRingtone(
+	ringtoneId: string,
+): Promise<void> {
 	const soundPath = getRingtoneSoundPath(ringtoneId);
 	if (!soundPath) {
 		return;
 	}
 
-	playSoundFile(soundPath);
+	await playSoundFile(soundPath);
 }

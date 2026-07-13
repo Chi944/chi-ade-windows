@@ -18,7 +18,13 @@ import {
 	HiOutlineFolderOpen,
 	HiOutlinePaintBrush,
 } from "react-icons/hi2";
-import { LuImagePlus, LuTrash2 } from "react-icons/lu";
+import {
+	LuFolderOpen,
+	LuImagePlus,
+	LuPin,
+	LuTrash2,
+	LuUserRound,
+} from "react-icons/lu";
 import { downscaleImageToDataUrl } from "renderer/lib/downscale-image";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import {
@@ -103,14 +109,23 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 	const [customPrefixInput, setCustomPrefixInput] = useState(
 		project?.branchPrefixCustom ?? "",
 	);
+	const [projectNameInput, setProjectNameInput] = useState(project?.name ?? "");
 
 	useEffect(() => {
 		setCustomPrefixInput(project?.branchPrefixCustom ?? "");
 	}, [project?.branchPrefixCustom]);
 
+	useEffect(() => {
+		setProjectNameInput(project?.name ?? "");
+	}, [project?.name]);
+
 	const updateProject = electronTrpc.projects.update.useMutation({
-		onError: (err) => {
+		onError: (err, variables) => {
 			console.error("[project-settings/update] Failed to update:", err);
+			if (variables.patch.name !== undefined) {
+				setProjectNameInput(project?.name ?? "");
+			}
+			toast.error(`Could not update project: ${err.message}`);
 		},
 		onSettled: () => {
 			utils.projects.get.invalidate({ id: projectId });
@@ -197,6 +212,17 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 		});
 	};
 
+	const handleProjectNameBlur = () => {
+		const nextName = projectNameInput.trim();
+		if (!project || !nextName || nextName === project.name) {
+			setProjectNameInput(project?.name ?? "");
+			return;
+		}
+
+		setProjectNameInput(nextName);
+		updateProject.mutate({ id: projectId, patch: { name: nextName } });
+	};
+
 	const { data: globalWorktreeBaseDir } =
 		electronTrpc.settings.getWorktreeBaseDir.useQuery();
 	const defaultWorktreePath = useDefaultWorktreePath();
@@ -244,11 +270,91 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 	return (
 		<div className="p-6 max-w-4xl w-full select-text">
 			<div className="mb-8">
-				<h2 className="text-xl font-semibold">{project.name}</h2>
-				{isRepoBacked && <ClickablePath path={project.mainRepoPath} />}
+				<h2 className="text-xl font-semibold">Project settings</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					Customize how {project.name} appears and creates agents.
+				</p>
 			</div>
 
 			<div className="space-y-4">
+				<SettingsSection
+					icon={<LuUserRound className="h-4 w-4" />}
+					title="Identity & organization"
+					description="Name, location, and sidebar priority for this project."
+				>
+					<div className="flex items-center justify-between gap-4">
+						<div className="space-y-0.5">
+							<Label
+								htmlFor="project-display-name"
+								className="text-sm font-medium"
+							>
+								Display name
+							</Label>
+							<p className="text-xs text-muted-foreground">
+								Shown in the project sidebar and hover card.
+							</p>
+						</div>
+						<Input
+							id="project-display-name"
+							value={projectNameInput}
+							onChange={(event) => setProjectNameInput(event.target.value)}
+							onBlur={handleProjectNameBlur}
+							onKeyDown={(event) => {
+								if (event.key === "Enter") event.currentTarget.blur();
+								if (event.key === "Escape") {
+									setProjectNameInput(project.name);
+									event.preventDefault();
+								}
+							}}
+							disabled={updateProject.isPending}
+							className="w-[280px]"
+						/>
+					</div>
+
+					<div className="flex items-center justify-between gap-4">
+						<div className="space-y-0.5">
+							<div className="flex items-center gap-1.5 text-sm font-medium">
+								<LuFolderOpen className="size-4" />
+								Repository folder
+							</div>
+							<p className="text-xs text-muted-foreground">
+								The project root is chosen when you open the folder.
+							</p>
+						</div>
+						{isRepoBacked ? (
+							<div className="max-w-[420px] overflow-hidden text-right">
+								<ClickablePath path={project.mainRepoPath} />
+							</div>
+						) : (
+							<span className="max-w-[360px] text-right text-xs text-muted-foreground">
+								Agent-owned folders (no shared root)
+							</span>
+						)}
+					</div>
+
+					<div className="flex items-center justify-between gap-4">
+						<div className="space-y-0.5">
+							<div className="flex items-center gap-1.5 text-sm font-medium">
+								<LuPin className="size-4" />
+								Pin project
+							</div>
+							<p className="text-xs text-muted-foreground">
+								Keep this project above unpinned projects in the sidebar.
+							</p>
+						</div>
+						<Switch
+							checked={project.isPinned}
+							onCheckedChange={(checked) =>
+								updateProject.mutate({
+									id: projectId,
+									patch: { isPinned: checked },
+								})
+							}
+							disabled={updateProject.isPending}
+						/>
+					</div>
+				</SettingsSection>
+
 				{isRepoBacked && (
 					<>
 						<SettingsSection
@@ -359,12 +465,12 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 						<SettingsSection
 							icon={<HiOutlineFolderOpen className="h-4 w-4" />}
 							title="Worktree Location"
-							description="Override the global worktree directory for this team."
+							description="Override the global worktree directory for this project."
 						>
 							<WorktreeLocationPicker
 								currentPath={project.worktreeBaseDir}
 								defaultPathLabel={`Using global default: ${globalPath}`}
-								dialogTitle="Select worktree location for this team"
+								dialogTitle="Select worktree location for this project"
 								defaultBrowsePath={
 									project.worktreeBaseDir ?? globalWorktreeBaseDir
 								}
@@ -393,7 +499,7 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 				<SettingsSection
 					icon={<HiOutlinePaintBrush className="h-4 w-4" />}
 					title="Appearance"
-					description="Customize this team's sidebar look."
+					description="Customize this project's sidebar look."
 				>
 					<div className="flex items-center justify-between">
 						<div className="flex items-center gap-2">
@@ -444,7 +550,7 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 					{/* Project Icon */}
 					<div className="flex items-center justify-between">
 						<div className="space-y-0.5">
-							<Label className="text-sm font-medium">Team Icon</Label>
+							<Label className="text-sm font-medium">Project Icon</Label>
 							<p className="text-xs text-muted-foreground">
 								Upload a custom icon for the sidebar.
 							</p>
@@ -453,7 +559,7 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 							{project.iconUrl && (
 								<img
 									src={project.iconUrl}
-									alt="Team icon"
+									alt="Project icon"
 									className="size-8 rounded object-cover border"
 								/>
 							)}

@@ -438,8 +438,13 @@ interface ProviderEnvironmentContext {
 	paneId: string;
 }
 
+export interface ProviderEnvironmentResolution {
+	environment: Record<string, string>;
+	subscriptionSource: "system" | "profile" | null;
+}
+
 let providerEnvironmentResolver:
-	| ((context: ProviderEnvironmentContext) => Record<string, string>)
+	| ((context: ProviderEnvironmentContext) => ProviderEnvironmentResolution)
 	| null = null;
 let coordinationTokenResolver: ((workspaceId: string) => string) | null = null;
 
@@ -451,7 +456,7 @@ export function setOpenRouterKeyResolver(
 
 export function setProviderEnvironmentResolver(
 	resolver:
-		| ((context: ProviderEnvironmentContext) => Record<string, string>)
+		| ((context: ProviderEnvironmentContext) => ProviderEnvironmentResolution)
 		| null,
 ): void {
 	providerEnvironmentResolver = resolver;
@@ -563,10 +568,18 @@ export function buildTerminalEnv(params: {
 	if (providerEnvironmentResolver) {
 		// Profile integrity failures must fail closed. Silently continuing here can
 		// switch a pane from its pinned account to a provider's global account.
-		Object.assign(
-			terminalEnv,
-			providerEnvironmentResolver({ runtime, workspaceId, paneId }),
-		);
+		const resolution = providerEnvironmentResolver({
+			runtime,
+			workspaceId,
+			paneId,
+		});
+		// The system Codex account lives under the CLI's native home. Remove the
+		// per-agent fallback explicitly; named ADE profiles still override it with
+		// their isolated CODEX_HOME from resolution.environment.
+		if (runtime === "codex" && resolution.subscriptionSource === "system") {
+			delete terminalEnv.CODEX_HOME;
+		}
+		Object.assign(terminalEnv, resolution.environment);
 	} else if (openRouterKeyResolver) {
 		try {
 			const openRouterKey = openRouterKeyResolver();

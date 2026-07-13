@@ -240,7 +240,7 @@ export function TabView({ tab }: TabViewProps) {
 	}
 
 	return (
-		<div className="w-full h-full mosaic-container">
+		<div className="w-full h-full min-w-0 overflow-hidden mosaic-container">
 			<Mosaic<string>
 				renderTile={renderPane}
 				value={cleanedLayout}

@@ -7,6 +7,7 @@ import { acknowledgedStatus } from "shared/tabs-types";
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import { movePaneToNewTab, movePaneToTab } from "./actions/move-pane";
+import { chooseAutoSplitOrientation } from "./split-orientation";
 import type {
 	AddFileViewerPaneOptions,
 	AddTabWithMultiplePanesOptions,
@@ -1211,7 +1212,7 @@ export const useTabsStore = create<TabsStore>()(
 				},
 
 				splitPaneAuto: (tabId, sourcePaneId, dimensions, path, options) => {
-					if (dimensions.width >= dimensions.height) {
+					if (chooseAutoSplitOrientation(dimensions) === "vertical") {
 						get().splitPaneVertical(tabId, sourcePaneId, path, options);
 					} else {
 						get().splitPaneHorizontal(tabId, sourcePaneId, path, options);

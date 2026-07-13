@@ -10,7 +10,7 @@ import {
 	workspaces,
 } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull, not } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, not } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { track } from "main/lib/analytics";
@@ -45,6 +45,7 @@ import {
 	refreshDefaultBranch,
 	sanitizeAuthorPrefix,
 } from "../workspaces/utils/git";
+import { compareProjectOrder } from "./project-order";
 import { getDefaultProjectColor } from "./utils/colors";
 import { discoverAndSaveProjectIcon } from "./utils/favicon-discovery";
 import { fetchGitHubOwner, getGitHubAvatarUrl } from "./utils/github";
@@ -852,6 +853,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						workspaceBaseBranch: z.string().nullable().optional(),
 						worktreeBaseDir: z.string().nullable().optional(),
 						hideImage: z.boolean().optional(),
+						isPinned: z.boolean().optional(),
 						defaultApp: z.enum(EXTERNAL_APPS).nullable().optional(),
 					}),
 				}),
@@ -888,6 +890,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						...(input.patch.hideImage !== undefined && {
 							hideImage: input.patch.hideImage,
 						}),
+						...(input.patch.isPinned !== undefined && {
+							isPinned: input.patch.isPinned,
+						}),
 						...(input.patch.defaultApp !== undefined && {
 							defaultApp: input.patch.defaultApp,
 						}),
@@ -912,10 +917,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				const activeProjects = localDb
 					.select()
 					.from(projects)
-					.where(eq(projects.tabOrder, projects.tabOrder)) // Just get all with non-null tabOrder
+					.where(isNotNull(projects.tabOrder))
 					.all()
-					.filter((p) => p.tabOrder !== null)
-					.sort((a, b) => (a.tabOrder ?? 0) - (b.tabOrder ?? 0));
+					.sort(compareProjectOrder);
 
 				if (
 					fromIndex < 0 ||

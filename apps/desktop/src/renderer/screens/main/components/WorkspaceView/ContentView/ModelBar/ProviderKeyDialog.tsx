@@ -93,7 +93,7 @@ export function ProviderKeyDialog({
 		electronTrpc.settings.subscriptionConnections.codexUsage.useQuery(
 			undefined,
 			{
-				enabled: open && Boolean(accountProfiles.data?.selected.codex),
+				enabled: open,
 				staleTime: 60_000,
 				retry: false,
 			},
@@ -290,14 +290,14 @@ export function ProviderKeyDialog({
 	};
 
 	const connectSubscription = (provider: SubscriptionProvider) => {
-		if (!accountProfiles.data?.selected[provider]) {
-			toast.error(
-				`Add a ${provider === "claude" ? "Claude" : "Codex"} account first`,
+		if (!onConnectSubscription) {
+			toast.info(
+				"Open a project, then use its Provider Hub to start a login session",
 			);
 			return;
 		}
 		onOpenChange(false);
-		onConnectSubscription?.(provider);
+		onConnectSubscription(provider);
 	};
 
 	const addSubscriptionAccount = async (provider: SubscriptionProvider) => {
@@ -306,9 +306,15 @@ export function ProviderKeyDialog({
 		try {
 			await createAccountProfile.mutateAsync({ provider, label });
 			setAccountDrafts((current) => ({ ...current, [provider]: "" }));
-			toast.success(`${label} added and selected`);
-			onOpenChange(false);
-			onConnectSubscription?.(provider);
+			if (onConnectSubscription) {
+				toast.success(`${label} added and selected`);
+				onOpenChange(false);
+				onConnectSubscription(provider);
+			} else {
+				toast.success(
+					`${label} added. Open a project to authorize this account.`,
+				);
+			}
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Could not add the account",
@@ -318,7 +324,7 @@ export function ProviderKeyDialog({
 
 	const selectSubscriptionAccount = async (
 		provider: SubscriptionProvider,
-		id: string,
+		id: string | null,
 		label: string,
 	) => {
 		try {
@@ -372,7 +378,7 @@ export function ProviderKeyDialog({
 			setCustomAgentName("");
 			setCustomAgentCommand("");
 			toast.success(`${name} added to the Agent Bar`);
-			onLaunchPreset?.(preset);
+			if (onLaunchPreset) onLaunchPreset(preset);
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Could not add the agent",
@@ -388,7 +394,7 @@ export function ProviderKeyDialog({
 						? "a Hugging Face profile"
 						: "an Ollama profile"
 			}.`
-		: "Connect subscriptions and add the cloud or local models you choose.";
+		: "Manage subscription accounts and add the cloud or local models you choose.";
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -443,7 +449,7 @@ export function ProviderKeyDialog({
 									createPreset.isPending
 								}
 							>
-								Add & launch
+								{onLaunchPreset ? "Add & launch" : "Add agent"}
 							</Button>
 						</div>
 
@@ -466,14 +472,16 @@ export function ProviderKeyDialog({
 											</div>
 										</div>
 										<div className="flex shrink-0 gap-1">
-											<Button
-												variant="outline"
-												size="sm"
-												onClick={() => onLaunchPreset?.(preset)}
-											>
-												<PlayIcon className="h-3.5 w-3.5" />
-												Launch
-											</Button>
+											{onLaunchPreset && (
+												<Button
+													variant="outline"
+													size="sm"
+													onClick={() => onLaunchPreset(preset)}
+												>
+													<PlayIcon className="h-3.5 w-3.5" />
+													Launch
+												</Button>
+											)}
 											<Button
 												variant="ghost"
 												size="sm"
@@ -494,16 +502,24 @@ export function ProviderKeyDialog({
 						<div>
 							<h3 className="text-sm font-medium">Subscriptions</h3>
 							<p className="text-xs text-muted-foreground">
-								Account profiles hot-swap new sessions without re-login. Running
-								sessions stay on the account that started them. ADE stores
-								labels and profile IDs; the official CLIs own all credentials.
+								System account reuses the Claude and Codex login already stored
+								by the official CLIs. Add isolated alternate profiles only when
+								you need account switching; running sessions stay on their
+								original account.
 							</p>
+							{!onConnectSubscription && (
+								<p className="mt-1 text-xs text-amber-500/90">
+									Login terminals launch from a project. Open a project and
+									choose Providers in its agent bar to connect or reconnect.
+								</p>
+							)}
 						</div>
 						<div className="grid gap-2 sm:grid-cols-2">
 							{(["claude", "codex"] as const).map((provider) => {
 								const state = connectionStatus.data?.[provider];
 								const label = provider === "claude" ? "Claude" : "Codex";
 								const selectedId = accountProfiles.data?.selected[provider];
+								const systemSelected = selectedId == null;
 								const providerProfiles =
 									accountProfiles.data?.profiles.filter(
 										(profile) => profile.provider === provider,
@@ -530,68 +546,90 @@ export function ProviderKeyDialog({
 											<Button
 												variant="outline"
 												size="sm"
-												disabled={!state || !selectedId}
+												disabled={!state || !onConnectSubscription}
 												onClick={() => connectSubscription(provider)}
 											>
-												{!state?.installed
-													? "Install"
-													: state.authenticated
-														? "Reconnect"
-														: "Connect"}
+												{!onConnectSubscription
+													? "Connect in project"
+													: !state?.installed
+														? "Install"
+														: state.authenticated
+															? "Reconnect"
+															: "Connect"}
 											</Button>
 										</div>
 
-										{providerProfiles.length > 0 && (
-											<div className="space-y-1">
-												{providerProfiles.map((profile) => {
-													const selected = profile.id === selectedId;
-													return (
-														<div
-															key={profile.id}
-															className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 ${selected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+										<div className="space-y-1">
+											<button
+												type="button"
+												onClick={() =>
+													void selectSubscriptionAccount(
+														provider,
+														null,
+														"System account",
+													)
+												}
+												className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs ${systemSelected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+											>
+												<span
+													className={`size-2 shrink-0 rounded-full ${systemSelected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
+												/>
+												<span className="min-w-0 flex-1">
+													<span className="block truncate">System account</span>
+													<span className="block truncate text-[11px] text-muted-foreground">
+														Uses your existing {label} CLI login
+													</span>
+												</span>
+												{systemSelected && (
+													<span className="shrink-0 text-violet-400">
+														Active
+													</span>
+												)}
+											</button>
+											{providerProfiles.map((profile) => {
+												const selected = profile.id === selectedId;
+												return (
+													<div
+														key={profile.id}
+														className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 ${selected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+													>
+														<button
+															type="button"
+															onClick={() =>
+																void selectSubscriptionAccount(
+																	provider,
+																	profile.id,
+																	profile.label,
+																)
+															}
+															className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
 														>
-															<button
-																type="button"
-																onClick={() =>
-																	void selectSubscriptionAccount(
-																		provider,
-																		profile.id,
-																		profile.label,
-																	)
-																}
-																className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
-															>
-																<span
-																	className={`size-2 rounded-full ${selected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
-																/>
-																<span className="truncate">
-																	{profile.label}
-																</span>
-																{selected && (
-																	<span className="text-violet-400">
-																		Active
-																	</span>
-																)}
-															</button>
-															<button
-																type="button"
-																onClick={() =>
-																	void removeSubscriptionAccount(
-																		provider,
-																		profile.id,
-																		profile.label,
-																	)
-																}
-																className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
-																aria-label={`Remove ${profile.label}`}
-															>
-																<Trash2Icon className="size-3.5" />
-															</button>
-														</div>
-													);
-												})}
-											</div>
-										)}
+															<span
+																className={`size-2 rounded-full ${selected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
+															/>
+															<span className="truncate">{profile.label}</span>
+															{selected && (
+																<span className="text-violet-400">Active</span>
+															)}
+														</button>
+														<button
+															type="button"
+															onClick={() =>
+																void removeSubscriptionAccount(
+																	provider,
+																	profile.id,
+																	profile.label,
+																)
+															}
+															className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+															aria-label={`Remove ${profile.label}`}
+														>
+															<Trash2Icon className="size-3.5" />
+														</button>
+													</div>
+												);
+											})}
+										</div>
 
 										<div className="flex gap-2">
 											<Input
@@ -602,7 +640,7 @@ export function ProviderKeyDialog({
 														[provider]: event.target.value,
 													}))
 												}
-												placeholder="Account label"
+												placeholder="Alternate account label"
 												className="h-8"
 												maxLength={80}
 											/>
@@ -614,7 +652,7 @@ export function ProviderKeyDialog({
 												}
 												onClick={() => void addSubscriptionAccount(provider)}
 											>
-												Add
+												Add alternate
 											</Button>
 										</div>
 										{provider === "claude" && platform === "darwin" && (
@@ -628,13 +666,13 @@ export function ProviderKeyDialog({
 								);
 							})}
 						</div>
-						{accountProfiles.data?.selected.codex && (
+						{connectionStatus.data?.codex.installed && (
 							<div className="space-y-2 rounded-lg border p-3">
 								<div className="flex items-center justify-between gap-3">
 									<div>
 										<p className="text-sm font-medium">Codex usage</p>
 										<p className="text-xs text-muted-foreground">
-											{codexUsage.data?.email ?? "Selected account"}
+											{codexUsage.data?.email ?? "Active account"}
 											{codexUsage.data?.planType
 												? ` · ${codexUsage.data.planType}`
 												: ""}
@@ -886,22 +924,24 @@ export function ProviderKeyDialog({
 															>
 																Use
 															</Button>
-															<Button
-																variant="outline"
-																size="sm"
-																disabled={
-																	busyProvider === provider ||
-																	(provider === "huggingface" &&
-																		!huggingfaceConfigured &&
-																		!huggingFaceToken.trim())
-																}
-																onClick={() =>
-																	saveModelProvider(provider, modelId, true)
-																}
-															>
-																<PlayIcon className="h-3.5 w-3.5" />
-																Launch
-															</Button>
+															{onLaunchModel && (
+																<Button
+																	variant="outline"
+																	size="sm"
+																	disabled={
+																		busyProvider === provider ||
+																		(provider === "huggingface" &&
+																			!huggingfaceConfigured &&
+																			!huggingFaceToken.trim())
+																	}
+																	onClick={() =>
+																		saveModelProvider(provider, modelId, true)
+																	}
+																>
+																	<PlayIcon className="h-3.5 w-3.5" />
+																	Launch
+																</Button>
+															)}
 															<Button
 																variant="ghost"
 																size="sm"

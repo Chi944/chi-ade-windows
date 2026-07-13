@@ -9,7 +9,7 @@ export function ContentView() {
 	const isSidebarOpen = useSidebarStore((s) => s.isSidebarOpen);
 
 	return (
-		<div className="h-full flex flex-col overflow-hidden">
+		<div className="h-full min-w-0 flex flex-col overflow-hidden">
 			<ContentHeader
 				trailingAction={!isSidebarOpen ? <SidebarControl /> : undefined}
 			>

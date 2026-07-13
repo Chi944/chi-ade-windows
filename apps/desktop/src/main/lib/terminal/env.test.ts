@@ -836,7 +836,10 @@ describe("env", () => {
 				process.env.CLAUDE_CONFIG_DIR = "/inherited/claude";
 
 				try {
-					setProviderEnvironmentResolver(() => ({}));
+					setProviderEnvironmentResolver(() => ({
+						environment: {},
+						subscriptionSource: "system",
+					}));
 					const result = buildTerminalEnv({
 						...baseParams,
 						runtime: "claude",
@@ -880,11 +883,40 @@ describe("env", () => {
 				).toThrow("damaged account profile");
 			});
 
+			it("removes the per-agent Codex home for the system account", () => {
+				setProviderEnvironmentResolver(() => ({
+					environment: {},
+					subscriptionSource: "system",
+				}));
+
+				const result = buildTerminalEnv({
+					...baseParams,
+					runtime: "codex",
+				});
+
+				expect(result.CODEX_HOME).toBeUndefined();
+			});
+
+			it("uses an isolated Codex home for a named account profile", () => {
+				setProviderEnvironmentResolver(() => ({
+					environment: { CODEX_HOME: "/profiles/codex-personal" },
+					subscriptionSource: "profile",
+				}));
+
+				const result = buildTerminalEnv({
+					...baseParams,
+					runtime: "codex",
+				});
+
+				expect(result.CODEX_HOME).toBe("/profiles/codex-personal");
+			});
+
 			it("injects Hugging Face credentials only for its explicit runtime", () => {
-				setProviderEnvironmentResolver(
-					({ runtime }): Record<string, string> =>
-						runtime === "huggingface" ? { HF_TOKEN: "hf_secret" } : {},
-				);
+				setProviderEnvironmentResolver(({ runtime }) => {
+					const environment: Record<string, string> =
+						runtime === "huggingface" ? { HF_TOKEN: "hf_secret" } : {};
+					return { environment, subscriptionSource: null };
+				});
 
 				const huggingFace = buildTerminalEnv({
 					...baseParams,

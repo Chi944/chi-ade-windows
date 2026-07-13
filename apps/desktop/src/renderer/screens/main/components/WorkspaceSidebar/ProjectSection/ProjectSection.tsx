@@ -12,6 +12,13 @@ import { ProjectHeader } from "./ProjectHeader";
 
 const PROJECT_TYPE = "PROJECT";
 
+interface ProjectDragItem {
+	projectId: string;
+	index: number;
+	originalIndex: number;
+	isPinned: boolean;
+}
+
 interface Workspace {
 	id: string;
 	projectId: string;
@@ -33,7 +40,9 @@ interface ProjectSectionProps {
 	mainRepoPath: string;
 	hideImage: boolean;
 	iconUrl: string | null;
+	isPinned: boolean;
 	workspaces: Workspace[];
+	threadCount: number;
 	/** Base index for keyboard shortcuts (0-based) */
 	shortcutBaseIndex: number;
 	/** Index for drag-and-drop reordering */
@@ -50,7 +59,9 @@ export function ProjectSection({
 	mainRepoPath,
 	hideImage,
 	iconUrl,
+	isPinned,
 	workspaces,
+	threadCount,
 	shortcutBaseIndex,
 	index,
 	isCollapsed: isSidebarCollapsed = false,
@@ -67,13 +78,23 @@ export function ProjectSection({
 		openModal(projectId);
 	};
 
-	const [{ isDragging }, drag] = useDrag(
+	const [{ isDragging }, drag] = useDrag<
+		ProjectDragItem,
+		unknown,
+		{ isDragging: boolean }
+	>(
 		() => ({
 			type: PROJECT_TYPE,
-			item: { projectId, index, originalIndex: index },
+			item: { projectId, index, originalIndex: index, isPinned },
 			end: (item, monitor) => {
 				if (!item) return;
-				if (monitor.didDrop()) return;
+				const dropResult = monitor.getDropResult<{ accepted: true }>();
+				if (!dropResult?.accepted) {
+					// Hover updates are optimistic. Restore canonical server order when a
+					// project is released outside its own pinned/unpinned group.
+					void utils.workspaces.getAllGrouped.invalidate();
+					return;
+				}
 				if (item.originalIndex !== item.index) {
 					reorderProjects.mutate(
 						{ fromIndex: item.originalIndex, toIndex: item.index },
@@ -89,16 +110,14 @@ export function ProjectSection({
 				isDragging: monitor.isDragging(),
 			}),
 		}),
-		[projectId, index, reorderProjects],
+		[projectId, index, isPinned, reorderProjects, utils],
 	);
 
-	const [, drop] = useDrop({
+	const [, drop] = useDrop<ProjectDragItem, { accepted: true }, unknown>({
 		accept: PROJECT_TYPE,
-		hover: (item: {
-			projectId: string;
-			index: number;
-			originalIndex: number;
-		}) => {
+		canDrop: (item) => item.isPinned === isPinned,
+		hover: (item) => {
+			if (item.isPinned !== isPinned) return;
 			if (item.index !== index) {
 				utils.workspaces.getAllGrouped.setData(undefined, (oldData) => {
 					if (!oldData) return oldData;
@@ -110,22 +129,9 @@ export function ProjectSection({
 				item.index = index;
 			}
 		},
-		drop: (item: {
-			projectId: string;
-			index: number;
-			originalIndex: number;
-		}) => {
-			if (item.originalIndex !== item.index) {
-				reorderProjects.mutate(
-					{ fromIndex: item.originalIndex, toIndex: item.index },
-					{
-						onError: (error) =>
-							toast.error(`Failed to reorder: ${error.message}`),
-						onSettled: () => utils.workspaces.getAllGrouped.invalidate(),
-					},
-				);
-				return { reordered: true };
-			}
+		drop: (item) => {
+			if (item.isPinned !== isPinned) return;
+			return { accepted: true as const };
 		},
 	});
 
@@ -149,10 +155,12 @@ export function ProjectSection({
 					mainRepoPath={mainRepoPath}
 					hideImage={hideImage}
 					iconUrl={iconUrl}
+					isPinned={isPinned}
 					isCollapsed={isCollapsed}
 					isSidebarCollapsed={isSidebarCollapsed}
 					onToggleCollapse={() => toggleProjectCollapsed(projectId)}
 					workspaceCount={workspaces.length}
+					threadCount={threadCount}
 					onNewWorkspace={handleNewWorkspace}
 				/>
 				<AnimatePresence initial={false}>
@@ -214,10 +222,12 @@ export function ProjectSection({
 				mainRepoPath={mainRepoPath}
 				hideImage={hideImage}
 				iconUrl={iconUrl}
+				isPinned={isPinned}
 				isCollapsed={isCollapsed}
 				isSidebarCollapsed={isSidebarCollapsed}
 				onToggleCollapse={() => toggleProjectCollapsed(projectId)}
 				workspaceCount={workspaces.length}
+				threadCount={threadCount}
 				onNewWorkspace={handleNewWorkspace}
 			/>
 

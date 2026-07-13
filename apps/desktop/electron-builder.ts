@@ -216,6 +216,8 @@ const config: Configuration = {
 	files: [
 		"dist/**/*",
 		"!dist/**/*.map",
+		// Source resources below are the single runtime copy of notification sounds.
+		"!dist/resources/sounds/**/*",
 		// Migrations are copied outside ASAR via extraResources below.
 		"!dist/resources/migrations/**/*",
 		// Electron Vite bundles JavaScript dependencies. Prevent electron-builder

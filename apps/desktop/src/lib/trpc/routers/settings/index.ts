@@ -65,8 +65,8 @@ import {
 	type PresetWithUnknownMode,
 } from "./preset-execution-mode";
 
-setSubscriptionConnectionEnvironmentResolver((provider) =>
-	getSubscriptionProfileEnvironment(provider),
+setSubscriptionConnectionEnvironmentResolver(
+	(provider) => getSubscriptionProfileEnvironment(provider).environment,
 );
 
 function isValidRingtoneId(ringtoneId: string): boolean {
@@ -820,7 +820,7 @@ export const createSettingsRouter = () => {
 				.input(
 					z.object({
 						provider: z.enum(SUBSCRIPTION_PROFILE_PROVIDERS),
-						id: z.string().uuid(),
+						id: z.string().uuid().nullable(),
 					}),
 				)
 				.mutation(({ input }) => {

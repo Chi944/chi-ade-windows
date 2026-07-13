@@ -112,8 +112,29 @@ export function getCodexUsageReadError(input: {
 	return null;
 }
 
+export function buildCodexAppServerLaunch(
+	binary: string,
+	platform: NodeJS.Platform = process.platform,
+	comSpec = process.env.ComSpec,
+): {
+	executable: string;
+	args: string[];
+	windowsVerbatimArguments: boolean;
+} {
+	const isWindowsScript =
+		platform === "win32" && /\.(?:cmd|bat)$/i.test(binary);
+	return {
+		executable: isWindowsScript ? (comSpec ?? "cmd.exe") : binary,
+		args: isWindowsScript
+			? ["/d", "/s", "/c", `""${binary}" app-server"`]
+			: ["app-server"],
+		windowsVerbatimArguments: isWindowsScript,
+	};
+}
+
 export async function readSelectedCodexAccountUsage(): Promise<CodexAccountUsage> {
-	const profileEnvironment = getSubscriptionProfileEnvironment("codex");
+	const profileEnvironment =
+		getSubscriptionProfileEnvironment("codex").environment;
 	const childEnvironment = buildCliProcessEnvironment(profileEnvironment);
 	let binary: string | undefined;
 	for (const candidate of await findRealBinariesAsync("codex", {
@@ -130,14 +151,7 @@ export async function readSelectedCodexAccountUsage(): Promise<CodexAccountUsage
 	}
 	if (!binary) return emptyUsage("Codex CLI is not installed");
 
-	const isWindowsScript =
-		process.platform === "win32" && /\.(?:cmd|bat)$/i.test(binary);
-	const executable = isWindowsScript
-		? (process.env.ComSpec ?? "cmd.exe")
-		: binary;
-	const args = isWindowsScript
-		? ["/d", "/s", "/c", `""${binary}" app-server"`]
-		: ["app-server"];
+	const launch = buildCodexAppServerLaunch(binary);
 
 	return new Promise((resolve) => {
 		let settled = false;
@@ -163,9 +177,10 @@ export async function readSelectedCodexAccountUsage(): Promise<CodexAccountUsage
 			resolve(usage);
 		};
 
-		const child = spawn(executable, args, {
+		const child = spawn(launch.executable, launch.args, {
 			stdio: ["pipe", "pipe", "ignore"],
 			windowsHide: true,
+			windowsVerbatimArguments: launch.windowsVerbatimArguments,
 			shell: false,
 			env: childEnvironment,
 		});

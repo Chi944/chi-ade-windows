@@ -1,16 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-mock.module("@superset/shared/agent-binaries", () => ({
-	CHECKED_BINARIES: [
-		"claude",
-		"codex",
-		"opencode",
-		"gemini",
-		"copilot",
-		"cursor-agent",
-		"git",
-	],
-}));
 mock.module("main/lib/agent-setup/utils", () => ({
 	findRealBinariesAsync: async () => [],
 }));
@@ -35,6 +27,21 @@ describe("runtime availability", () => {
 		expect(await probeBinaryVersion("definitely-missing-ade-binary")).toBe(
 			false,
 		);
+	});
+
+	it("executes a Windows command shim with quoted arguments", async () => {
+		if (process.platform !== "win32") return;
+		const directory = mkdtempSync(join(tmpdir(), "ade runtime probe "));
+		const shim = join(directory, "working-cli.cmd");
+		try {
+			writeFileSync(
+				shim,
+				'@echo off\r\nif "%~1"=="--version" exit /b 0\r\nexit /b 1\r\n',
+			);
+			expect(await probeBinaryVersion(shim)).toBe(true);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("settles when a child never exits", async () => {

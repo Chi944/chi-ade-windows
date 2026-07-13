@@ -103,7 +103,7 @@ export function SidebarDropZone({ children, className }: SidebarDropZoneProps) {
 					});
 				}
 			} catch (err) {
-				setError(err instanceof Error ? err.message : "Failed to open team");
+				setError(err instanceof Error ? err.message : "Failed to open project");
 			}
 		},
 		[openFromPath, isPending, navigate],
@@ -140,7 +140,7 @@ export function SidebarDropZone({ children, className }: SidebarDropZoneProps) {
 							</div>
 							<div className="text-center">
 								<p className="text-sm font-medium text-primary">
-									Drop to add team
+									Drop to add project
 								</p>
 								<p className="text-xs text-muted-foreground mt-1">
 									Release to open folder
@@ -161,7 +161,7 @@ export function SidebarDropZone({ children, className }: SidebarDropZoneProps) {
 						<div className="flex flex-col items-center gap-3">
 							<LuLoader className="h-5 w-5 text-muted-foreground animate-spin" />
 							<span className="text-sm text-muted-foreground">
-								Adding team...
+								Adding project...
 							</span>
 						</div>
 					</motion.div>

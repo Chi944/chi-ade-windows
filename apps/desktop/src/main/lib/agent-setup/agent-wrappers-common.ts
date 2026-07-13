@@ -181,7 +181,9 @@ function candidatePaths(dir, name) {
     .split(";")
     .filter(Boolean);
   const hasExtension = Boolean(path.extname(name));
-  const names = hasExtension ? [name] : [name, ...extensions.map((ext) => \`\${name}\${ext.toLowerCase()}\`)];
+  // Windows cannot execute npm's extensionless POSIX shim. Resolve PATHEXT
+  // launchers first so the native .exe or npm .cmd is selected instead.
+  const names = hasExtension ? [name] : extensions.map((ext) => \`\${name}\${ext.toLowerCase()}\`);
   return [...new Set(names)].map((candidate) => path.join(dir, candidate));
 }
 

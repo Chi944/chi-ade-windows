@@ -51,6 +51,7 @@ const {
 	setProviderModelProfile,
 	clearProviderModelProfile,
 	getProviderRuntimeEnvironment,
+	setSubscriptionProfileEnvironmentResolver,
 } = await import("./provider-keys");
 
 describe("provider-keys", () => {
@@ -58,6 +59,7 @@ describe("provider-keys", () => {
 		encryptionAvailable = true;
 		decryptionFails = false;
 		settingsRow = null;
+		setSubscriptionProfileEnvironmentResolver(null);
 		clearProviderModelProfile("huggingface");
 		clearProviderModelProfile("ollama");
 	});
@@ -132,7 +134,8 @@ describe("provider-keys", () => {
 			runtime: "huggingface",
 			workspaceId: "workspace-hf",
 		});
-		expect(runtimeEnv.HF_TOKEN).toBe("hf_secret_token");
+		expect(runtimeEnv.environment.HF_TOKEN).toBe("hf_secret_token");
+		expect(runtimeEnv.subscriptionSource).toBeNull();
 		expect(settingsRow?.providerApiKeys?.huggingface).not.toContain(
 			"hf_secret_token",
 		);
@@ -152,7 +155,10 @@ describe("provider-keys", () => {
 			workspaceId: "workspace-ollama",
 		});
 
-		expect(runtimeEnv).toEqual({});
+		expect(runtimeEnv).toEqual({
+			environment: {},
+			subscriptionSource: null,
+		});
 		expect(settingsRow?.providerApiKeys?.["model:ollama"]).not.toContain(
 			"qwen3-coder:30b",
 		);
@@ -183,13 +189,16 @@ describe("provider-keys", () => {
 				runtime: "claude",
 				workspaceId: "workspace-claude",
 			}),
-		).toEqual({});
+		).toEqual({ environment: {}, subscriptionSource: "system" });
 		expect(
 			getProviderRuntimeEnvironment({
 				runtime: "kimi",
 				workspaceId: "workspace-kimi",
 			}),
-		).toEqual({ OPENROUTER_API_KEY: "sk-or-secret" });
+		).toEqual({
+			environment: { OPENROUTER_API_KEY: "sk-or-secret" },
+			subscriptionSource: null,
+		});
 	});
 
 	it("scopes provider secrets to the explicit runtime", () => {
@@ -201,12 +210,39 @@ describe("provider-keys", () => {
 				runtime: "claude",
 				workspaceId: "workspace-claude",
 			}),
-		).toEqual({});
+		).toEqual({ environment: {}, subscriptionSource: "system" });
 		expect(
 			getProviderRuntimeEnvironment({
 				runtime: "huggingface",
 				workspaceId: "workspace-claude",
 			}),
-		).toEqual({ HF_TOKEN: "hf_secret" });
+		).toEqual({
+			environment: { HF_TOKEN: "hf_secret" },
+			subscriptionSource: null,
+		});
+	});
+
+	it("reports named subscription profiles explicitly", () => {
+		setSubscriptionProfileEnvironmentResolver((provider) => {
+			const environment: Record<string, string> =
+				provider === "codex"
+					? { CODEX_HOME: "C:\\ADE\\codex-profile" }
+					: { CLAUDE_CONFIG_DIR: "C:\\ADE\\claude-profile" };
+			return {
+				source: "profile",
+				profileId: "profile-id",
+				environment,
+			};
+		});
+
+		expect(
+			getProviderRuntimeEnvironment({
+				runtime: "codex",
+				workspaceId: "workspace-codex",
+			}),
+		).toEqual({
+			environment: { CODEX_HOME: "C:\\ADE\\codex-profile" },
+			subscriptionSource: "profile",
+		});
 	});
 });

@@ -12,12 +12,17 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useFeatureFlagEnabled } from "posthog-js/react";
 import { useCallback, useEffect, useState } from "react";
 import { FaGithub, FaSlack } from "react-icons/fa";
-import { HiCheckCircle, HiOutlineArrowTopRightOnSquare } from "react-icons/hi2";
+import {
+	HiCheckCircle,
+	HiOutlineArrowTopRightOnSquare,
+	HiOutlineCommandLine,
+} from "react-icons/hi2";
 import { SiLinear } from "react-icons/si";
 import { env } from "renderer/env.renderer";
 import { apiTrpcClient } from "renderer/lib/api-trpc-client";
 import { authClient } from "renderer/lib/auth-client";
 import { useCollections } from "renderer/routes/_authenticated/providers/CollectionsProvider";
+import { ProviderKeyDialog } from "renderer/screens/main/components/WorkspaceView/ContentView/ModelBar/ProviderKeyDialog";
 import {
 	isItemVisible,
 	SETTING_ITEM_ID,
@@ -58,6 +63,7 @@ export function IntegrationsSettings({
 	const [githubInstallation, setGithubInstallation] =
 		useState<GithubInstallation | null>(null);
 	const [isLoadingGithub, setIsLoadingGithub] = useState(true);
+	const [providerHubOpen, setProviderHubOpen] = useState(false);
 
 	const hasGithubAccess = useFeatureFlagEnabled(
 		FEATURE_FLAGS.GITHUB_INTEGRATION_ACCESS,
@@ -120,6 +126,10 @@ export function IntegrationsSettings({
 						Connect external services to sync data
 					</p>
 				</div>
+				<ProviderHubSettingsCard
+					open={providerHubOpen}
+					onOpenChange={setProviderHubOpen}
+				/>
 				<LocalExtensionsSection />
 				<p className="text-sm text-muted-foreground">
 					Join an organization to use cloud-managed integrations.
@@ -136,6 +146,11 @@ export function IntegrationsSettings({
 					Connect external services to sync data with your organization
 				</p>
 			</div>
+
+			<ProviderHubSettingsCard
+				open={providerHubOpen}
+				onOpenChange={setProviderHubOpen}
+			/>
 
 			<LocalExtensionsSection />
 
@@ -188,6 +203,51 @@ export function IntegrationsSettings({
 				</a>
 			</p>
 		</div>
+	);
+}
+
+function ProviderHubSettingsCard({
+	open,
+	onOpenChange,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+}) {
+	return (
+		<>
+			<Card className="mb-4">
+				<CardHeader className="pb-3">
+					<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+						<div className="flex min-w-0 items-center gap-3">
+							<div className="flex size-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+								<HiOutlineCommandLine className="size-6" />
+							</div>
+							<div className="min-w-0">
+								<div className="font-medium">Provider Hub</div>
+								<CardDescription className="mt-0.5">
+									Manage Claude and Codex accounts, cloud model keys, Ollama
+									models, and terminal agents.
+								</CardDescription>
+							</div>
+						</div>
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => onOpenChange(true)}
+							className="shrink-0 gap-2"
+						>
+							<HiOutlineCommandLine className="size-4" />
+							Open Provider Hub
+						</Button>
+					</div>
+				</CardHeader>
+			</Card>
+			<ProviderKeyDialog
+				open={open}
+				onOpenChange={onOpenChange}
+				mode="manage"
+			/>
+		</>
 	);
 }
 
