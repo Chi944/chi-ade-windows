@@ -36,6 +36,15 @@ import { ScriptsEditor } from "./components/ScriptsEditor";
 
 const REPO_DEFAULT_BASE_BRANCH = "__repo_default__";
 
+function isAbsoluteProjectPath(path: string | undefined): boolean {
+	if (!path) return false;
+	return (
+		path.startsWith("/") ||
+		/^[A-Za-z]:[\\/]/.test(path) ||
+		path.startsWith("\\\\")
+	);
+}
+
 export function SettingsSection({
 	icon,
 	title,
@@ -72,17 +81,24 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 	const { data: project } = electronTrpc.projects.get.useQuery({
 		id: projectId,
 	});
+	const isRepoBacked = isAbsoluteProjectPath(project?.mainRepoPath);
 	const { data: branchData, isLoading: isBranchDataLoading } =
 		electronTrpc.projects.getBranches.useQuery(
 			{ projectId },
-			{ enabled: !!projectId },
+			{ enabled: isRepoBacked },
 		);
-	const { data: gitAuthor } = electronTrpc.projects.getGitAuthor.useQuery({
-		id: projectId,
-	});
+	const { data: gitAuthor } = electronTrpc.projects.getGitAuthor.useQuery(
+		{ id: projectId },
+		{ enabled: isRepoBacked },
+	);
 	const { data: globalBranchPrefix } =
 		electronTrpc.settings.getBranchPrefix.useQuery();
-	const { data: gitInfo } = electronTrpc.settings.getGitInfo.useQuery();
+	const { data: gitInfo } = electronTrpc.settings.getGitInfo.useQuery(
+		undefined,
+		{
+			enabled: isRepoBacked,
+		},
+	);
 
 	const [customPrefixInput, setCustomPrefixInput] = useState(
 		project?.branchPrefixCustom ?? "",
@@ -229,142 +245,150 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 		<div className="p-6 max-w-4xl w-full select-text">
 			<div className="mb-8">
 				<h2 className="text-xl font-semibold">{project.name}</h2>
-				<ClickablePath path={project.mainRepoPath} />
+				{isRepoBacked && <ClickablePath path={project.mainRepoPath} />}
 			</div>
 
 			<div className="space-y-4">
-				<SettingsSection
-					icon={<HiOutlineCog6Tooth className="h-4 w-4" />}
-					title="Branch Prefix"
-					description="Override the default prefix for new agents."
-				>
-					<div className="flex items-center justify-between">
-						<div className="space-y-0.5">
-							<Label className="text-sm font-medium">Branch Prefix</Label>
-							<p className="text-xs text-muted-foreground">
-								Preview:{" "}
-								<code className="bg-muted px-1.5 py-0.5 rounded text-foreground">
-									{previewPrefix
-										? `${previewPrefix}/branch-name`
-										: "branch-name"}
-								</code>
-							</p>
-						</div>
-						<div className="flex items-center gap-2">
-							<Select
-								value={currentMode}
-								onValueChange={handleBranchPrefixModeChange}
-								disabled={updateProject.isPending}
-							>
-								<SelectTrigger className="w-[180px]">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{(
-										Object.entries(BRANCH_PREFIX_MODE_LABELS_WITH_DEFAULT) as [
-											BranchPrefixMode | "default",
-											string,
-										][]
-									).map(([value, label]) => (
-										<SelectItem key={value} value={value}>
-											{label}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-							{currentMode === "custom" && (
-								<Input
-									placeholder="Prefix"
-									value={customPrefixInput}
-									onChange={(e) => setCustomPrefixInput(e.target.value)}
-									onBlur={handleCustomPrefixBlur}
-									className="w-[120px]"
-									disabled={updateProject.isPending}
-								/>
-							)}
-						</div>
-					</div>
-				</SettingsSection>
-
-				<SettingsSection
-					icon={<HiOutlineCog6Tooth className="h-4 w-4" />}
-					title="Agent Base Branch"
-					description="Set the default base branch for new agents in this repository."
-				>
-					<div className="flex items-center justify-between gap-4">
-						<div className="space-y-0.5">
-							<Label className="text-sm font-medium">Default Base Branch</Label>
-							<p className="text-xs text-muted-foreground">
-								Used when creating an agent unless you choose a one-off base
-								branch.
-							</p>
-						</div>
-						<Select
-							value={workspaceBaseBranchValue}
-							onValueChange={handleWorkspaceBaseBranchChange}
-							disabled={updateProject.isPending || isBranchDataLoading}
+				{isRepoBacked && (
+					<>
+						<SettingsSection
+							icon={<HiOutlineCog6Tooth className="h-4 w-4" />}
+							title="Branch Prefix"
+							description="Override the default prefix for new agents."
 						>
-							<SelectTrigger className="w-[260px]">
-								{isBranchDataLoading ? (
-									<span className="text-muted-foreground">Loading...</span>
-								) : (
-									<SelectValue />
-								)}
-							</SelectTrigger>
-							<SelectContent>
-								<SelectItem value={REPO_DEFAULT_BASE_BRANCH}>
-									Use repository default ({repoDefaultBranch})
-								</SelectItem>
-								{workspaceBaseBranchMissing && project.workspaceBaseBranch && (
-									<SelectItem value={project.workspaceBaseBranch}>
-										{project.workspaceBaseBranch} (missing)
-									</SelectItem>
-								)}
-								{(branchData?.branches ?? []).map((branch) => (
-									<SelectItem key={branch.name} value={branch.name}>
-										{branch.name}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-					</div>
-					{workspaceBaseBranchMissing && (
-						<p className="text-xs text-destructive">
-							Branch "{project.workspaceBaseBranch}" no longer exists. New
-							agents will fall back to "{repoDefaultBranch}".
-						</p>
-					)}
-				</SettingsSection>
+							<div className="flex items-center justify-between">
+								<div className="space-y-0.5">
+									<Label className="text-sm font-medium">Branch Prefix</Label>
+									<p className="text-xs text-muted-foreground">
+										Preview:{" "}
+										<code className="bg-muted px-1.5 py-0.5 rounded text-foreground">
+											{previewPrefix
+												? `${previewPrefix}/branch-name`
+												: "branch-name"}
+										</code>
+									</p>
+								</div>
+								<div className="flex items-center gap-2">
+									<Select
+										value={currentMode}
+										onValueChange={handleBranchPrefixModeChange}
+										disabled={updateProject.isPending}
+									>
+										<SelectTrigger className="w-[180px]">
+											<SelectValue />
+										</SelectTrigger>
+										<SelectContent>
+											{(
+												Object.entries(
+													BRANCH_PREFIX_MODE_LABELS_WITH_DEFAULT,
+												) as [BranchPrefixMode | "default", string][]
+											).map(([value, label]) => (
+												<SelectItem key={value} value={value}>
+													{label}
+												</SelectItem>
+											))}
+										</SelectContent>
+									</Select>
+									{currentMode === "custom" && (
+										<Input
+											placeholder="Prefix"
+											value={customPrefixInput}
+											onChange={(e) => setCustomPrefixInput(e.target.value)}
+											onBlur={handleCustomPrefixBlur}
+											className="w-[120px]"
+											disabled={updateProject.isPending}
+										/>
+									)}
+								</div>
+							</div>
+						</SettingsSection>
 
-				<SettingsSection
-					icon={<HiOutlineFolderOpen className="h-4 w-4" />}
-					title="Worktree Location"
-					description="Override the global worktree directory for this team."
-				>
-					<WorktreeLocationPicker
-						currentPath={project.worktreeBaseDir}
-						defaultPathLabel={`Using global default: ${globalPath}`}
-						dialogTitle="Select worktree location for this team"
-						defaultBrowsePath={project.worktreeBaseDir ?? globalWorktreeBaseDir}
-						disabled={updateProject.isPending}
-						onSelect={(path) =>
-							updateProject.mutate({
-								id: projectId,
-								patch: { worktreeBaseDir: path },
-							})
-						}
-						onReset={() =>
-							updateProject.mutate({
-								id: projectId,
-								patch: { worktreeBaseDir: null },
-							})
-						}
-					/>
-				</SettingsSection>
+						<SettingsSection
+							icon={<HiOutlineCog6Tooth className="h-4 w-4" />}
+							title="Agent Base Branch"
+							description="Set the default base branch for new agents in this repository."
+						>
+							<div className="flex items-center justify-between gap-4">
+								<div className="space-y-0.5">
+									<Label className="text-sm font-medium">
+										Default Base Branch
+									</Label>
+									<p className="text-xs text-muted-foreground">
+										Used when creating an agent unless you choose a one-off base
+										branch.
+									</p>
+								</div>
+								<Select
+									value={workspaceBaseBranchValue}
+									onValueChange={handleWorkspaceBaseBranchChange}
+									disabled={updateProject.isPending || isBranchDataLoading}
+								>
+									<SelectTrigger className="w-[260px]">
+										{isBranchDataLoading ? (
+											<span className="text-muted-foreground">Loading...</span>
+										) : (
+											<SelectValue />
+										)}
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value={REPO_DEFAULT_BASE_BRANCH}>
+											Use repository default ({repoDefaultBranch})
+										</SelectItem>
+										{workspaceBaseBranchMissing &&
+											project.workspaceBaseBranch && (
+												<SelectItem value={project.workspaceBaseBranch}>
+													{project.workspaceBaseBranch} (missing)
+												</SelectItem>
+											)}
+										{(branchData?.branches ?? []).map((branch) => (
+											<SelectItem key={branch.name} value={branch.name}>
+												{branch.name}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+							{workspaceBaseBranchMissing && (
+								<p className="text-xs text-destructive">
+									Branch "{project.workspaceBaseBranch}" no longer exists. New
+									agents will fall back to "{repoDefaultBranch}".
+								</p>
+							)}
+						</SettingsSection>
 
-				<div className="pt-3 border-t">
-					<ScriptsEditor projectId={project.id} />
-				</div>
+						<SettingsSection
+							icon={<HiOutlineFolderOpen className="h-4 w-4" />}
+							title="Worktree Location"
+							description="Override the global worktree directory for this team."
+						>
+							<WorktreeLocationPicker
+								currentPath={project.worktreeBaseDir}
+								defaultPathLabel={`Using global default: ${globalPath}`}
+								dialogTitle="Select worktree location for this team"
+								defaultBrowsePath={
+									project.worktreeBaseDir ?? globalWorktreeBaseDir
+								}
+								disabled={updateProject.isPending}
+								onSelect={(path) =>
+									updateProject.mutate({
+										id: projectId,
+										patch: { worktreeBaseDir: path },
+									})
+								}
+								onReset={() =>
+									updateProject.mutate({
+										id: projectId,
+										patch: { worktreeBaseDir: null },
+									})
+								}
+							/>
+						</SettingsSection>
+
+						<div className="pt-3 border-t">
+							<ScriptsEditor projectId={project.id} />
+						</div>
+					</>
+				)}
 
 				<SettingsSection
 					icon={<HiOutlinePaintBrush className="h-4 w-4" />}

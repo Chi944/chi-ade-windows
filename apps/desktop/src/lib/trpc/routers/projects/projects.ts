@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { access, mkdir, rm } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import {
 	BRANCH_PREFIX_MODES,
 	EXTERNAL_APPS,
@@ -339,6 +339,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						.get();
 					if (!project) {
 						throw new Error(`Project ${input.projectId} not found`);
+					}
+					if (!isAbsolute(project.mainRepoPath)) {
+						return { branches: [], defaultBranch: "main" };
 					}
 
 					const git = simpleGit(project.mainRepoPath);
@@ -1150,6 +1153,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					.get();
 
 				if (!project) {
+					return null;
+				}
+				if (!isAbsolute(project.mainRepoPath)) {
 					return null;
 				}
 

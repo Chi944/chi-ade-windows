@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { projects, type SelectProject } from "@superset/local-db";
 import type { RuntimeAvailability } from "@superset/shared/agent-binaries";
+import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
 import { localDb } from "main/lib/local-db";
@@ -11,6 +12,11 @@ import type { SetupAction, SetupDetectionResult } from "shared/types/config";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 import { loadSetupConfig } from "../workspaces/utils/setup";
+import {
+	ensureProjectConfigExists,
+	getProjectConfigPath,
+	isRepoBackedProjectPath,
+} from "./project-config-files";
 
 /**
  * Runtime-binary availability, cached briefly. Shelling out to the login shell
@@ -56,12 +62,6 @@ function hasConfiguredScripts(
 		: [];
 	return setup.length > 0 || teardown.length > 0;
 }
-
-const CONFIG_TEMPLATE = `{
-  "setup": [],
-  "teardown": []
-}
-`;
 
 async function fileExists(path: string): Promise<boolean> {
 	try {
@@ -360,26 +360,6 @@ async function detectSetupDefaults(
 	};
 }
 
-function getConfigPath(mainRepoPath: string): string {
-	return join(mainRepoPath, ".superset", "config.json");
-}
-
-function ensureConfigExists(mainRepoPath: string): string {
-	const configPath = getConfigPath(mainRepoPath);
-	const supersetDir = join(mainRepoPath, ".superset");
-
-	if (!existsSync(configPath)) {
-		// Create .superset directory if it doesn't exist
-		if (!existsSync(supersetDir)) {
-			mkdirSync(supersetDir, { recursive: true });
-		}
-		// Create config.json with template
-		writeFileSync(configPath, CONFIG_TEMPLATE, "utf-8");
-	}
-
-	return configPath;
-}
-
 export const createConfigRouter = () => {
 	return router({
 		// Runtime feature flags surfaced to the renderer. The memory scaffold /
@@ -405,6 +385,9 @@ export const createConfigRouter = () => {
 					.where(eq(projects.id, input.projectId))
 					.get();
 				if (!project) {
+					return false;
+				}
+				if (!isRepoBackedProjectPath(project.mainRepoPath)) {
 					return false;
 				}
 
@@ -440,7 +423,7 @@ export const createConfigRouter = () => {
 				if (!project) {
 					return null;
 				}
-				return ensureConfigExists(project.mainRepoPath);
+				return ensureProjectConfigExists(project.mainRepoPath);
 			}),
 
 		// Get the config file content
@@ -456,7 +439,10 @@ export const createConfigRouter = () => {
 					return { content: null, exists: false };
 				}
 
-				const configPath = getConfigPath(project.mainRepoPath);
+				const configPath = getProjectConfigPath(project.mainRepoPath);
+				if (!configPath) {
+					return { content: null, exists: false };
+				}
 				if (!existsSync(configPath)) {
 					return { content: null, exists: false };
 				}
@@ -479,6 +465,14 @@ export const createConfigRouter = () => {
 					.get();
 				if (!project) {
 					throw new Error("Project not found");
+				}
+				if (!isRepoBackedProjectPath(project.mainRepoPath)) {
+					return {
+						projectSummary: "",
+						actions: [],
+						setupTemplate: [],
+						signals: {},
+					};
 				}
 
 				return await detectSetupDefaults(project.mainRepoPath);
@@ -503,7 +497,13 @@ export const createConfigRouter = () => {
 					throw new Error("Project not found");
 				}
 
-				const configPath = ensureConfigExists(project.mainRepoPath);
+				const configPath = ensureProjectConfigExists(project.mainRepoPath);
+				if (!configPath) {
+					throw new TRPCError({
+						code: "BAD_REQUEST",
+						message: "Setup scripts require a repository-backed project",
+					});
+				}
 
 				// Read and parse existing config, preserving other fields
 				let existingConfig: Record<string, unknown> = {};

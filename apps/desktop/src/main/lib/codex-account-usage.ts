@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { findRealBinariesAsync } from "main/lib/agent-setup/utils";
 import { probeBinaryCommand } from "main/lib/runtime-availability";
+import desktopPackage from "../../../package.json";
 import { buildCliProcessEnvironment } from "./cli-process-env";
 import { getSubscriptionProfileEnvironment } from "./subscription-profiles";
 import { treeKillWithEscalation } from "./tree-kill";
@@ -264,5 +265,5 @@ export async function readSelectedCodexAccountUsage(): Promise<CodexAccountUsage
 }
 
 function appVersion(): string {
-	return process.env.npm_package_version || "0.4.0";
+	return process.env.npm_package_version || desktopPackage.version;
 }

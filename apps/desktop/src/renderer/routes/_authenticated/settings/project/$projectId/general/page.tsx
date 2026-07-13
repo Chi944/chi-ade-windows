@@ -14,26 +14,12 @@ export const Route = createFileRoute(
 			{ input: { id: params.projectId }, type: "query" },
 		];
 
-		const configQueryKey = [
-			["config", "getConfigFilePath"],
-			{ input: { projectId: params.projectId }, type: "query" },
-		];
-
 		try {
-			await Promise.all([
-				context.queryClient.ensureQueryData({
-					queryKey: projectQueryKey,
-					queryFn: () =>
-						electronTrpcClient.projects.get.query({ id: params.projectId }),
-				}),
-				context.queryClient.ensureQueryData({
-					queryKey: configQueryKey,
-					queryFn: () =>
-						electronTrpcClient.config.getConfigFilePath.query({
-							projectId: params.projectId,
-						}),
-				}),
-			]);
+			await context.queryClient.ensureQueryData({
+				queryKey: projectQueryKey,
+				queryFn: () =>
+					electronTrpcClient.projects.get.query({ id: params.projectId }),
+			});
 		} catch (error) {
 			if (error instanceof Error && error.message.includes("not found")) {
 				throw notFound();
