@@ -2,6 +2,7 @@ import type { AgentRuntime } from "@superset/local-db";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import { useCallback, useRef, useState } from "react";
+import { normalizeTerminalCommand } from "renderer/lib/terminal/launch-command";
 import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
 import { consumeSyncedPane } from "renderer/stores/tabs/syncedPaneRegistry";
 import { buildAgentResumeCommand } from "shared/agent-session-recovery";
@@ -255,12 +256,14 @@ export function useTerminalColdRestore({
 					});
 					if (resumeCommand) {
 						// Synced-from-peer panes stage the command without pressing Enter.
-						const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
+						const terminalInput = consumeSyncedPane(paneId)
+							? resumeCommand
+							: normalizeTerminalCommand(resumeCommand);
 						setTimeout(() => {
 							trpcClient.terminal.write
 								.mutate({
 									paneId,
-									data: `${resumeCommand}${stagedNewline}`,
+									data: terminalInput,
 								})
 								.catch((err) => {
 									console.warn(

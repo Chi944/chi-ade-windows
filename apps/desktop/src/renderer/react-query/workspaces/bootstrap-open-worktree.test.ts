@@ -66,7 +66,7 @@ describe("bootstrapOpenWorktree", () => {
 		expect(error).toBeNull();
 		expect(writeToTerminal).toHaveBeenCalledWith({
 			paneId: "pane-1",
-			data: "echo setup\n",
+			data: "echo setup\r",
 			throwOnError: true,
 		});
 	});

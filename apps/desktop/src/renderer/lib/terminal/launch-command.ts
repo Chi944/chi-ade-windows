@@ -23,8 +23,8 @@ interface LaunchCommandInPaneOptions {
 	write: (input: TerminalWriteInput) => Promise<unknown>;
 }
 
-function normalizeTerminalCommand(command: string): string {
-	return command.endsWith("\n") ? command : `${command}\n`;
+export function normalizeTerminalCommand(command: string): string {
+	return `${command.replace(/[\r\n]+$/, "")}\r`;
 }
 
 interface WriteCommandInPaneOptions {

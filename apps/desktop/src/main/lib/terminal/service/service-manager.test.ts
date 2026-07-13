@@ -5,6 +5,7 @@ import type { SessionInfo } from "./types";
 class MockTerminalHostClient extends EventEmitter {
 	killCalls: Array<{ sessionId: string; deleteHistory?: boolean }> = [];
 	createCalls: Array<{ sessionId: string }> = [];
+	writeCalls: Array<{ sessionId: string; data: string }> = [];
 	createGate: Promise<void> | null = null;
 
 	async createOrAttach(params: { sessionId: string }) {
@@ -34,7 +35,9 @@ class MockTerminalHostClient extends EventEmitter {
 		return { sessions: [] };
 	}
 
-	writeNoAck() {}
+	writeNoAck(params: { sessionId: string; data: string }) {
+		this.writeCalls.push(params);
+	}
 	resize() {
 		return Promise.resolve();
 	}
@@ -394,5 +397,28 @@ describe("ServiceTerminalManager kill tracking", () => {
 
 		mockClient.emit("exit", paneId, 0, 15);
 		expect(exitReason).toBe("exited");
+	});
+
+	it("uses carriage return when refreshing a Windows-compatible prompt", () => {
+		const manager = new ServiceTerminalManager();
+		const sessions = (
+			manager as unknown as { sessions: Map<string, SessionInfo> }
+		).sessions;
+		sessions.set("pane-live", {
+			paneId: "pane-live",
+			workspaceId: "ws-1",
+			isAlive: true,
+			lastActive: Date.now(),
+			cwd: "",
+			pid: 123,
+			cols: 80,
+			rows: 24,
+		});
+
+		manager.refreshPromptsForWorkspace("ws-1");
+
+		expect(mockClient.writeCalls).toEqual([
+			{ sessionId: "pane-live", data: "\r" },
+		]);
 	});
 });

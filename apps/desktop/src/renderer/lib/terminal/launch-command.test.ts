@@ -6,7 +6,7 @@ import {
 } from "./launch-command";
 
 describe("launchCommandInPane", () => {
-	it("creates a terminal session and writes the command with a newline", async () => {
+	it("creates a terminal session and submits the command with carriage return", async () => {
 		const createOrAttach = mock(async () => ({}));
 		const write = mock(async () => ({}));
 
@@ -26,12 +26,12 @@ describe("launchCommandInPane", () => {
 		});
 		expect(write).toHaveBeenCalledWith({
 			paneId: "pane-1",
-			data: "echo hello\n",
+			data: "echo hello\r",
 			throwOnError: true,
 		});
 	});
 
-	it("does not append a second newline when command already has one", async () => {
+	it("normalizes a trailing line feed to one carriage return", async () => {
 		const createOrAttach = mock(async () => ({}));
 		const write = mock(async () => ({}));
 
@@ -46,7 +46,27 @@ describe("launchCommandInPane", () => {
 
 		expect(write).toHaveBeenCalledWith({
 			paneId: "pane-1",
-			data: "echo hello\n",
+			data: "echo hello\r",
+			throwOnError: true,
+		});
+	});
+
+	it("does not append a second carriage return", async () => {
+		const createOrAttach = mock(async () => ({}));
+		const write = mock(async () => ({}));
+
+		await launchCommandInPane({
+			paneId: "pane-1",
+			tabId: "tab-1",
+			workspaceId: "ws-1",
+			command: "echo hello\r",
+			createOrAttach,
+			write,
+		});
+
+		expect(write).toHaveBeenCalledWith({
+			paneId: "pane-1",
+			data: "echo hello\r",
 			throwOnError: true,
 		});
 	});
@@ -89,7 +109,7 @@ describe("buildTerminalCommand", () => {
 });
 
 describe("writeCommandsInPane", () => {
-	it("writes joined command with newline", async () => {
+	it("writes and submits the joined command", async () => {
 		const write = mock(async () => ({}));
 
 		await writeCommandsInPane({
@@ -100,7 +120,7 @@ describe("writeCommandsInPane", () => {
 
 		expect(write).toHaveBeenCalledWith({
 			paneId: "pane-1",
-			data: "echo one && echo two\n",
+			data: "echo one && echo two\r",
 			throwOnError: true,
 		});
 	});

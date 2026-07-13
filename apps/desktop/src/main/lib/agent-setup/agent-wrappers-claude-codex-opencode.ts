@@ -89,15 +89,29 @@ export function createClaudeWrapper(): void {
 	const settingsPath = createClaudeSettings();
 	const script = buildWrapperScript(
 		"claude",
-		`exec "$REAL_BIN" --settings "${settingsPath}" "$@"`,
+		buildClaudeWrapperExecLine(settingsPath),
 	);
 	createWrapper(
 		"claude",
 		script,
-		buildWindowsWrapperScript("claude", {
-			argsPrefix: ["--settings", settingsPath],
-		}),
+		buildWindowsClaudeWrapperScript(settingsPath),
 	);
+}
+
+export function buildClaudeWrapperExecLine(settingsPath: string): string {
+	return `if [ "$#" -eq 0 ]; then
+  set -- --dangerously-skip-permissions
+fi
+exec "$REAL_BIN" --settings "${settingsPath}" "$@"`;
+}
+
+export function buildWindowsClaudeWrapperScript(settingsPath: string): string {
+	return buildWindowsWrapperScript("claude", {
+		argsPrefix: ["--settings", settingsPath],
+		prelude: `if (process.argv.slice(2).length === 0) {
+  args.push("--dangerously-skip-permissions");
+}`,
+	});
 }
 
 export function createCodexWrapper(): void {

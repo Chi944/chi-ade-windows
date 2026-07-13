@@ -4,6 +4,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import type { IDisposable, ITheme, Terminal as XTerm } from "@xterm/xterm";
 import type { MutableRefObject, RefObject } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { normalizeTerminalCommand } from "renderer/lib/terminal/launch-command";
 import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import { consumeSyncedPane } from "renderer/stores/tabs/syncedPaneRegistry";
@@ -325,12 +326,14 @@ export function useTerminalLifecycle({
 							: null;
 						if (resumeCommand) {
 							// Synced-from-peer panes stage the command without pressing Enter.
-							const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
+							const terminalInput = consumeSyncedPane(paneId)
+								? resumeCommand
+								: normalizeTerminalCommand(resumeCommand);
 							setTimeout(() => {
 								trpcClient.terminal.write
 									.mutate({
 										paneId,
-										data: `${resumeCommand}${stagedNewline}`,
+										data: terminalInput,
 									})
 									.catch((err) => {
 										console.warn(
@@ -514,12 +517,14 @@ export function useTerminalLifecycle({
 										: null;
 								if (resumeCommand) {
 									// Synced-from-peer panes stage the command without pressing Enter.
-									const stagedNewline = consumeSyncedPane(paneId) ? "" : "\n";
+									const terminalInput = consumeSyncedPane(paneId)
+										? resumeCommand
+										: normalizeTerminalCommand(resumeCommand);
 									setTimeout(() => {
 										trpcClient.terminal.write
 											.mutate({
 												paneId,
-												data: `${resumeCommand}${stagedNewline}`,
+												data: terminalInput,
 											})
 											.catch((err) => {
 												console.warn(

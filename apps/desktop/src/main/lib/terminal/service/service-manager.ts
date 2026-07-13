@@ -1137,7 +1137,7 @@ export class ServiceTerminalManager extends EventEmitter {
 	refreshPromptsForWorkspace(workspaceId: string): void {
 		for (const [paneId, session] of this.sessions.entries()) {
 			if (session.workspaceId === workspaceId && session.isAlive) {
-				this.client.writeNoAck({ sessionId: paneId, data: "\n" });
+				this.client.writeNoAck({ sessionId: paneId, data: "\r" });
 			}
 		}
 	}

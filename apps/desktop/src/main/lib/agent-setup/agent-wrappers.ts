@@ -1,5 +1,7 @@
 export {
+	buildClaudeWrapperExecLine,
 	buildCodexWrapperExecLine,
+	buildWindowsClaudeWrapperScript,
 	CLAUDE_SETTINGS_FILE,
 	cleanupGlobalOpenCodePlugin,
 	createClaudeWrapper,

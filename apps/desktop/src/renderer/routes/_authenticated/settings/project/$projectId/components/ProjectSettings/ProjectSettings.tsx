@@ -1,4 +1,5 @@
 import type { BranchPrefixMode } from "@superset/local-db";
+import { Button } from "@superset/ui/button";
 import { Input } from "@superset/ui/input";
 import { Label } from "@superset/ui/label";
 import {
@@ -27,6 +28,7 @@ import {
 } from "react-icons/lu";
 import { downscaleImageToDataUrl } from "renderer/lib/downscale-image";
 import { electronTrpc } from "renderer/lib/electron-trpc";
+import { useOpenProject } from "renderer/react-query/projects";
 import {
 	PROJECT_COLOR_DEFAULT,
 	PROJECT_COLORS,
@@ -84,6 +86,7 @@ interface ProjectSettingsProps {
 
 export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 	const utils = electronTrpc.useUtils();
+	const { openNewAndNavigate, isPending: isOpeningProject } = useOpenProject();
 	const { data: project } = electronTrpc.projects.get.useQuery({
 		id: projectId,
 	});
@@ -318,18 +321,31 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 								Repository folder
 							</div>
 							<p className="text-xs text-muted-foreground">
-								The project root is chosen when you open the folder.
+								Agents start in this root. Open another folder to switch
+								projects safely.
 							</p>
 						</div>
-						{isRepoBacked ? (
-							<div className="max-w-[420px] overflow-hidden text-right">
-								<ClickablePath path={project.mainRepoPath} />
-							</div>
-						) : (
-							<span className="max-w-[360px] text-right text-xs text-muted-foreground">
-								Agent-owned folders (no shared root)
-							</span>
-						)}
+						<div className="flex max-w-[460px] flex-col items-end gap-2">
+							{isRepoBacked ? (
+								<div className="max-w-full overflow-hidden text-right">
+									<ClickablePath path={project.mainRepoPath} />
+								</div>
+							) : (
+								<span className="text-right text-xs text-muted-foreground">
+									Agent-owned folders (no shared root)
+								</span>
+							)}
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => void openNewAndNavigate()}
+								disabled={isOpeningProject}
+							>
+								<LuFolderOpen className="size-4" />
+								{isOpeningProject ? "Opening..." : "Open another folder..."}
+							</Button>
+						</div>
 					</div>
 
 					<div className="flex items-center justify-between gap-4">
@@ -464,8 +480,8 @@ export function ProjectSettings({ projectId }: ProjectSettingsProps) {
 
 						<SettingsSection
 							icon={<HiOutlineFolderOpen className="h-4 w-4" />}
-							title="Worktree Location"
-							description="Override the global worktree directory for this project."
+							title="Isolated worktree storage"
+							description="Where ADE stores new branch worktrees. This does not change the project folder."
 						>
 							<WorktreeLocationPicker
 								currentPath={project.worktreeBaseDir}

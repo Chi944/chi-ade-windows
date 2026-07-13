@@ -121,10 +121,13 @@ export function WorkspaceSidebar({
 						<span>No projects yet</span>
 						<button
 							type="button"
-							onClick={() => openNewCategory()}
+							onClick={() => void openNewAndNavigate()}
+							disabled={isOpeningProject}
 							className="text-xs mt-2 text-foreground underline underline-offset-2"
 						>
-							Open your first project
+							{isOpeningProject
+								? "Opening..."
+								: "Open your first project folder"}
 						</button>
 					</div>
 				)}

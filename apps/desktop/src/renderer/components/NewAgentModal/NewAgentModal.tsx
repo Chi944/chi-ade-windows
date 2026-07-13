@@ -69,7 +69,7 @@ export function NewAgentModal() {
 	const [name, setName] = useState("");
 	const [role, setRole] = useState("");
 	const [runtime, setRuntime] = useState<AgentRuntime>("claude");
-	const [repoMode, setRepoMode] = useState<RepoMode>("init");
+	const [repoMode, setRepoMode] = useState<RepoMode>("existing");
 	const [cloneUrl, setCloneUrl] = useState("");
 	const [localPath, setLocalPath] = useState("");
 	const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
@@ -86,7 +86,7 @@ export function NewAgentModal() {
 		setName("");
 		setRole("");
 		setRuntime("claude");
-		setRepoMode("init");
+		setRepoMode("existing");
 		setCloneUrl("");
 		setLocalPath("");
 		setPhotoDataUrl(null);
@@ -275,16 +275,25 @@ export function NewAgentModal() {
 					</div>
 
 					<div className="flex flex-col gap-1.5">
-						<Label>Repository</Label>
+						<Label>Working folder / repository</Label>
+						<p className="text-xs text-muted-foreground">
+							Choose the folder where Claude and Codex will start.
+						</p>
 						<RadioGroup
 							value={repoMode}
 							onValueChange={(v) => setRepoMode(v as RepoMode)}
 							className="flex flex-col gap-2"
 						>
 							<div className="flex items-center gap-2">
+								<RadioGroupItem value="existing" id="repo-existing" />
+								<Label htmlFor="repo-existing" className="font-normal">
+									Use an existing project folder (zero-copy)
+								</Label>
+							</div>
+							<div className="flex items-center gap-2">
 								<RadioGroupItem value="init" id="repo-init" />
 								<Label htmlFor="repo-init" className="font-normal">
-									New empty repo
+									Create a new empty repo managed by ADE
 								</Label>
 							</div>
 							<div className="flex items-center gap-2">
@@ -297,12 +306,6 @@ export function NewAgentModal() {
 								<RadioGroupItem value="local" id="repo-local" />
 								<Label htmlFor="repo-local" className="font-normal">
 									Clone from local path
-								</Label>
-							</div>
-							<div className="flex items-center gap-2">
-								<RadioGroupItem value="existing" id="repo-existing" />
-								<Label htmlFor="repo-existing" className="font-normal">
-									Use existing folder (zero-copy)
 								</Label>
 							</div>
 						</RadioGroup>

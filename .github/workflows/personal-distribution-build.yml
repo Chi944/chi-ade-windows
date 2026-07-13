@@ -78,6 +78,14 @@ jobs:
       - name: Typecheck desktop
         run: bun run --cwd apps/desktop typecheck
 
+      - name: Test cross-platform terminal launch paths
+        run: >-
+          bun test
+          apps/desktop/src/renderer/lib/terminal/launch-command.test.ts
+          apps/desktop/src/renderer/react-query/workspaces/bootstrap-open-worktree.test.ts
+          apps/desktop/src/main/lib/agent-setup/agent-wrappers.test.ts
+          apps/desktop/src/main/lib/terminal/service/service-manager.test.ts
+
       - name: Test category config path safety
         run: >-
           bun test

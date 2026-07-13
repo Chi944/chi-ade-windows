@@ -61,6 +61,8 @@ mock.module("node:os", () => ({
 const {
 	buildCodexWrapperExecLine,
 	buildCopilotWrapperExecLine,
+	buildClaudeWrapperExecLine,
+	buildWindowsClaudeWrapperScript,
 	buildWindowsCopilotWrapperScript,
 	buildWrapperScript,
 	createCodexWrapper,
@@ -166,6 +168,22 @@ describe("agent-wrappers copilot", () => {
 		);
 		expect(execLine).not.toContain("{{NOTIFY_PATH}}");
 		expect(wrapper).toContain(execLine);
+	});
+
+	it("defaults bare Claude launches to permission bypass", () => {
+		const settingsPath = path.join(TEST_HOOKS_DIR, "claude-settings.json");
+		const unixExecLine = buildClaudeWrapperExecLine(settingsPath);
+		const windowsWrapper = buildWindowsClaudeWrapperScript(settingsPath);
+
+		expect(unixExecLine).toContain('if [ "$#" -eq 0 ]; then');
+		expect(unixExecLine).toContain("set -- --dangerously-skip-permissions");
+		expect(unixExecLine).toContain(
+			`exec "$REAL_BIN" --settings "${settingsPath}" "$@"`,
+		);
+		expect(windowsWrapper).toContain("if (process.argv.slice(2).length === 0)");
+		expect(windowsWrapper).toContain(
+			'args.push("--dangerously-skip-permissions")',
+		);
 	});
 
 	it("prefers a Windows PATHEXT shim over npm's extensionless POSIX shim", () => {
