@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
+	copyFileSync,
 	mkdirSync,
 	readFileSync,
 	rmSync,
@@ -63,6 +64,7 @@ const {
 	buildCopilotWrapperExecLine,
 	buildClaudeWrapperExecLine,
 	buildWindowsClaudeWrapperScript,
+	buildWindowsCodexWrapperScript,
 	buildWindowsCopilotWrapperScript,
 	buildWrapperScript,
 	createCodexWrapper,
@@ -72,7 +74,9 @@ const {
 	getGeminiSettingsJsonContent,
 	getMastraHooksJsonContent,
 } = await import("./agent-wrappers");
-const { buildWindowsWrapperScript } = await import("./agent-wrappers-common");
+const { buildWindowsWrapperScript, extractNodeCmdShimTarget } = await import(
+	"./agent-wrappers-common"
+);
 
 describe("agent-wrappers copilot", () => {
 	beforeEach(() => {
@@ -160,6 +164,8 @@ describe("agent-wrappers copilot", () => {
 		expect(wrapper).toContain(
 			`"$REAL_BIN" -c 'notify=["bash","${path.join(TEST_HOOKS_DIR, "notify.sh")}"]' "$@"`,
 		);
+		expect(wrapper).toContain("ADE_CODEX_INSTRUCTIONS_CONFIG_PATH");
+		expect(wrapper).toContain('set -- -c "$_superset_codex_instructions" "$@"');
 		expect(wrapper).toContain("SUPERSET_CODEX_START_WATCHER_PID");
 		expect(wrapper).toContain('kill "$SUPERSET_CODEX_START_WATCHER_PID"');
 
@@ -168,6 +174,14 @@ describe("agent-wrappers copilot", () => {
 		);
 		expect(execLine).not.toContain("{{NOTIFY_PATH}}");
 		expect(wrapper).toContain(execLine);
+
+		const windowsWrapper = buildWindowsCodexWrapperScript(
+			path.join(TEST_HOOKS_DIR, "notify.cjs"),
+		);
+		expect(windowsWrapper).toContain(
+			"process.env.ADE_CODEX_INSTRUCTIONS_CONFIG_PATH",
+		);
+		expect(windowsWrapper).toContain('args.unshift("-c", instructionsConfig)');
 	});
 
 	it("defaults bare Claude launches to permission bypass", () => {
@@ -208,6 +222,163 @@ describe("agent-wrappers copilot", () => {
 		});
 
 		expect(output.trim()).toBe("real-codex-cmd");
+	});
+
+	it("recognizes only a complete final npm cmd-shim dispatch", () => {
+		const dispatch =
+			'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*';
+		expect(extractNodeCmdShimTarget(`@echo off\r\n${dispatch}\r\n`)).toBe(
+			"\\node_modules\\@openai\\codex\\bin\\codex.js",
+		);
+		expect(
+			extractNodeCmdShimTarget(
+				`@echo off\r\n${dispatch}\r\necho custom-tail\r\n`,
+			),
+		).toBeNull();
+		expect(extractNodeCmdShimTarget(`@echo off\r\nREM ${dispatch}`)).toBeNull();
+		expect(
+			extractNodeCmdShimTarget(`@echo off\r\necho ${dispatch}`),
+		).toBeNull();
+	});
+
+	it("preserves exact Codex instructions through a Windows npm shim", () => {
+		if (process.platform !== "win32") return;
+		const realBinDir = path.join(TEST_ROOT, "real-bin");
+		const wrapperPath = path.join(TEST_BIN_DIR, "codex.cjs");
+		const instructionsPath = path.join(TEST_ROOT, "codex-instructions.config");
+		const capturePath = path.join(TEST_ROOT, "captured-args.json");
+		const codexEntryPath = path.join(
+			realBinDir,
+			"node_modules",
+			"@openai",
+			"codex",
+			"bin",
+			"codex.js",
+		);
+		const notifyPath = path.join(TEST_HOOKS_DIR, "notify.cjs");
+		mkdirSync(realBinDir, { recursive: true });
+		mkdirSync(path.dirname(codexEntryPath), { recursive: true });
+		writeFileSync(
+			codexEntryPath,
+			'#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.ADE_CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));\n',
+		);
+		writeFileSync(
+			path.join(realBinDir, "codex.cmd"),
+			`@echo off\r\nsetlocal\r\nset "dp0=%~dp0"\r\nset "_prog=${process.execPath}"\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n`,
+		);
+		writeFileSync(wrapperPath, buildWindowsCodexWrapperScript(notifyPath));
+		const instructionText = `Keep %PATH%, %USERPROFILE%, and !^&|<> literal.\n${'"\\\n'.repeat(620)}`;
+		const serializedInstructions = `developer_instructions=${JSON.stringify(instructionText)}`;
+		expect(Buffer.byteLength(serializedInstructions, "utf8")).toBeGreaterThan(
+			3_700,
+		);
+		expect(
+			Buffer.byteLength(serializedInstructions, "utf8"),
+		).toBeLessThanOrEqual(4 * 1024);
+		writeFileSync(instructionsPath, serializedInstructions);
+
+		const testPath = `${TEST_BIN_DIR}${path.delimiter}${realBinDir}${path.delimiter}${process.env.Path || process.env.PATH || ""}`;
+		execFileSync(process.execPath, [wrapperPath, "--model", "gpt-test"], {
+			env: {
+				...process.env,
+				Path: testPath,
+				PATH: testPath,
+				ADE_CAPTURE_PATH: capturePath,
+				ADE_CODEX_INSTRUCTIONS_CONFIG_PATH: instructionsPath,
+			},
+			stdio: "pipe",
+		});
+
+		expect(JSON.parse(readFileSync(capturePath, "utf8"))).toEqual([
+			"-c",
+			serializedInstructions,
+			"-c",
+			`notify=["node",${JSON.stringify(notifyPath)}]`,
+			"--model",
+			"gpt-test",
+		]);
+	});
+
+	it("skips npm-like Codex batch files that are not exact shims", () => {
+		if (process.platform !== "win32") return;
+		const nativeBinDir = path.join(TEST_ROOT, "native-bin");
+		const wrapperPath = path.join(TEST_BIN_DIR, "codex.cjs");
+		const captureScriptPath = path.join(TEST_ROOT, "capture.cjs");
+		mkdirSync(nativeBinDir, { recursive: true });
+		copyFileSync(process.execPath, path.join(nativeBinDir, "codex.exe"));
+		writeFileSync(
+			captureScriptPath,
+			'const fs = require("node:fs");\nfs.writeFileSync(process.env.ADE_CAPTURE_PATH, JSON.stringify(process.argv.slice(2)));\n',
+		);
+		writeFileSync(
+			wrapperPath,
+			buildWindowsWrapperScript("codex", { requireExactArgs: true }),
+		);
+
+		const dispatch =
+			'"%_prog%" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*';
+		const cases = [
+			{
+				name: "trailing-command",
+				lines: [
+					"@echo off",
+					'set "dp0=%~dp0"',
+					'set "_prog=node"',
+					dispatch,
+					"echo custom-tail",
+				],
+			},
+		];
+
+		for (const testCase of cases) {
+			const unsafeBinDir = path.join(TEST_ROOT, `unsafe-${testCase.name}`);
+			const unsafeEntryPath = path.join(
+				unsafeBinDir,
+				"node_modules",
+				"@openai",
+				"codex",
+				"bin",
+				"codex.js",
+			);
+			const capturePath = path.join(
+				TEST_ROOT,
+				`captured-${testCase.name}.json`,
+			);
+			mkdirSync(path.dirname(unsafeEntryPath), { recursive: true });
+			writeFileSync(
+				unsafeEntryPath,
+				'#!/usr/bin/env node\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.ADE_CAPTURE_PATH, JSON.stringify(["unsafe-shim"]));\n',
+			);
+			writeFileSync(
+				path.join(unsafeBinDir, "codex.cmd"),
+				`${testCase.lines.join("\r\n")}\r\n`,
+			);
+
+			const testPath = [
+				TEST_BIN_DIR,
+				unsafeBinDir,
+				nativeBinDir,
+				process.env.Path || process.env.PATH || "",
+			].join(path.delimiter);
+			execFileSync(
+				process.execPath,
+				[wrapperPath, captureScriptPath, "literal %PATH%"],
+				{
+					env: {
+						...process.env,
+						Path: testPath,
+						PATH: testPath,
+						PATHEXT: ".COM;.EXE;.BAT;.CMD",
+						ADE_CAPTURE_PATH: capturePath,
+					},
+					stdio: "pipe",
+				},
+			);
+
+			expect(JSON.parse(readFileSync(capturePath, "utf8"))).toEqual([
+				"literal %PATH%",
+			]);
+		}
 	});
 
 	it("creates mastracode wrapper passthrough", () => {

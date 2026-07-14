@@ -47,12 +47,14 @@ export interface TabsState extends Omit<BaseTabsState, "tabs"> {
 export interface AddTabOptions {
 	initialCwd?: string;
 	agentRuntime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 export interface AddTabWithMultiplePanesOptions {
 	commands: string[];
 	initialCwd?: string;
 	agentRuntime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 /**
@@ -125,6 +127,11 @@ export interface TabsStore extends TabsState {
 	setPaneTerminalProfile: (
 		paneId: string,
 		profileId: string | undefined,
+	) => void;
+	/** Set a transient local choice; the backend pins it when this pane launches. */
+	setPaneSubscriptionProfile: (
+		paneId: string,
+		profileId: string | null,
 	) => void;
 	clearWorkspaceAttentionStatus: (workspaceId: string) => void;
 	resetWorkspaceStatus: (workspaceId: string) => void;

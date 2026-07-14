@@ -24,6 +24,7 @@ import {
 } from "react-icons/lu";
 import { useHotkeyText } from "renderer/stores/hotkeys";
 import type { Tab } from "renderer/stores/tabs/types";
+import { canAddPanesToLayout } from "renderer/stores/tabs/utils";
 
 function getModifierKeyLabel() {
 	const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -63,6 +64,8 @@ export function TabContentContextMenu({
 }: TabContentContextMenuProps) {
 	// Filter out current tab from available targets
 	const targetTabs = availableTabs.filter((t) => t.id !== currentTabId);
+	const currentTab = availableTabs.find((tab) => tab.id === currentTabId);
+	const canSplit = currentTab ? canAddPanesToLayout(currentTab.layout) : false;
 	const clearShortcut = useHotkeyText("CLEAR_TERMINAL");
 	const showClearShortcut = clearShortcut !== "Unassigned";
 	const scrollToBottomShortcut = useHotkeyText("SCROLL_TO_BOTTOM");
@@ -119,14 +122,17 @@ export function TabContentContextMenu({
 					</ContextMenuItem>
 				)}
 				{(getSelection || onPaste) && <ContextMenuSeparator />}
-				<ContextMenuItem onSelect={onSplitHorizontal}>
+				<ContextMenuItem disabled={!canSplit} onSelect={onSplitHorizontal}>
 					<LuRows2 className="size-4" />
 					Split Horizontally
 				</ContextMenuItem>
-				<ContextMenuItem onSelect={onSplitVertical}>
+				<ContextMenuItem disabled={!canSplit} onSelect={onSplitVertical}>
 					<LuColumns2 className="size-4" />
 					Split Vertically
 				</ContextMenuItem>
+				{!canSplit && (
+					<ContextMenuItem disabled>Maximum 6 views</ContextMenuItem>
+				)}
 				{onClearTerminal && (
 					<ContextMenuItem onSelect={onClearTerminal}>
 						<LuEraser className="size-4" />
@@ -154,14 +160,19 @@ export function TabContentContextMenu({
 						Move to Session
 					</ContextMenuSubTrigger>
 					<ContextMenuSubContent>
-						{targetTabs.map((tab) => (
-							<ContextMenuItem
-								key={tab.id}
-								onSelect={() => onMoveToTab(tab.id)}
-							>
-								{tab.name}
-							</ContextMenuItem>
-						))}
+						{targetTabs.map((tab) => {
+							const hasCapacity = canAddPanesToLayout(tab.layout);
+							return (
+								<ContextMenuItem
+									key={tab.id}
+									disabled={!hasCapacity}
+									onSelect={() => onMoveToTab(tab.id)}
+								>
+									{tab.name}
+									{!hasCapacity && " · 6 views"}
+								</ContextMenuItem>
+							);
+						})}
 						{targetTabs.length > 0 && <ContextMenuSeparator />}
 						<ContextMenuItem onSelect={onMoveToNewTab}>
 							<LuPlus className="size-4" />

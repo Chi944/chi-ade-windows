@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { VscTerminalPowershell } from "react-icons/vsc";
 import type { MosaicBranch } from "react-mosaic-component";
+import { electronTrpc } from "renderer/lib/electron-trpc";
 import { StatusIndicator } from "renderer/screens/main/components/StatusIndicator";
 import { useRenamePaneStore } from "renderer/stores/rename-pane-store";
 import {
@@ -59,12 +60,59 @@ export function TabPane({
 	const paneName = useTabsStore((s) => s.panes[paneId]?.name);
 	const paneUserTitle = useTabsStore((s) => s.panes[paneId]?.userTitle);
 	const paneStatus = useTabsStore((s) => s.panes[paneId]?.status);
+	const paneRuntime = useTabsStore((s) => s.panes[paneId]?.agentRuntime);
+	const subscriptionProfileId = useTabsStore(
+		(s) => s.panes[paneId]?.subscriptionProfileId,
+	);
+	const subscriptionProfilePinned = useTabsStore(
+		(s) => s.panes[paneId]?.subscriptionProfilePinned,
+	);
+	const accountProfiles =
+		electronTrpc.settings.subscriptionConnections.profiles.useQuery(undefined, {
+			enabled: typeof subscriptionProfileId === "string",
+			staleTime: 30_000,
+		});
+	const paneBinding =
+		electronTrpc.settings.subscriptionConnections.paneBinding.useQuery(
+			{
+				provider:
+					paneRuntime === "claude" || paneRuntime === "codex"
+						? paneRuntime
+						: "claude",
+				paneId,
+				workspaceId,
+			},
+			{
+				enabled:
+					(paneRuntime === "claude" || paneRuntime === "codex") &&
+					subscriptionProfilePinned === true &&
+					subscriptionProfileId === undefined,
+				staleTime: 30_000,
+				retry: false,
+			},
+		);
 	const setPaneUserTitle = useTabsStore((s) => s.setPaneUserTitle);
 	const isRenamingThisPane = useRenamePaneStore(
 		(s) => s.renamingPaneId === paneId,
 	);
 	const stopRenamingPane = useRenamePaneStore((s) => s.stopRenamingPane);
 	const displayName = paneUserTitle?.trim() || paneName || "Terminal";
+	const accountLabel =
+		paneRuntime !== "claude" && paneRuntime !== "codex"
+			? null
+			: subscriptionProfileId === null
+				? "System"
+				: typeof subscriptionProfileId === "string"
+					? accountProfiles.data
+						? (accountProfiles.data.profiles.find(
+								(profile) => profile.id === subscriptionProfileId,
+							)?.label ?? "Account unavailable")
+						: "Loading account"
+					: subscriptionProfilePinned
+						? paneBinding.isPending
+							? "Loading account"
+							: (paneBinding.data?.label ?? "Account required")
+						: null;
 	const isPowerShell =
 		process.platform === "win32" ||
 		/(?:^|[\\/])(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(displayName);
@@ -156,6 +204,14 @@ export function TabPane({
 								<span className="truncate text-sm text-muted-foreground">
 									{displayName}
 								</span>
+								{accountLabel && (
+									<span
+										title={`${paneRuntime === "claude" ? "Claude" : "Codex"} account: ${accountLabel}`}
+										className="max-w-28 shrink truncate rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground"
+									>
+										{accountLabel}
+									</span>
+								)}
 							</>
 						)}
 						{paneStatus && paneStatus !== "idle" && (
@@ -166,6 +222,7 @@ export function TabPane({
 						splitOrientation={handlers.splitOrientation}
 						onSplitPane={handlers.onSplitPane}
 						onClosePane={handlers.onClosePane}
+						canSplit={handlers.canSplit}
 						closeHotkeyId="CLOSE_TERMINAL"
 					/>
 				</div>

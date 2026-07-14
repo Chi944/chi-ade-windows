@@ -34,6 +34,12 @@ export type SubscriptionProfileEnvironmentResolution =
 			environment: Record<string, string>;
 	  };
 
+export interface SubscriptionProfilePaneBinding {
+	provider: SubscriptionProfileProvider;
+	profileId: string | null;
+	label: string;
+}
+
 interface SubscriptionProfilesFile {
 	version: 1;
 	profiles: SubscriptionProfile[];
@@ -63,6 +69,8 @@ const EMPTY_STATE: SubscriptionProfilesFile = {
 const PROFILE_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 const UNBOUND_HOME_PATTERN = /^unbound-[0-9a-f]{32}$/;
 const MAX_BINDINGS = 5000;
+const CODEX_FILE_CREDENTIALS_SETTING = 'cli_auth_credentials_store = "file"';
+const CODEX_INITIAL_CONFIG = `# Keep this alternate account scoped to its isolated CODEX_HOME.\n${CODEX_FILE_CREDENTIALS_SETTING}\n`;
 let accountsRootOverride: string | null = null;
 let userDataPathResolver: (() => string) | null = null;
 
@@ -117,6 +125,75 @@ function ensureProviderRoot(provider: SubscriptionProfileProvider): string {
 	return realProviderRoot;
 }
 
+function withCodexFileCredentialStore(config: string): string {
+	if (!config) return CODEX_INITIAL_CONFIG;
+
+	const newline = config.includes("\r\n") ? "\r\n" : "\n";
+	const firstTable =
+		/^[ \t]*\[{1,2}[^\]\r\n]+\]{1,2}[ \t]*(?:#.*)?(?=\r?$)/m.exec(config);
+	const topLevelEnd = firstTable?.index ?? config.length;
+	const topLevelConfig = config.slice(0, topLevelEnd);
+	const existingSetting =
+		/^[ \t]*cli_auth_credentials_store[ \t]*=[^\r\n]*(?=\r?$)/m.exec(
+			topLevelConfig,
+		);
+	if (existingSetting?.index !== undefined) {
+		const start = existingSetting.index;
+		const end = start + existingSetting[0].length;
+		return `${config.slice(0, start)}${CODEX_FILE_CREDENTIALS_SETTING}${config.slice(end)}`;
+	}
+
+	if (firstTable) {
+		return `${config.slice(0, firstTable.index)}${CODEX_FILE_CREDENTIALS_SETTING}${newline}${config.slice(firstTable.index)}`;
+	}
+	const separator = config.endsWith("\n") ? "" : newline;
+	return `${config}${separator}${CODEX_FILE_CREDENTIALS_SETTING}${newline}`;
+}
+
+function ensureCodexFileCredentialStore(profileHome: string): void {
+	const configPath = join(profileHome, "config.toml");
+	let currentConfig: string | null = null;
+	try {
+		const configStat = lstatSync(configPath);
+		if (configStat.isSymbolicLink()) {
+			throw new Error("Refusing to update a linked Codex profile config");
+		}
+		if (!configStat.isFile()) {
+			throw new Error("Codex profile config is not a regular file");
+		}
+		currentConfig = readFileSync(configPath, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+
+	const nextConfig = withCodexFileCredentialStore(currentConfig ?? "");
+	if (nextConfig === currentConfig) return;
+
+	const temporaryPath = join(
+		profileHome,
+		`.config-${process.pid}-${randomUUID()}.tmp`,
+	);
+	try {
+		writeFileSync(temporaryPath, nextConfig, {
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		if (existsSync(configPath)) {
+			const configStat = lstatSync(configPath);
+			if (configStat.isSymbolicLink()) {
+				throw new Error("Refusing to update a linked Codex profile config");
+			}
+			if (!configStat.isFile()) {
+				throw new Error("Codex profile config is not a regular file");
+			}
+		}
+		renameSync(temporaryPath, configPath);
+	} finally {
+		rmSync(temporaryPath, { force: true });
+	}
+}
+
 function ensureProfileHome(
 	profile: Pick<SubscriptionProfile, "id" | "provider">,
 ): string {
@@ -134,6 +211,9 @@ function ensureProfileHome(
 		isAbsolute(profileRelative)
 	) {
 		throw new Error("Account profile path is outside ADE's data directory");
+	}
+	if (profile.provider === "codex") {
+		ensureCodexFileCredentialStore(realProfileHome);
 	}
 	return realProfileHome;
 }
@@ -230,6 +310,15 @@ function environmentForHome(
 	return provider === "codex"
 		? { CODEX_HOME: home }
 		: { CLAUDE_CONFIG_DIR: home };
+}
+
+function validatePaneBindingIds(paneId: string, workspaceId: string): void {
+	if (!paneId || paneId.length > 200) {
+		throw new Error("Invalid terminal pane ID");
+	}
+	if (!workspaceId || workspaceId.length > 200) {
+		throw new Error("Invalid workspace ID");
+	}
 }
 
 function isProvider(value: unknown): value is SubscriptionProfileProvider {
@@ -421,6 +510,13 @@ export function createSubscriptionProfile(
 	const profileHome = join(providerRoot, profile.id);
 	mkdirSync(profileHome, { mode: 0o700 });
 	try {
+		if (provider === "codex") {
+			writeFileSync(join(profileHome, "config.toml"), CODEX_INITIAL_CONFIG, {
+				encoding: "utf8",
+				mode: 0o600,
+				flag: "wx",
+			});
+		}
 		state.profiles.push(profile);
 		state.selected[provider] = profile.id;
 		writeState(state);
@@ -452,6 +548,92 @@ export function selectSubscriptionProfile(
 	writeState(state);
 }
 
+/**
+ * Pins an explicit provider account to a terminal pane before its first local
+ * process is created. A pane cannot be rebound in place because doing so could
+ * resume provider state under a different account.
+ */
+export function bindSubscriptionProfileToPane(
+	provider: SubscriptionProfileProvider,
+	paneId: string,
+	profileId: string | null,
+	workspaceId: string,
+): void {
+	if (!isProvider(provider)) throw new Error("Invalid account provider");
+	validatePaneBindingIds(paneId, workspaceId);
+	const state = readState();
+	if (
+		profileId !== null &&
+		!state.profiles.some(
+			(profile) => profile.id === profileId && profile.provider === provider,
+		)
+	) {
+		throw new Error("Account profile not found");
+	}
+
+	const existing = state.bindings[paneId];
+	if (existing) {
+		if (existing.provider !== provider) {
+			throw new Error("Terminal pane is already bound to a different provider");
+		}
+		if (existing.profileId !== profileId) {
+			throw new Error("Terminal pane is already bound to a different account");
+		}
+		if (existing.workspaceId && existing.workspaceId !== workspaceId) {
+			throw new Error(
+				"Terminal pane is already bound to a different workspace",
+			);
+		}
+		if (!existing.workspaceId) {
+			state.bindings[paneId] = { ...existing, workspaceId };
+			writeState(state);
+		}
+		return;
+	}
+
+	if (Object.keys(state.bindings).length >= MAX_BINDINGS) {
+		throw new Error(
+			"Too many remembered terminal sessions; close an old pane or tab before starting another",
+		);
+	}
+	state.bindings[paneId] = {
+		provider,
+		profileId,
+		workspaceId,
+		createdAt: Date.now(),
+	};
+	writeState(state);
+}
+
+/** Read a pane's device-local account binding without creating or modifying it. */
+export function getSubscriptionProfilePaneBinding(
+	provider: SubscriptionProfileProvider,
+	paneId: string,
+	workspaceId: string,
+): SubscriptionProfilePaneBinding | null {
+	if (!isProvider(provider)) throw new Error("Invalid account provider");
+	validatePaneBindingIds(paneId, workspaceId);
+	const state = readState();
+	const binding = state.bindings[paneId];
+	if (
+		!binding ||
+		binding.provider !== provider ||
+		Boolean(binding.workspaceId && binding.workspaceId !== workspaceId)
+	) {
+		return null;
+	}
+	if (binding.profileId === null) {
+		return { provider, profileId: null, label: "System" };
+	}
+	const profile = state.profiles.find(
+		(item) =>
+			item.id === binding.profileId && item.provider === binding.provider,
+	);
+	return profile
+		? { provider, profileId: profile.id, label: profile.label }
+		: null;
+}
+
 export function removeSubscriptionProfile(
 	provider: SubscriptionProfileProvider,
 	id: string,
@@ -461,15 +643,20 @@ export function removeSubscriptionProfile(
 		(item) => item.id === id && item.provider === provider,
 	);
 	if (!profile) throw new Error("Account profile not found");
+	if (
+		Object.values(originalState.bindings).some(
+			(binding) => binding.provider === provider && binding.profileId === id,
+		)
+	) {
+		throw new Error(
+			"This account is pinned to a saved terminal pane. Close that pane before removing the account.",
+		);
+	}
 	const nextState: SubscriptionProfilesFile = {
 		version: 1,
 		profiles: originalState.profiles.filter((item) => item.id !== id),
 		selected: { ...originalState.selected },
-		bindings: Object.fromEntries(
-			Object.entries(originalState.bindings).filter(
-				([, binding]) => binding.profileId !== id,
-			),
-		),
+		bindings: { ...originalState.bindings },
 	};
 	if (nextState.selected[provider] === id) {
 		const fallback = nextState.profiles.find(

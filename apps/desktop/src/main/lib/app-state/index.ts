@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { JSONFilePreset } from "lowdb/node";
+import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
 import {
 	APP_STATE_PATH,
 	ensureSupersetHomeDirExists,
@@ -106,8 +107,15 @@ export async function initAppState(): Promise<void> {
 		},
 	});
 
-	// Reshape data to ensure it has the correct structure (handles legacy formats)
-	_appState.data = ensureValidShape(_appState.data, _deviceId);
+	// Reshape data to ensure it has the correct structure (handles legacy formats).
+	// Account profile UUIDs are machine-local, so persist only the portable
+	// pinned marker. Doing this at load time prevents any later non-tabs write
+	// from carrying a device-local UUID into the shared app-state file.
+	const shapedState = ensureValidShape(_appState.data, _deviceId);
+	shapedState.tabsState = sanitizeSubscriptionProfilesForPersistence({
+		state: shapedState.tabsState,
+	});
+	_appState.data = shapedState;
 
 	// JSONFilePreset keeps defaults in memory when the file does not exist. The
 	// watcher starts immediately after this function returns, so materialize the

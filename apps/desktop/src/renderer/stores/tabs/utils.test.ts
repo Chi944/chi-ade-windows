@@ -2,13 +2,40 @@ import { describe, expect, it } from "bun:test";
 import type { MosaicNode } from "react-mosaic-component";
 import type { Pane, Tab } from "./types";
 import {
+	addPaneToLayout,
 	buildMultiPaneLayout,
+	canAddPanesToLayout,
+	createPane,
 	findPanePath,
 	getAdjacentPaneId,
+	getRemainingPaneCapacity,
+	MAX_PANES_PER_TAB,
 	resolveActiveTabIdForWorkspace,
 	resolveFileViewerMode,
 	resolveRenameTarget,
+	splitPaneInLayout,
 } from "./utils";
+
+describe("createPane", () => {
+	it("marks an explicit subscription account selection as portable", () => {
+		const named = createPane("tab-1", "terminal", {
+			subscriptionProfileId: "11111111-1111-4111-8111-111111111111",
+		});
+		const system = createPane("tab-1", "terminal", {
+			subscriptionProfileId: null,
+		});
+
+		expect(named.subscriptionProfileId).toBe(
+			"11111111-1111-4111-8111-111111111111",
+		);
+		expect(system.subscriptionProfileId).toBeNull();
+		expect(named.subscriptionProfilePinned).toBeTrue();
+		expect(system.subscriptionProfilePinned).toBeTrue();
+		expect(
+			createPane("tab-1", "terminal").subscriptionProfilePinned,
+		).toBeUndefined();
+	});
+});
 
 describe("findPanePath", () => {
 	it("returns empty array for single pane layout matching the id", () => {
@@ -356,7 +383,7 @@ describe("buildMultiPaneLayout", () => {
 		});
 	});
 
-	it("returns balanced nested layout for five panes", () => {
+	it("returns a proportional maximum-two-column grid for five panes", () => {
 		const result = buildMultiPaneLayout([
 			"pane-1",
 			"pane-2",
@@ -367,39 +394,180 @@ describe("buildMultiPaneLayout", () => {
 		expect(result).toEqual({
 			direction: "column",
 			first: {
-				direction: "row",
+				direction: "column",
 				first: {
 					direction: "row",
 					first: "pane-1",
 					second: "pane-2",
 					splitPercentage: 50,
 				},
-				second: "pane-3",
+				second: {
+					direction: "row",
+					first: "pane-3",
+					second: "pane-4",
+					splitPercentage: 50,
+				},
+				splitPercentage: 50,
+			},
+			second: "pane-5",
+			splitPercentage: 200 / 3,
+		});
+	});
+
+	it("returns a proportional 2x3 grid for six panes", () => {
+		const result = buildMultiPaneLayout([
+			"pane-1",
+			"pane-2",
+			"pane-3",
+			"pane-4",
+			"pane-5",
+			"pane-6",
+		]);
+		expect(result).toEqual({
+			direction: "column",
+			first: {
+				direction: "column",
+				first: {
+					direction: "row",
+					first: "pane-1",
+					second: "pane-2",
+					splitPercentage: 50,
+				},
+				second: {
+					direction: "row",
+					first: "pane-3",
+					second: "pane-4",
+					splitPercentage: 50,
+				},
 				splitPercentage: 50,
 			},
 			second: {
 				direction: "row",
-				first: "pane-4",
-				second: "pane-5",
+				first: "pane-5",
+				second: "pane-6",
 				splitPercentage: 50,
 			},
+			splitPercentage: 200 / 3,
+		});
+	});
+});
+
+describe("addPaneToLayout", () => {
+	it("preserves an explicit downward orientation for the first split", () => {
+		expect(addPaneToLayout("pane-1", "pane-2", "column")).toEqual({
+			direction: "column",
+			first: "pane-1",
+			second: "pane-2",
 			splitPercentage: 50,
 		});
 	});
 
-	it("returns row-first layout when direction is row", () => {
-		const result = buildMultiPaneLayout(["pane-1", "pane-2", "pane-3"], "row");
-		expect(result).toEqual({
+	it("rebalances three or more views into the maximum-two-column grid", () => {
+		const existing = addPaneToLayout("pane-1", "pane-2", "column");
+		expect(addPaneToLayout(existing, "pane-3", "column")).toEqual(
+			buildMultiPaneLayout(["pane-1", "pane-2", "pane-3"]),
+		);
+	});
+});
+
+describe("splitPaneInLayout", () => {
+	it("splits the selected pane in the requested direction without resetting other sizes", () => {
+		const layout: MosaicNode<string> = {
 			direction: "row",
-			first: {
-				direction: "row",
-				first: "pane-1",
-				second: "pane-2",
-				splitPercentage: 50,
+			first: "pane-a",
+			second: {
+				direction: "column",
+				first: "pane-b",
+				second: "pane-c",
+				splitPercentage: 35,
 			},
-			second: "pane-3",
+			splitPercentage: 42,
+		};
+
+		expect(
+			splitPaneInLayout(layout, "pane-b", "pane-new", "column", [
+				"second",
+				"first",
+			]),
+		).toEqual({
+			direction: "row",
+			first: "pane-a",
+			second: {
+				direction: "column",
+				first: {
+					direction: "column",
+					first: "pane-b",
+					second: "pane-new",
+					splitPercentage: 50,
+				},
+				second: "pane-c",
+				splitPercentage: 35,
+			},
+			splitPercentage: 42,
+		});
+	});
+
+	it("wraps the layout when no selected-pane path is available", () => {
+		expect(splitPaneInLayout("pane-a", "pane-a", "pane-new", "row")).toEqual({
+			direction: "row",
+			first: "pane-a",
+			second: "pane-new",
 			splitPercentage: 50,
 		});
+	});
+});
+
+describe("pane capacity", () => {
+	const sixPaneLayout = buildMultiPaneLayout(
+		Array.from(
+			{ length: MAX_PANES_PER_TAB },
+			(_, index) => `pane-${index + 1}`,
+		),
+	);
+
+	it("reports remaining slots and permits an addition that fits", () => {
+		const fivePaneLayout = buildMultiPaneLayout([
+			"pane-1",
+			"pane-2",
+			"pane-3",
+			"pane-4",
+			"pane-5",
+		]);
+
+		expect(getRemainingPaneCapacity(fivePaneLayout)).toBe(1);
+		expect(canAddPanesToLayout(fivePaneLayout)).toBe(true);
+	});
+
+	it("rejects additions once a layout has six panes", () => {
+		expect(getRemainingPaneCapacity(sixPaneLayout)).toBe(0);
+		expect(canAddPanesToLayout(sixPaneLayout)).toBe(false);
+	});
+
+	it("preserves legacy over-limit layouts without reporting negative capacity", () => {
+		const legacyLayout = buildMultiPaneLayout([
+			"pane-1",
+			"pane-2",
+			"pane-3",
+			"pane-4",
+			"pane-5",
+			"pane-6",
+			"pane-7",
+		]);
+
+		expect(getRemainingPaneCapacity(legacyLayout)).toBe(0);
+		expect(canAddPanesToLayout(legacyLayout)).toBe(false);
+	});
+
+	it("rejects a batch that exceeds the remaining capacity", () => {
+		const fourPaneLayout = buildMultiPaneLayout([
+			"pane-1",
+			"pane-2",
+			"pane-3",
+			"pane-4",
+		]);
+
+		expect(canAddPanesToLayout(fourPaneLayout, 2)).toBe(true);
+		expect(canAddPanesToLayout(fourPaneLayout, 3)).toBe(false);
 	});
 });
 

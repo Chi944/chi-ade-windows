@@ -78,6 +78,7 @@ export interface CreateOrAttachInput {
 	allowKilled?: boolean;
 	themeType?: "dark" | "light";
 	runtime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 /**

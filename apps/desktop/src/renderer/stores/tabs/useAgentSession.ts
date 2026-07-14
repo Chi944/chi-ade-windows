@@ -4,6 +4,7 @@ import {
 	getAgentPresetCommands,
 } from "@superset/shared/agent-command";
 import { useCallback } from "react";
+import type { PresetOpenTarget } from "./preset-launch";
 import { useTabsWithPresets } from "./useTabsWithPresets";
 
 /** Minimal shape needed to spawn an agent's runtime CLI session. */
@@ -16,6 +17,8 @@ export interface AgentSessionWorkspace {
 export interface AgentSessionOptions {
 	commands?: string[];
 	name?: string;
+	target?: PresetOpenTarget;
+	subscriptionProfileId?: string | null;
 }
 
 /**
@@ -33,6 +36,7 @@ export function useAgentSession() {
 		(workspace: AgentSessionWorkspace, options?: AgentSessionOptions) => {
 			const { id, runtime, worktreePath } = workspace;
 			const cwd = worktreePath || undefined;
+			const target = options?.target ?? "new-tab";
 
 			if (
 				!runtime ||
@@ -40,7 +44,24 @@ export function useAgentSession() {
 					!options?.commands)
 			) {
 				// No runtime configured — open a plain shell in the worktree.
-				return addTab(id, { initialCwd: cwd });
+				if (target === "new-tab") {
+					return addTab(id, {
+						initialCwd: cwd,
+						subscriptionProfileId: options?.subscriptionProfileId,
+					});
+				}
+
+				const plainShellPreset: TerminalPreset = {
+					id: "agent-shell",
+					name: options?.name ?? "Terminal",
+					cwd: worktreePath ?? "",
+					commands: [],
+					executionMode: "split-pane",
+				};
+				return openPreset(id, plainShellPreset, {
+					target,
+					subscriptionProfileId: options?.subscriptionProfileId,
+				});
 			}
 
 			const preset: TerminalPreset = {
@@ -52,10 +73,14 @@ export function useAgentSession() {
 					getAgentPresetCommands({
 						windows: process.platform === "win32",
 					})[runtime],
-				executionMode: "new-tab",
+				executionMode: target === "active-tab" ? "split-pane" : "new-tab",
 			};
 
-			return openPreset(id, preset, { target: "new-tab", runtime });
+			return openPreset(id, preset, {
+				target,
+				runtime,
+				subscriptionProfileId: options?.subscriptionProfileId,
+			});
 		},
 		[openPreset, addTab],
 	);

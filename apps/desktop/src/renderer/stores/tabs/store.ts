@@ -1,8 +1,8 @@
 import type { MosaicNode } from "react-mosaic-component";
-import { updateTree } from "react-mosaic-component";
 import { getFileOpenMode } from "renderer/hooks/useFileOpenMode";
 import { posthog } from "renderer/lib/posthog";
 import { trpcTabsStorage } from "renderer/lib/trpc-storage";
+import { rebindPaneSubscriptionProfile } from "shared/subscription-profile-rebind";
 import { acknowledgedStatus } from "shared/tabs-types";
 import { create } from "zustand";
 import { devtools, persist } from "zustand/middleware";
@@ -15,8 +15,10 @@ import type {
 	TabsStore,
 } from "./types";
 import {
+	addPaneToLayout,
 	buildMultiPaneLayout,
 	type CreatePaneOptions,
+	canAddPanesToLayout,
 	createBrowserPane,
 	createBrowserTabWithPane,
 	createDevToolsPane,
@@ -30,9 +32,11 @@ import {
 	getFirstPaneId,
 	getPaneIdsForTab,
 	isLastPaneInTab,
+	MAX_PANES_PER_TAB,
 	removePaneFromLayout,
 	resolveActiveTabIdForWorkspace,
 	resolveFileViewerMode,
+	splitPaneInLayout,
 } from "./utils";
 import { killTerminalForPane } from "./utils/terminal-cleanup";
 
@@ -161,6 +165,9 @@ export const useTabsStore = create<TabsStore>()(
 					workspaceId: string,
 					options: AddTabWithMultiplePanesOptions,
 				) => {
+					if (options.commands.length > MAX_PANES_PER_TAB) {
+						throw new Error(`Maximum ${MAX_PANES_PER_TAB} views per session`);
+					}
 					const state = get();
 					const tabId = generateId("tab");
 					const panes: ReturnType<typeof createPane>[] = options.commands.map(
@@ -168,6 +175,7 @@ export const useTabsStore = create<TabsStore>()(
 							createPane(tabId, "terminal", {
 								initialCwd: options.initialCwd,
 								agentRuntime: options.agentRuntime,
+								subscriptionProfileId: options.subscriptionProfileId,
 							}),
 					);
 
@@ -482,15 +490,10 @@ export const useTabsStore = create<TabsStore>()(
 					const state = get();
 					const tab = state.tabs.find((t) => t.id === tabId);
 					if (!tab) return "";
+					if (!canAddPanesToLayout(tab.layout)) return "";
 
 					const newPane = createPane(tabId, "terminal", options);
-
-					const newLayout: MosaicNode<string> = {
-						direction: "row",
-						first: tab.layout,
-						second: newPane.id,
-						splitPercentage: 50,
-					};
+					const newLayout = addPaneToLayout(tab.layout, newPane.id);
 
 					const newPanes = { ...state.panes, [newPane.id]: newPane };
 					const tabName = deriveTabName(newPanes, tabId);
@@ -522,12 +525,16 @@ export const useTabsStore = create<TabsStore>()(
 					const state = get();
 					const tab = state.tabs.find((t) => t.id === tabId);
 					if (!tab) return [];
+					if (!canAddPanesToLayout(tab.layout, options.commands.length)) {
+						return [];
+					}
 
 					const panes: ReturnType<typeof createPane>[] = options.commands.map(
 						(_command) =>
 							createPane(tabId, "terminal", {
 								initialCwd: options.initialCwd,
 								agentRuntime: options.agentRuntime,
+								subscriptionProfileId: options.subscriptionProfileId,
 							}),
 					);
 
@@ -729,7 +736,7 @@ export const useTabsStore = create<TabsStore>()(
 					}
 
 					// No reusable pane found, create a new one
-					if (options.openInNewTab) {
+					if (options.openInNewTab || !canAddPanesToLayout(activeTab.layout)) {
 						const workspaceId = activeTab.workspaceId;
 						const newTabId = generateId("tab");
 						const newPane = createFileViewerPane(newTabId, options);
@@ -778,13 +785,7 @@ export const useTabsStore = create<TabsStore>()(
 					}
 
 					const newPane = createFileViewerPane(activeTab.id, options);
-
-					const newLayout: MosaicNode<string> = {
-						direction: "row",
-						first: activeTab.layout,
-						second: newPane.id,
-						splitPercentage: 50,
-					};
+					const newLayout = addPaneToLayout(activeTab.layout, newPane.id);
 
 					const newPanes = { ...state.panes, [newPane.id]: newPane };
 					const tabName = deriveTabName(newPanes, activeTab.id);
@@ -973,6 +974,19 @@ export const useTabsStore = create<TabsStore>()(
 					});
 				},
 
+				setPaneSubscriptionProfile: (paneId, profileId) => {
+					const state = get();
+					const pane = state.panes[paneId];
+					if (!pane) return;
+
+					set({
+						panes: {
+							...state.panes,
+							[paneId]: rebindPaneSubscriptionProfile(pane, profileId),
+						},
+					});
+				},
+
 				clearWorkspaceAttentionStatus: (workspaceId) => {
 					const state = get();
 					const workspaceTabs = state.tabs.filter(
@@ -1102,35 +1116,17 @@ export const useTabsStore = create<TabsStore>()(
 
 					const sourcePane = state.panes[sourcePaneId];
 					if (!sourcePane || sourcePane.tabId !== tabId) return;
+					if (!canAddPanesToLayout(tab.layout)) return;
 
 					// Always create a new terminal when splitting
 					const newPane = createPane(tabId, "terminal", options);
-
-					let newLayout: MosaicNode<string>;
-					if (path && path.length > 0) {
-						// Split at a specific path in the layout
-						newLayout = updateTree(tab.layout, [
-							{
-								path,
-								spec: {
-									$set: {
-										direction: "row",
-										first: sourcePaneId,
-										second: newPane.id,
-										splitPercentage: 50,
-									},
-								},
-							},
-						]);
-					} else {
-						// Split the pane directly
-						newLayout = {
-							direction: "row",
-							first: tab.layout,
-							second: newPane.id,
-							splitPercentage: 50,
-						};
-					}
+					const newLayout = splitPaneInLayout(
+						tab.layout,
+						sourcePaneId,
+						newPane.id,
+						"row",
+						path,
+					);
 
 					const newPanes = { ...state.panes, [newPane.id]: newPane };
 					const tabName = deriveTabName(newPanes, tabId);
@@ -1160,35 +1156,17 @@ export const useTabsStore = create<TabsStore>()(
 
 					const sourcePane = state.panes[sourcePaneId];
 					if (!sourcePane || sourcePane.tabId !== tabId) return;
+					if (!canAddPanesToLayout(tab.layout)) return;
 
 					// Always create a new terminal when splitting
 					const newPane = createPane(tabId, "terminal", options);
-
-					let newLayout: MosaicNode<string>;
-					if (path && path.length > 0) {
-						// Split at a specific path in the layout
-						newLayout = updateTree(tab.layout, [
-							{
-								path,
-								spec: {
-									$set: {
-										direction: "column",
-										first: sourcePaneId,
-										second: newPane.id,
-										splitPercentage: 50,
-									},
-								},
-							},
-						]);
-					} else {
-						// Split the pane directly
-						newLayout = {
-							direction: "column",
-							first: tab.layout,
-							second: newPane.id,
-							splitPercentage: 50,
-						};
-					}
+					const newLayout = splitPaneInLayout(
+						tab.layout,
+						sourcePaneId,
+						newPane.id,
+						"column",
+						path,
+					);
 
 					const newPanes = { ...state.panes, [newPane.id]: newPane };
 					const tabName = deriveTabName(newPanes, tabId);
@@ -1396,16 +1374,15 @@ export const useTabsStore = create<TabsStore>()(
 							get().addBrowserTab(workspaceId, url);
 							return;
 						}
+						if (!canAddPanesToLayout(activeTab.layout)) {
+							get().addBrowserTab(workspaceId, url);
+							return;
+						}
 
 						const newPane = createBrowserPane(activeTab.id, {
 							url,
 						});
-						const newLayout: MosaicNode<string> = {
-							direction: "row",
-							first: activeTab.layout,
-							second: newPane.id,
-							splitPercentage: 50,
-						};
+						const newLayout = addPaneToLayout(activeTab.layout, newPane.id);
 						const newPanes = {
 							...state.panes,
 							[newPane.id]: newPane,
@@ -1617,32 +1594,16 @@ export const useTabsStore = create<TabsStore>()(
 
 					const sourcePane = state.panes[browserPaneId];
 					if (!sourcePane || sourcePane.tabId !== tabId) return null;
+					if (!canAddPanesToLayout(tab.layout)) return null;
 
 					const newPane = createDevToolsPane(tabId, browserPaneId);
-
-					let newLayout: MosaicNode<string>;
-					if (path && path.length > 0) {
-						newLayout = updateTree(tab.layout, [
-							{
-								path,
-								spec: {
-									$set: {
-										direction: "row",
-										first: browserPaneId,
-										second: newPane.id,
-										splitPercentage: 50,
-									},
-								},
-							},
-						]);
-					} else {
-						newLayout = {
-							direction: "row",
-							first: tab.layout,
-							second: newPane.id,
-							splitPercentage: 50,
-						};
-					}
+					const newLayout = splitPaneInLayout(
+						tab.layout,
+						browserPaneId,
+						newPane.id,
+						"row",
+						path,
+					);
 
 					const newPanes = { ...state.panes, [newPane.id]: newPane };
 

@@ -16,6 +16,7 @@ import { MEMORY_SCAFFOLD_ENABLED } from "main/lib/feature-flags";
 import { localDb } from "main/lib/local-db";
 import { buildSshTerminalLaunch } from "main/lib/remote/ssh";
 import { reconcileSshTunnels } from "main/lib/remote/tunnel-manager";
+import { bindSubscriptionProfileToPane } from "main/lib/subscription-profiles";
 import { restartService as restartServiceShared } from "main/lib/terminal";
 import {
 	TERMINAL_SESSION_KILLED_MESSAGE,
@@ -82,6 +83,7 @@ export const createTerminalRouter = () => {
 					allowKilled: z.boolean().optional(),
 					themeType: z.enum(["dark", "light"]).optional(),
 					runtime: z.enum(AGENT_RUNTIMES).optional(),
+					subscriptionProfileId: z.string().uuid().nullable().optional(),
 				}),
 			)
 			.mutation(async ({ input }) => {
@@ -103,6 +105,7 @@ export const createTerminalRouter = () => {
 					allowKilled,
 					themeType,
 					runtime: runtimeOverride,
+					subscriptionProfileId,
 				} = input;
 
 				const workspace = localDb
@@ -168,6 +171,39 @@ export const createTerminalRouter = () => {
 						message: "The workspace's remote host no longer exists",
 					});
 				}
+				if (subscriptionProfileId !== undefined) {
+					if (remoteProfile) {
+						throw new TRPCError({
+							code: "PRECONDITION_FAILED",
+							message:
+								"Local Claude and Codex account profiles cannot be used by a remote terminal",
+						});
+					}
+					if (runtime !== "claude" && runtime !== "codex") {
+						throw new TRPCError({
+							code: "PRECONDITION_FAILED",
+							message:
+								"An account profile can only be selected for a Claude or Codex terminal",
+						});
+					}
+					try {
+						bindSubscriptionProfileToPane(
+							runtime,
+							paneId,
+							subscriptionProfileId,
+							workspaceId,
+						);
+					} catch (error) {
+						throw new TRPCError({
+							code: "PRECONDITION_FAILED",
+							message:
+								error instanceof Error
+									? error.message
+									: "Could not bind the selected account to this terminal",
+							cause: error,
+						});
+					}
+				}
 				const launch = remoteProfile
 					? buildSshTerminalLaunch(
 							remoteProfile,
@@ -179,9 +215,10 @@ export const createTerminalRouter = () => {
 						)
 					: undefined;
 
-				// Codex reads its memory bridge from CODEX_HOME/.codex/AGENTS.md.
-				// Regenerate it from the canonical memory files before each spawn so a
-				// re-launched agent picks up current memory. Idempotent + fs-only.
+				// Regenerate Codex's workspace memory from the canonical files before
+				// each spawn. The wrapper injects the generated developer-instructions
+				// override independently of CODEX_HOME, so System and named accounts see
+				// the same current memory without sharing authentication state.
 				// Gated by the memory-scaffold flag so that, while scaffolding is
 				// held back (the default, ADE_MEMORY_SCAFFOLD unset), we don't touch
 				// the bridge from the absent memory files. regenerateCodexAgentsMd is
@@ -210,6 +247,7 @@ export const createTerminalRouter = () => {
 						allowKilled,
 						themeType: resolvedThemeType,
 						runtime,
+						subscriptionProfileId,
 						launch,
 					});
 

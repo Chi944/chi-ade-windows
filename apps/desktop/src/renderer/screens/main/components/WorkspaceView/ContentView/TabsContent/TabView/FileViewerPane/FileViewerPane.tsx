@@ -372,6 +372,7 @@ export function FileViewerPane({
 							onDiffViewModeChange={setDiffViewMode}
 							onToggleHideUnchangedRegions={toggleHideUnchangedRegions}
 							onSplitPane={handlers.onSplitPane}
+							canSplit={handlers.canSplit}
 							onPin={handlePin}
 							onClosePane={handlers.onClosePane}
 						/>

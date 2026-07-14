@@ -43,13 +43,22 @@ interface ProviderKeyDialogProps {
 	onOpenChange: (open: boolean) => void;
 	mode: ProviderKeyDialogMode;
 	initialProvider?: ProviderHubProvider;
+	initialSubscriptionProvider?: SubscriptionProvider;
+	remoteWorkspace?: boolean;
 	modelLabel?: string;
 	onLaunchOpenRouter?: () => Promise<void> | void;
 	onLaunchModel?: (input: {
 		provider: OpenCodeModelProvider;
 		modelId: string;
 	}) => Promise<void> | void;
-	onConnectSubscription?: (provider: SubscriptionProvider) => void;
+	onConnectSubscription?: (
+		provider: SubscriptionProvider,
+		profileId?: string | null,
+	) => void;
+	onLaunchSubscription?: (input: {
+		provider: SubscriptionProvider;
+		profileId: string | null;
+	}) => Promise<void> | void;
 	onLaunchPreset?: (preset: TerminalPreset) => void;
 }
 
@@ -62,10 +71,13 @@ export function ProviderKeyDialog({
 	onOpenChange,
 	mode,
 	initialProvider,
+	initialSubscriptionProvider,
+	remoteWorkspace = false,
 	modelLabel,
 	onLaunchOpenRouter,
 	onLaunchModel,
 	onConnectSubscription,
+	onLaunchSubscription,
 	onLaunchPreset,
 }: ProviderKeyDialogProps) {
 	const {
@@ -83,17 +95,17 @@ export function ProviderKeyDialog({
 	const removeModelId = useProviderProfiles((state) => state.removeModelId);
 	const connectionStatus =
 		electronTrpc.settings.subscriptionConnections.status.useQuery(undefined, {
-			enabled: open,
+			enabled: open && !remoteWorkspace,
 		});
 	const accountProfiles =
 		electronTrpc.settings.subscriptionConnections.profiles.useQuery(undefined, {
-			enabled: open,
+			enabled: open && !remoteWorkspace,
 		});
 	const codexUsage =
 		electronTrpc.settings.subscriptionConnections.codexUsage.useQuery(
 			undefined,
 			{
-				enabled: open,
+				enabled: open && !remoteWorkspace,
 				staleTime: 60_000,
 				retry: false,
 			},
@@ -151,9 +163,11 @@ export function ProviderKeyDialog({
 		setCustomAgentName("");
 		setCustomAgentCommand("");
 		setAccountDrafts({ claude: "", codex: "" });
-		void connectionStatus.refetch();
-		void accountProfiles.refetch();
-	}, [open]);
+		if (!remoteWorkspace) {
+			void connectionStatus.refetch();
+			void accountProfiles.refetch();
+		}
+	}, [open, remoteWorkspace]);
 
 	const isLaunch = mode === "launch";
 	const openExternal = (url: string) => openUrl.mutate(url);
@@ -304,12 +318,15 @@ export function ProviderKeyDialog({
 		const label = accountDrafts[provider].trim();
 		if (!label) return;
 		try {
-			await createAccountProfile.mutateAsync({ provider, label });
+			const profile = await createAccountProfile.mutateAsync({
+				provider,
+				label,
+			});
 			setAccountDrafts((current) => ({ ...current, [provider]: "" }));
 			if (onConnectSubscription) {
 				toast.success(`${label} added and selected`);
 				onOpenChange(false);
-				onConnectSubscription(provider);
+				onConnectSubscription(provider, profile.id);
 			} else {
 				toast.success(
 					`${label} added. Open a project to authorize this account.`,
@@ -386,15 +403,17 @@ export function ProviderKeyDialog({
 		}
 	};
 
-	const launchTarget = isLaunch
-		? `${modelLabel ?? "This model"} needs ${
-				initialProvider === "openrouter"
-					? "OpenRouter"
-					: initialProvider === "huggingface"
-						? "a Hugging Face profile"
-						: "an Ollama profile"
-			}.`
-		: "Manage subscription accounts and add the cloud or local models you choose.";
+	const launchTarget = initialSubscriptionProvider
+		? `Choose the ${initialSubscriptionProvider === "claude" ? "Claude" : "Codex"} account for this new session.`
+		: isLaunch
+			? `${modelLabel ?? "This model"} needs ${
+					initialProvider === "openrouter"
+						? "OpenRouter"
+						: initialProvider === "huggingface"
+							? "a Hugging Face profile"
+							: "an Ollama profile"
+				}.`
+			: "Manage subscription accounts and add the cloud or local models you choose.";
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -502,171 +521,222 @@ export function ProviderKeyDialog({
 						<div>
 							<h3 className="text-sm font-medium">Subscriptions</h3>
 							<p className="text-xs text-muted-foreground">
-								System account reuses the Claude and Codex login already stored
-								by the official CLIs. Add isolated alternate profiles only when
-								you need account switching; running sessions stay on their
-								original account.
+								{remoteWorkspace
+									? "Claude and Codex sessions in this workspace use the accounts installed on its SSH host. Open a local workspace to manage or launch ADE's local account profiles."
+									: "System account reuses the Claude and Codex login already stored by the official CLIs. Add isolated alternate profiles only when you need account switching; running sessions stay on their original account."}
 							</p>
-							{!onConnectSubscription && (
+							{!remoteWorkspace && !onConnectSubscription && (
 								<p className="mt-1 text-xs text-amber-500/90">
 									Login terminals launch from a project. Open a project and
 									choose Providers in its agent bar to connect or reconnect.
 								</p>
 							)}
 						</div>
-						<div className="grid gap-2 sm:grid-cols-2">
-							{(["claude", "codex"] as const).map((provider) => {
-								const state = connectionStatus.data?.[provider];
-								const label = provider === "claude" ? "Claude" : "Codex";
-								const selectedId = accountProfiles.data?.selected[provider];
-								const systemSelected = selectedId == null;
-								const providerProfiles =
-									accountProfiles.data?.profiles.filter(
-										(profile) => profile.provider === provider,
-									) ?? [];
-								const status = !state
-									? "Checking…"
-									: !state.installed
-										? "CLI not installed"
-										: state.authenticated
-											? "Connected"
-											: "Not connected";
-								return (
-									<div
-										key={provider}
-										className="space-y-2 rounded-lg border bg-muted/20 p-3"
-									>
-										<div className="flex items-center justify-between gap-3">
-											<div>
-												<p className="text-sm font-medium">{label}</p>
-												<p className="text-xs text-muted-foreground">
-													{status}
-												</p>
-											</div>
-											<Button
-												variant="outline"
-												size="sm"
-												disabled={!state || !onConnectSubscription}
-												onClick={() => connectSubscription(provider)}
+						{!remoteWorkspace && (
+							<div className="grid gap-2 sm:grid-cols-2">
+								{(["claude", "codex"] as const)
+									.filter(
+										(provider) =>
+											!initialSubscriptionProvider ||
+											provider === initialSubscriptionProvider,
+									)
+									.map((provider) => {
+										const state = connectionStatus.data?.[provider];
+										const label = provider === "claude" ? "Claude" : "Codex";
+										const selectedId = accountProfiles.data?.selected[provider];
+										const systemSelected = selectedId == null;
+										const providerProfiles =
+											accountProfiles.data?.profiles.filter(
+												(profile) => profile.provider === provider,
+											) ?? [];
+										const status = !state
+											? "Checking…"
+											: !state.installed
+												? "CLI not installed"
+												: state.authenticated
+													? "Connected"
+													: "Not connected";
+										return (
+											<div
+												key={provider}
+												className="space-y-2 rounded-lg border bg-muted/20 p-3"
 											>
-												{!onConnectSubscription
-													? "Connect in project"
-													: !state?.installed
-														? "Install"
-														: state.authenticated
-															? "Reconnect"
-															: "Connect"}
-											</Button>
-										</div>
+												<div className="flex items-center justify-between gap-3">
+													<div>
+														<p className="text-sm font-medium">{label}</p>
+														<p className="text-xs text-muted-foreground">
+															{status}
+														</p>
+													</div>
+													<Button
+														variant="outline"
+														size="sm"
+														disabled={!state || !onConnectSubscription}
+														onClick={() => connectSubscription(provider)}
+													>
+														{!onConnectSubscription
+															? "Connect in project"
+															: !state?.installed
+																? "Install"
+																: state.authenticated
+																	? "Reconnect"
+																	: "Connect"}
+													</Button>
+												</div>
 
-										<div className="space-y-1">
-											<button
-												type="button"
-												onClick={() =>
-													void selectSubscriptionAccount(
-														provider,
-														null,
-														"System account",
-													)
-												}
-												className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-xs ${systemSelected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
-											>
-												<span
-													className={`size-2 shrink-0 rounded-full ${systemSelected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
-												/>
-												<span className="min-w-0 flex-1">
-													<span className="block truncate">System account</span>
-													<span className="block truncate text-[11px] text-muted-foreground">
-														Uses your existing {label} CLI login
-													</span>
-												</span>
-												{systemSelected && (
-													<span className="shrink-0 text-violet-400">
-														Active
-													</span>
-												)}
-											</button>
-											{providerProfiles.map((profile) => {
-												const selected = profile.id === selectedId;
-												return (
+												<div className="space-y-1">
 													<div
-														key={profile.id}
-														className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 ${selected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+														className={`flex items-center gap-2 rounded-md border px-2 py-1.5 ${systemSelected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
 													>
 														<button
 															type="button"
 															onClick={() =>
 																void selectSubscriptionAccount(
 																	provider,
-																	profile.id,
-																	profile.label,
+																	null,
+																	"System account",
 																)
 															}
 															className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
 														>
 															<span
-																className={`size-2 rounded-full ${selected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
+																className={`size-2 shrink-0 rounded-full ${systemSelected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
 															/>
-															<span className="truncate">{profile.label}</span>
-															{selected && (
-																<span className="text-violet-400">Active</span>
+															<span className="min-w-0 flex-1">
+																<span className="block truncate">
+																	System account
+																</span>
+																<span className="block truncate text-[11px] text-muted-foreground">
+																	Uses your existing {label} CLI login
+																</span>
+															</span>
+															{systemSelected && (
+																<span className="shrink-0 text-violet-400">
+																	Active
+																</span>
 															)}
 														</button>
-														<button
-															type="button"
-															onClick={() =>
-																void removeSubscriptionAccount(
-																	provider,
-																	profile.id,
-																	profile.label,
-																)
-															}
-															className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
-															aria-label={`Remove ${profile.label}`}
-														>
-															<Trash2Icon className="size-3.5" />
-														</button>
+														{onLaunchSubscription && (
+															<Button
+																variant="outline"
+																size="sm"
+																onClick={() => {
+																	onOpenChange(false);
+																	void onLaunchSubscription({
+																		provider,
+																		profileId: null,
+																	});
+																}}
+															>
+																<PlayIcon className="h-3.5 w-3.5" />
+																Launch
+															</Button>
+														)}
 													</div>
-												);
-											})}
-										</div>
+													{providerProfiles.map((profile) => {
+														const selected = profile.id === selectedId;
+														return (
+															<div
+																key={profile.id}
+																className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 ${selected ? "border-violet-500/40 bg-violet-500/10" : "bg-background"}`}
+															>
+																<button
+																	type="button"
+																	onClick={() =>
+																		void selectSubscriptionAccount(
+																			provider,
+																			profile.id,
+																			profile.label,
+																		)
+																	}
+																	className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+																>
+																	<span
+																		className={`size-2 rounded-full ${selected ? "bg-violet-400" : "border border-muted-foreground/50"}`}
+																	/>
+																	<span className="truncate">
+																		{profile.label}
+																	</span>
+																	{selected && (
+																		<span className="text-violet-400">
+																			Active
+																		</span>
+																	)}
+																</button>
+																{onLaunchSubscription && (
+																	<Button
+																		variant="outline"
+																		size="sm"
+																		onClick={() => {
+																			onOpenChange(false);
+																			void onLaunchSubscription({
+																				provider,
+																				profileId: profile.id,
+																			});
+																		}}
+																	>
+																		<PlayIcon className="h-3.5 w-3.5" />
+																		Launch
+																	</Button>
+																)}
+																<button
+																	type="button"
+																	onClick={() =>
+																		void removeSubscriptionAccount(
+																			provider,
+																			profile.id,
+																			profile.label,
+																		)
+																	}
+																	className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+																	aria-label={`Remove ${profile.label}`}
+																>
+																	<Trash2Icon className="size-3.5" />
+																</button>
+															</div>
+														);
+													})}
+												</div>
 
-										<div className="flex gap-2">
-											<Input
-												value={accountDrafts[provider]}
-												onChange={(event) =>
-													setAccountDrafts((current) => ({
-														...current,
-														[provider]: event.target.value,
-													}))
-												}
-												placeholder="Alternate account label"
-												className="h-8"
-												maxLength={80}
-											/>
-											<Button
-												size="sm"
-												disabled={
-													!accountDrafts[provider].trim() ||
-													createAccountProfile.isPending
-												}
-												onClick={() => void addSubscriptionAccount(provider)}
-											>
-												Add alternate
-											</Button>
-										</div>
-										{provider === "claude" && platform === "darwin" && (
-											<p className="text-[11px] text-amber-500/90">
-												macOS keeps Claude credentials in Keychain; profile
-												history is isolated, but account switching may require
-												the official login flow.
-											</p>
-										)}
-									</div>
-								);
-							})}
-						</div>
-						{connectionStatus.data?.codex.installed && (
+												<div className="flex gap-2">
+													<Input
+														value={accountDrafts[provider]}
+														onChange={(event) =>
+															setAccountDrafts((current) => ({
+																...current,
+																[provider]: event.target.value,
+															}))
+														}
+														placeholder="Alternate account label"
+														className="h-8"
+														maxLength={80}
+													/>
+													<Button
+														size="sm"
+														disabled={
+															!accountDrafts[provider].trim() ||
+															createAccountProfile.isPending
+														}
+														onClick={() =>
+															void addSubscriptionAccount(provider)
+														}
+													>
+														Add alternate
+													</Button>
+												</div>
+												{provider === "claude" && platform === "darwin" && (
+													<p className="text-[11px] text-amber-500/90">
+														macOS keeps Claude credentials in Keychain; profile
+														history is isolated, but account switching may
+														require the official login flow.
+													</p>
+												)}
+											</div>
+										);
+									})}
+							</div>
+						)}
+						{!remoteWorkspace && connectionStatus.data?.codex.installed && (
 							<div className="space-y-2 rounded-lg border p-3">
 								<div className="flex items-center justify-between gap-3">
 									<div>

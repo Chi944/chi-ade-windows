@@ -19,6 +19,7 @@ export interface UseTerminalColdRestoreOptions {
 	tabId: string;
 	workspaceId: string;
 	agentRuntime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 	xtermRef: React.MutableRefObject<XTerm | null>;
 	fitAddonRef: React.MutableRefObject<FitAddon | null>;
 	isStreamReadyRef: React.MutableRefObject<boolean>;
@@ -58,6 +59,7 @@ export function useTerminalColdRestore({
 	tabId,
 	workspaceId,
 	agentRuntime,
+	subscriptionProfileId,
 	xtermRef,
 	fitAddonRef,
 	isStreamReadyRef,
@@ -97,6 +99,7 @@ export function useTerminalColdRestore({
 				cols: xterm.cols,
 				rows: xterm.rows,
 				runtime: agentRuntime,
+				subscriptionProfileId,
 			},
 			{
 				onSuccess: (result: CreateOrAttachResult) => {
@@ -162,6 +165,7 @@ export function useTerminalColdRestore({
 		tabId,
 		workspaceId,
 		agentRuntime,
+		subscriptionProfileId,
 		xtermRef,
 		isStreamReadyRef,
 		isExitedRef,
@@ -241,6 +245,7 @@ export function useTerminalColdRestore({
 				skipColdRestore: true,
 				allowKilled: true,
 				runtime,
+				subscriptionProfileId,
 			},
 			{
 				onSuccess: (result: CreateOrAttachResult) => {
@@ -296,6 +301,7 @@ export function useTerminalColdRestore({
 		tabId,
 		workspaceId,
 		agentRuntime,
+		subscriptionProfileId,
 		xtermRef,
 		fitAddonRef,
 		isStreamReadyRef,

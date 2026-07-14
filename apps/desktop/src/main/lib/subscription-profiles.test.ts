@@ -11,11 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	bindSubscriptionProfileToPane,
 	createSubscriptionProfile,
 	getSelectedSubscriptionProfile,
 	getSubscriptionProfileEnvironment,
 	getSubscriptionProfileEnvironmentForPane,
 	getSubscriptionProfileHome,
+	getSubscriptionProfilePaneBinding,
 	listSubscriptionProfiles,
 	pruneOrphanedSubscriptionHomes,
 	releaseSubscriptionProfilePane,
@@ -195,6 +197,12 @@ describe("subscription profiles", () => {
 	it("atomically creates, selects, and removes isolated account homes", () => {
 		const personal = createSubscriptionProfile("codex", "Personal");
 		const work = createSubscriptionProfile("codex", "Work");
+		expect(
+			readFileSync(
+				join(getSubscriptionProfileHome(personal), "config.toml"),
+				"utf8",
+			),
+		).toContain('cli_auth_credentials_store = "file"');
 
 		expect(getSelectedSubscriptionProfile("codex")?.id).toBe(work.id);
 		expect(
@@ -214,6 +222,7 @@ describe("subscription profiles", () => {
 				.CODEX_HOME,
 		).toBe(getSubscriptionProfileHome(personal));
 
+		expect(releaseSubscriptionProfilePane("pane-b")).toBe(true);
 		removeSubscriptionProfile("codex", personal.id);
 		expect(existsSync(getSubscriptionProfileHome(personal))).toBe(false);
 		expect(getSelectedSubscriptionProfile("codex")?.id).toBe(work.id);
@@ -230,6 +239,240 @@ describe("subscription profiles", () => {
 		expect(
 			getSubscriptionProfileEnvironmentForPane("codex", "pane-system"),
 		).toEqual({ source: "system", environment: {} });
+	});
+
+	it("adds file-backed credentials when a resolved Codex profile has no config", () => {
+		const profile = createSubscriptionProfile("codex", "Missing config");
+		const configPath = join(getSubscriptionProfileHome(profile), "config.toml");
+		rmSync(configPath);
+
+		expect(getSubscriptionProfileEnvironment("codex")).toEqual({
+			source: "profile",
+			profileId: profile.id,
+			environment: { CODEX_HOME: getSubscriptionProfileHome(profile) },
+		});
+		expect(readFileSync(configPath, "utf8")).toContain(
+			'cli_auth_credentials_store = "file"',
+		);
+	});
+
+	it("preserves unrelated TOML while adding the Codex credential store", () => {
+		const profile = createSubscriptionProfile("codex", "Existing config");
+		const configPath = join(getSubscriptionProfileHome(profile), "config.toml");
+		writeFileSync(
+			configPath,
+			'model = "gpt-5.4"\n[features]\nweb_search = true\n',
+			"utf8",
+		);
+
+		getSubscriptionProfileEnvironment("codex");
+		const migrated = readFileSync(configPath, "utf8");
+		expect(migrated).toContain('model = "gpt-5.4"');
+		expect(migrated).toContain("[features]\nweb_search = true\n");
+		expect(migrated).toContain('cli_auth_credentials_store = "file"');
+		expect(migrated.indexOf("cli_auth_credentials_store")).toBeLessThan(
+			migrated.indexOf("[features]"),
+		);
+	});
+
+	it("replaces an existing non-file Codex credential store assignment", () => {
+		const profile = createSubscriptionProfile("codex", "Keyring config");
+		const configPath = join(getSubscriptionProfileHome(profile), "config.toml");
+		writeFileSync(
+			configPath,
+			'model = "gpt-5.4"\ncli_auth_credentials_store = "keyring"\n[features]\nweb_search = true\n',
+			"utf8",
+		);
+
+		getSubscriptionProfileEnvironment("codex");
+		const migrated = readFileSync(configPath, "utf8");
+		expect(migrated).not.toContain('cli_auth_credentials_store = "keyring"');
+		expect(migrated.match(/^cli_auth_credentials_store\s*=/gm)).toHaveLength(1);
+		expect(migrated).toContain('cli_auth_credentials_store = "file"');
+		expect(migrated).toContain('model = "gpt-5.4"');
+		expect(migrated).toContain("[features]\nweb_search = true\n");
+	});
+
+	it("migrates an existing Codex config idempotently", () => {
+		const profile = createSubscriptionProfile("codex", "Idempotent config");
+		const configPath = join(getSubscriptionProfileHome(profile), "config.toml");
+		writeFileSync(configPath, 'model = "gpt-5.4"\n', "utf8");
+
+		getSubscriptionProfileEnvironment("codex");
+		const firstMigration = readFileSync(configPath, "utf8");
+		expect(firstMigration).toContain('cli_auth_credentials_store = "file"');
+		getSubscriptionProfileEnvironment("codex");
+		expect(readFileSync(configPath, "utf8")).toBe(firstMigration);
+	});
+
+	it("binds an explicit account to a pane and permits identical retries", () => {
+		const personal = createSubscriptionProfile("codex", "Bound personal");
+		const work = createSubscriptionProfile("codex", "Bound work");
+
+		bindSubscriptionProfileToPane(
+			"codex",
+			"pane-explicit",
+			personal.id,
+			"workspace-explicit",
+		);
+		selectSubscriptionProfile("codex", work.id);
+
+		expect(() =>
+			bindSubscriptionProfileToPane(
+				"codex",
+				"pane-explicit",
+				personal.id,
+				"workspace-explicit",
+			),
+		).not.toThrow();
+		expect(
+			getSubscriptionProfileEnvironmentForPane(
+				"codex",
+				"pane-explicit",
+				"workspace-explicit",
+			).environment.CODEX_HOME,
+		).toBe(getSubscriptionProfileHome(personal));
+	});
+
+	it("reads a device-local pane binding without changing it", () => {
+		const named = createSubscriptionProfile("codex", "Lookup account");
+		bindSubscriptionProfileToPane(
+			"codex",
+			"pane-binding-lookup",
+			named.id,
+			"workspace-binding-lookup",
+		);
+
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"codex",
+				"pane-binding-lookup",
+				"workspace-binding-lookup",
+			),
+		).toEqual({
+			provider: "codex",
+			profileId: named.id,
+			label: "Lookup account",
+		});
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"codex",
+				"pane-binding-lookup",
+				"other-workspace",
+			),
+		).toBeNull();
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"claude",
+				"pane-binding-lookup",
+				"workspace-binding-lookup",
+			),
+		).toBeNull();
+	});
+
+	it("reads an explicit System pane binding", () => {
+		bindSubscriptionProfileToPane(
+			"claude",
+			"pane-system-lookup",
+			null,
+			"workspace-system-lookup",
+		);
+
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"claude",
+				"pane-system-lookup",
+				"workspace-system-lookup",
+			),
+		).toEqual({
+			provider: "claude",
+			profileId: null,
+			label: "System",
+		});
+	});
+
+	it("rejects conflicting pane account, provider, and workspace bindings", () => {
+		const personal = createSubscriptionProfile("claude", "Claude personal");
+		const work = createSubscriptionProfile("claude", "Claude work");
+		bindSubscriptionProfileToPane(
+			"claude",
+			"pane-conflict",
+			personal.id,
+			"workspace-a",
+		);
+
+		expect(() =>
+			bindSubscriptionProfileToPane(
+				"claude",
+				"pane-conflict",
+				work.id,
+				"workspace-a",
+			),
+		).toThrow("different account");
+		expect(() =>
+			bindSubscriptionProfileToPane(
+				"codex",
+				"pane-conflict",
+				null,
+				"workspace-a",
+			),
+		).toThrow("different provider");
+		expect(() =>
+			bindSubscriptionProfileToPane(
+				"claude",
+				"pane-conflict",
+				personal.id,
+				"workspace-b",
+			),
+		).toThrow("different workspace");
+	});
+
+	it("validates explicit profile ownership and supports the system account", () => {
+		const codexProfile = createSubscriptionProfile("codex", "Codex only");
+		expect(() =>
+			bindSubscriptionProfileToPane(
+				"claude",
+				"pane-wrong-provider",
+				codexProfile.id,
+				"workspace-profile-validation",
+			),
+		).toThrow("Account profile not found");
+
+		bindSubscriptionProfileToPane(
+			"claude",
+			"pane-system-explicit",
+			null,
+			"workspace-profile-validation",
+		);
+		expect(
+			getSubscriptionProfileEnvironmentForPane(
+				"claude",
+				"pane-system-explicit",
+				"workspace-profile-validation",
+			),
+		).toEqual({ source: "system", environment: {} });
+	});
+
+	it("does not remove an account that is pinned to a saved pane", () => {
+		const profile = createSubscriptionProfile("claude", "Retained account");
+		bindSubscriptionProfileToPane(
+			"claude",
+			"pane-retained-account",
+			profile.id,
+			"workspace-retained-account",
+		);
+
+		expect(() => removeSubscriptionProfile("claude", profile.id)).toThrow(
+			"pinned to a saved terminal pane",
+		);
+		expect(existsSync(getSubscriptionProfileHome(profile))).toBe(true);
+		expect(
+			listSubscriptionProfiles().profiles.some(
+				(item) => item.id === profile.id,
+			),
+		).toBe(true);
+		expect(releaseSubscriptionProfilePane("pane-retained-account")).toBe(true);
+		expect(() => removeSubscriptionProfile("claude", profile.id)).not.toThrow();
 	});
 
 	it("refuses to recursively remove a linked profile directory", () => {

@@ -1,8 +1,9 @@
-import { AGENT_RUNTIMES } from "@superset/local-db";
+import { AGENT_RUNTIMES, remoteWorkspaceBindings } from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
 import { appState, getDeviceId } from "main/lib/app-state";
 import type { TabsState, ThemeState } from "main/lib/app-state/schemas";
 import { hotkeysEmitter } from "main/lib/hotkeys-events";
+import { localDb } from "main/lib/local-db";
 import { getCanonicalForLocalWorkspaceId } from "main/lib/sync/workspace-identity";
 import { HistoryReader } from "main/lib/terminal-history";
 import {
@@ -10,6 +11,7 @@ import {
 	HOTKEYS_STATE_VERSION,
 	type HotkeysState,
 } from "shared/hotkeys";
+import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 
@@ -78,6 +80,9 @@ const paneSchema = z.object({
 		})
 		.optional(),
 	agentRuntime: z.enum(AGENT_RUNTIMES).optional(),
+	subscriptionProfileId: z.string().uuid().nullable().optional(),
+	subscriptionProfilePinned: z.boolean().optional(),
+	subscriptionProfileNeedsRebind: z.boolean().optional(),
 	allowKilledRestore: z.boolean().optional(),
 });
 
@@ -332,6 +337,16 @@ async function stampSyncEnvelopeForTabs(input: TabsState): Promise<void> {
 	sync.paneClaudeSessions = paneClaudeSessions;
 }
 
+function getRemoteWorkspaceIds(): ReadonlySet<string> {
+	return new Set(
+		localDb
+			.select({ workspaceId: remoteWorkspaceBindings.workspaceId })
+			.from(remoteWorkspaceBindings)
+			.all()
+			.map(({ workspaceId }) => workspaceId),
+	);
+}
+
 /**
  * UI State router - manages tabs and theme persistence via lowdb
  */
@@ -340,14 +355,25 @@ export const createUiStateRouter = () => {
 		// Tabs state procedures
 		tabs: router({
 			get: publicProcedure.query((): TabsState => {
-				return appState.data.tabsState;
+				const persistedState = sanitizeSubscriptionProfilesForPersistence({
+					state: appState.data.tabsState,
+					remoteWorkspaceIds: getRemoteWorkspaceIds(),
+				});
+				// Keep the in-memory copy sanitized too, so a later theme/hotkey write
+				// cannot re-persist stale remote markers or device-local UUIDs.
+				appState.data.tabsState = persistedState;
+				return persistedState;
 			}),
 
 			set: publicProcedure
 				.input(tabsStateSchema)
 				.mutation(async ({ input }) => {
-					appState.data.tabsState = input;
-					await stampSyncEnvelopeForTabs(input);
+					const persistedState = sanitizeSubscriptionProfilesForPersistence({
+						state: input,
+						remoteWorkspaceIds: getRemoteWorkspaceIds(),
+					});
+					appState.data.tabsState = persistedState;
+					await stampSyncEnvelopeForTabs(persistedState);
 					await appState.write();
 					return { success: true };
 				}),

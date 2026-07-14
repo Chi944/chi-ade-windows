@@ -87,6 +87,7 @@ export interface UseTerminalLifecycleOptions {
 	tabIdRef: MutableRefObject<string>;
 	workspaceId: string;
 	agentRuntime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 	allowKilledRestore?: boolean;
 	terminalRef: RefObject<HTMLDivElement | null>;
 	xtermRef: MutableRefObject<XTerm | null>;
@@ -151,6 +152,7 @@ export function useTerminalLifecycle({
 	tabIdRef,
 	workspaceId,
 	agentRuntime,
+	subscriptionProfileId,
 	allowKilledRestore,
 	terminalRef,
 	xtermRef,
@@ -300,6 +302,7 @@ export function useTerminalLifecycle({
 					rows: xterm.rows,
 					allowKilled: true,
 					runtime: agentRuntime,
+					subscriptionProfileId,
 				},
 				{
 					onSuccess: (result) => {
@@ -448,6 +451,7 @@ export function useTerminalLifecycle({
 							rows: xterm.rows,
 							cwd: initialCwd,
 							runtime: agentRuntime,
+							subscriptionProfileId,
 							allowKilled: allowKilledRestore,
 						},
 						{
@@ -779,6 +783,7 @@ export function useTerminalLifecycle({
 		paneId,
 		workspaceId,
 		agentRuntime,
+		subscriptionProfileId,
 		allowKilledRestore,
 		maybeApplyInitialState,
 		flushPendingEvents,

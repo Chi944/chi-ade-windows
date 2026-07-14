@@ -147,6 +147,12 @@ export interface Pane {
 	terminalProfileId?: string; // Terminal color profile override
 	/** Agent CLI actually launched in this pane (may differ from the workspace default). */
 	agentRuntime?: AgentRuntime;
+	/** Transient device-local account choice; null selects System. Never persisted to shared app state. */
+	subscriptionProfileId?: string | null;
+	/** Portable marker that this pane is pinned to a device-local provider binding. */
+	subscriptionProfilePinned?: boolean;
+	/** Legacy migration flag; persistence sanitization converts it to subscriptionProfilePinned. */
+	subscriptionProfileNeedsRebind?: boolean;
 	/** One-shot permission to revive a deliberately closed pane with retained history. */
 	allowKilledRestore?: boolean;
 }

@@ -92,6 +92,30 @@ describe("launchCommandInPane", () => {
 			runtime: "codex",
 		});
 	});
+
+	it("passes an explicit subscription account to createOrAttach", async () => {
+		const createOrAttach = mock(async () => ({}));
+		const write = mock(async () => ({}));
+
+		await launchCommandInPane({
+			paneId: "pane-1",
+			tabId: "tab-1",
+			workspaceId: "ws-1",
+			command: "codex",
+			runtime: "codex",
+			subscriptionProfileId: "11111111-1111-4111-8111-111111111111",
+			createOrAttach,
+			write,
+		});
+
+		expect(createOrAttach).toHaveBeenCalledWith({
+			paneId: "pane-1",
+			tabId: "tab-1",
+			workspaceId: "ws-1",
+			runtime: "codex",
+			subscriptionProfileId: "11111111-1111-4111-8111-111111111111",
+		});
+	});
 });
 
 describe("buildTerminalCommand", () => {

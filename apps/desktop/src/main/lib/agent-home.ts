@@ -58,6 +58,11 @@ export function getAgentCodexHome(agentId: string): string {
 	return join(getAgentHome(agentId), ".codex");
 }
 
+/** Per-workspace Codex `-c` override containing ADE's additional instructions. */
+export function getAgentCodexInstructionsConfigPath(agentId: string): string {
+	return join(getAgentCodexHome(agentId), "ade-developer-instructions.config");
+}
+
 /**
  * Remove credential files created by ADE versions that copied or symlinked the
  * global Codex auth file into every agent home. Symlinks are removed directly;

@@ -3,6 +3,7 @@ import type { MosaicBranch } from "react-mosaic-component";
 import { MosaicWindow, MosaicWindowContext } from "react-mosaic-component";
 import { useDragPaneStore } from "renderer/stores/drag-pane-store";
 import { useTabsStore } from "renderer/stores/tabs/store";
+import { canAddPanesToLayout } from "renderer/stores/tabs/utils";
 import type { SplitOrientation } from "../../hooks";
 import { useSplitOrientation } from "../../hooks";
 
@@ -11,6 +12,7 @@ export interface PaneHandlers {
 	onClosePane: (e: React.MouseEvent) => void;
 	onSplitPane: (e: React.MouseEvent) => void;
 	splitOrientation: SplitOrientation;
+	canSplit: boolean;
 }
 
 /**
@@ -54,6 +56,10 @@ export function BasePaneWindow({
 	contentClassName = "w-full h-full overflow-hidden",
 }: BasePaneWindowProps) {
 	const isActive = useTabsStore((s) => s.focusedPaneIds[tabId] === paneId);
+	const canSplit = useTabsStore((state) => {
+		const tab = state.tabs.find((candidate) => candidate.id === tabId);
+		return tab ? canAddPanesToLayout(tab.layout) : false;
+	});
 	const containerRef = useRef<HTMLDivElement>(null);
 	const splitOrientation = useSplitOrientation(containerRef);
 	const isDragging = useDragPaneStore((s) => s.draggingPaneId !== null);
@@ -71,6 +77,7 @@ export function BasePaneWindow({
 
 	const handleSplitPane = (e: React.MouseEvent) => {
 		e.stopPropagation();
+		if (!canSplit) return;
 		const container = containerRef.current;
 		if (!container) return;
 
@@ -83,6 +90,7 @@ export function BasePaneWindow({
 		onClosePane: handleClosePane,
 		onSplitPane: handleSplitPane,
 		splitOrientation,
+		canSplit,
 	};
 
 	const isRoot = path.length === 0;

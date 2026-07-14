@@ -1,6 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
+import {
+	afterAll,
+	beforeAll,
+	describe,
+	expect,
+	it,
+	mock,
+	setDefaultTimeout,
+} from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workspaces, worktrees } from "@superset/local-db";
@@ -20,11 +28,17 @@ const TEST_HOME = join(
 );
 const ORIGINAL_ADE_HOME = process.env.ADE_HOME_DIR;
 
+// This file creates several real Git repositories. Windows filesystem and
+// antivirus load can push a setup hook beyond Bun's 5-second default even when
+// every operation succeeds, so give these integration-style checks headroom.
+setDefaultTimeout(30_000);
+
 // Deferred (dynamic) imports so the env override above wins over module load.
 let getAgentHome: (id: string) => string;
 let getAgentMemoryDir: (id: string) => string;
 let getAgentWorktreePath: (id: string) => string;
 let getAgentCodexHome: (id: string) => string;
+let getAgentCodexInstructionsConfigPath: (id: string) => string;
 let setupAgentRepo: typeof import("./agent-repo").setupAgentRepo;
 let scaffoldAgentMemory: typeof import("./agent-scaffold").scaffoldAgentMemory;
 let regenerateCodexAgentsMd: typeof import("./agent-scaffold").regenerateCodexAgentsMd;
@@ -36,6 +50,8 @@ beforeAll(async () => {
 	getAgentMemoryDir = home.getAgentMemoryDir;
 	getAgentWorktreePath = home.getAgentWorktreePath;
 	getAgentCodexHome = home.getAgentCodexHome;
+	getAgentCodexInstructionsConfigPath =
+		home.getAgentCodexInstructionsConfigPath;
 	const repo = await import("./agent-repo");
 	setupAgentRepo = repo.setupAgentRepo;
 	const scaffold = await import("./agent-scaffold");
@@ -310,6 +326,14 @@ describe("Codex bridge regen", () => {
 		expect(agents).toContain("ADE context and coordination");
 		expect(agents).not.toContain("WHEN FULL"); // full protocol is on-demand
 		expect(Buffer.byteLength(agents, "utf8")).toBeLessThan(32 * 1024);
+		const override = readFileSync(
+			getAgentCodexInstructionsConfigPath(agentId),
+			"utf8",
+		);
+		expect(override.startsWith("developer_instructions=")).toBe(true);
+		expect(JSON.parse(override.slice("developer_instructions=".length))).toBe(
+			agents,
+		);
 	});
 
 	it("does not clobber an existing bridge when canonical memory is absent", async () => {
@@ -342,6 +366,74 @@ describe("Codex bridge regen", () => {
 			"utf8",
 		);
 		expect(agents).toContain(marker);
+	});
+
+	it("compacts an oversized launch override without truncating the canonical bridge", async () => {
+		const largeAgentId = "agent-codex-large";
+		await makeAgent(largeAgentId, "codex");
+		const memoryMarker = "DURABLE-LARGE-MEMORY-MARKER";
+		writeFileSync(
+			join(getAgentMemoryDir(largeAgentId), "MEMORY.md"),
+			`# Memory\n${memoryMarker}\n${"durable context \ud83d\ude80\n".repeat(1_000)}`,
+			"utf8",
+		);
+
+		regenerateCodexAgentsMd(largeAgentId);
+
+		const canonicalBridge = readFileSync(
+			join(getAgentCodexHome(largeAgentId), "AGENTS.md"),
+			"utf8",
+		);
+		const serializedOverride = readFileSync(
+			getAgentCodexInstructionsConfigPath(largeAgentId),
+			"utf8",
+		);
+		const launchInstructions = JSON.parse(
+			serializedOverride.slice("developer_instructions=".length),
+		) as string;
+
+		expect(canonicalBridge).toContain(memoryMarker);
+		expect(Buffer.byteLength(canonicalBridge, "utf8")).toBeGreaterThan(
+			5 * 1024,
+		);
+		expect(Buffer.byteLength(launchInstructions, "utf8")).toBeLessThanOrEqual(
+			5 * 1024,
+		);
+		expect(Buffer.byteLength(serializedOverride, "utf8")).toBeLessThan(7_000);
+		expect(launchInstructions).toContain("autonomous coding agent");
+		expect(launchInstructions).toContain(
+			"older ADE memory compacted for launch",
+		);
+		expect(launchInstructions).toContain("ADE context and coordination");
+	});
+
+	it("caps the serialized override when memory contains escape-heavy text", async () => {
+		const escapingAgentId = "agent-codex-escaping";
+		await makeAgent(escapingAgentId, "codex");
+		writeFileSync(
+			join(getAgentMemoryDir(escapingAgentId), "MEMORY.md"),
+			`# Memory\nESCAPE-HEAVY-MARKER\n${'"\\\n'.repeat(2_000)}`,
+			"utf8",
+		);
+
+		regenerateCodexAgentsMd(escapingAgentId);
+
+		const serializedOverride = readFileSync(
+			getAgentCodexInstructionsConfigPath(escapingAgentId),
+			"utf8",
+		);
+		const launchInstructions = JSON.parse(
+			serializedOverride.slice("developer_instructions=".length),
+		) as string;
+
+		expect(Buffer.byteLength(serializedOverride, "utf8")).toBeLessThanOrEqual(
+			4 * 1024,
+		);
+		expect(launchInstructions).toContain("autonomous coding agent");
+		expect(launchInstructions).toContain(
+			"older ADE memory compacted for launch",
+		);
+		expect(launchInstructions).toContain("ADE context and coordination");
 	});
 });
 

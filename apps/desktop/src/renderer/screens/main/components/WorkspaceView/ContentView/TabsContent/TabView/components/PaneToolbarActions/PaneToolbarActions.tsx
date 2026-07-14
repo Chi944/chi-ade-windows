@@ -9,6 +9,7 @@ interface PaneToolbarActionsProps {
 	splitOrientation: SplitOrientation;
 	onSplitPane: (e: React.MouseEvent) => void;
 	onClosePane: (e: React.MouseEvent) => void;
+	canSplit: boolean;
 	leadingActions?: React.ReactNode;
 	/** Hotkey ID to display for the close action. Defaults to CLOSE_PANE. */
 	closeHotkeyId?: HotkeyId;
@@ -18,6 +19,7 @@ export function PaneToolbarActions({
 	splitOrientation,
 	onSplitPane,
 	onClosePane,
+	canSplit,
 	leadingActions,
 	closeHotkeyId = "CLOSE_PANE",
 }: PaneToolbarActionsProps) {
@@ -36,13 +38,19 @@ export function PaneToolbarActions({
 					<button
 						type="button"
 						onClick={onSplitPane}
-						className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground"
+						disabled={!canSplit}
+						aria-label={canSplit ? "Split pane" : "Maximum 6 views"}
+						className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
 					>
 						{splitIcon}
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="bottom" showArrow={false}>
-					<HotkeyTooltipContent label="Split pane" hotkeyId="SPLIT_AUTO" />
+					{canSplit ? (
+						<HotkeyTooltipContent label="Split pane" hotkeyId="SPLIT_AUTO" />
+					) : (
+						"Maximum 6 views"
+					)}
 				</TooltipContent>
 			</Tooltip>
 			<Tooltip>

@@ -33,6 +33,7 @@ import {
 import {
 	createSubscriptionProfile,
 	getSubscriptionProfileEnvironment,
+	getSubscriptionProfilePaneBinding,
 	listSubscriptionProfiles,
 	removeSubscriptionProfile,
 	SUBSCRIPTION_PROFILE_PROVIDERS,
@@ -806,6 +807,21 @@ export const createSettingsRouter = () => {
 		subscriptionConnections: router({
 			status: publicProcedure.query(() => probeSubscriptionConnections()),
 			profiles: publicProcedure.query(() => listSubscriptionProfiles()),
+			paneBinding: publicProcedure
+				.input(
+					z.object({
+						provider: z.enum(SUBSCRIPTION_PROFILE_PROVIDERS),
+						paneId: z.string().min(1).max(200),
+						workspaceId: z.string().min(1).max(200),
+					}),
+				)
+				.query(({ input }) =>
+					getSubscriptionProfilePaneBinding(
+						input.provider,
+						input.paneId,
+						input.workspaceId,
+					),
+				),
 			createProfile: publicProcedure
 				.input(
 					z.object({

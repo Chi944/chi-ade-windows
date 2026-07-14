@@ -123,17 +123,22 @@ export function WorkspaceInitEffects() {
 				openPresetsInActiveTab(setup.workspaceId, presets);
 
 				if (agentCommand) {
-					const agentPaneId = addPane(setupTabId, { agentRuntime });
-					if (agentPaneId) {
-						launchAgentCommand({
-							paneId: agentPaneId,
-							tabId: setupTabId,
-							workspaceId: setup.workspaceId,
-							command: agentCommand,
-							runtime: agentRuntime,
-							removePaneOnError: true,
-						});
+					let agentTabId = setupTabId;
+					let agentPaneId = addPane(agentTabId, { agentRuntime });
+					if (!agentPaneId) {
+						const fallback = addTab(setup.workspaceId, { agentRuntime });
+						agentTabId = fallback.tabId;
+						agentPaneId = fallback.paneId;
+						setTabAutoTitle(agentTabId, "Agent");
 					}
+					launchAgentCommand({
+						paneId: agentPaneId,
+						tabId: agentTabId,
+						workspaceId: setup.workspaceId,
+						command: agentCommand,
+						runtime: agentRuntime,
+						removePaneOnError: true,
+					});
 				}
 
 				createOrAttach.mutate(
@@ -183,17 +188,22 @@ export function WorkspaceInitEffects() {
 				setTabAutoTitle(tabId, "Agent Setup");
 
 				if (agentCommand) {
-					const agentPaneId = addPane(tabId, { agentRuntime });
-					if (agentPaneId) {
-						launchAgentCommand({
-							paneId: agentPaneId,
-							tabId,
-							workspaceId: setup.workspaceId,
-							command: agentCommand,
-							runtime: agentRuntime,
-							removePaneOnError: true,
-						});
+					let agentTabId = tabId;
+					let agentPaneId = addPane(agentTabId, { agentRuntime });
+					if (!agentPaneId) {
+						const fallback = addTab(setup.workspaceId, { agentRuntime });
+						agentTabId = fallback.tabId;
+						agentPaneId = fallback.paneId;
+						setTabAutoTitle(agentTabId, "Agent");
 					}
+					launchAgentCommand({
+						paneId: agentPaneId,
+						tabId: agentTabId,
+						workspaceId: setup.workspaceId,
+						command: agentCommand,
+						runtime: agentRuntime,
+						removePaneOnError: true,
+					});
 				}
 
 				createOrAttach.mutate(

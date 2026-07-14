@@ -203,6 +203,7 @@ export function BrowserPane({
 							splitOrientation={handlers.splitOrientation}
 							onSplitPane={handlers.onSplitPane}
 							onClosePane={handlers.onClosePane}
+							canSplit={handlers.canSplit}
 							closeHotkeyId="CLOSE_TERMINAL"
 							leadingActions={
 								<>

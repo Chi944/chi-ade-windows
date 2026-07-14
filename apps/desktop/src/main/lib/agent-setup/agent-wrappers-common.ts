@@ -17,6 +17,19 @@ export const WRAPPER_MARKER = "# ADE agent-wrapper v2";
  */
 const WRAPPER_HEADER_NEEDLE = "agent-wrapper";
 
+// npm's Windows cmd-shim format. Capturing the JavaScript entry point lets the
+// generated wrapper bypass cmd.exe, whose percent expansion and quote parsing
+// can mutate Codex's per-workspace developer instructions.
+const NODE_CMD_SHIM_TARGET_PATTERN =
+	/(?:^|\r?\n)[ \t]*endLocal[ \t]+&[ \t]+goto[ \t]+#_undefined_#[ \t]+2>NUL[ \t]+\|\|[ \t]+title[ \t]+%COMSPEC%[ \t]+&[ \t]+"%_prog%"[ \t]+"%(?:~dp0|dp0%)([\\/]*[^"\r\n]+?\.(?:[cm]?js))"[ \t]+%\*[ \t]*(?:\r?\n)?$/i;
+const LEADING_PATH_SEPARATORS_PATTERN = /^[\\/]+/;
+const WINDOWS_BATCH_EXTENSION_PATTERN = /\.(?:cmd|bat)$/i;
+const NODE_SHEBANG_PATTERN = /^#![^\r\n]*\bnode(?:\.exe)?\b/i;
+
+export function extractNodeCmdShimTarget(source: string): string | null {
+	return NODE_CMD_SHIM_TARGET_PATTERN.exec(source)?.[1] ?? null;
+}
+
 // Matches ADE-managed hook paths under the app home dir (~/.ade or
 // ~/.ade-<workspace>). MUST be ADE's own dir, not another app's home — otherwise
 // ADE would treat a legacy install's hooks as its own and clobber them, and
@@ -131,6 +144,7 @@ interface WindowsWrapperOptions {
 	argsPrefix?: string[];
 	env?: Record<string, string>;
 	prelude?: string;
+	requireExactArgs?: boolean;
 }
 
 function buildCmdLauncher(binaryName: string): string {
@@ -145,6 +159,7 @@ export function buildWindowsWrapperScript(
 	const extraEnv = JSON.stringify(options.env ?? {});
 	const missingMessage = JSON.stringify(getMissingBinaryMessage(binaryName));
 	const prelude = options.prelude ?? "";
+	const requireExactArgs = options.requireExactArgs ?? false;
 
 	return `#!/usr/bin/env node
 // ${WRAPPER_MARKER}
@@ -161,6 +176,11 @@ const argsPrefix = ${argsPrefix};
 const extraEnv = ${extraEnv};
 const missingMessage = ${missingMessage};
 const wrapperHeaderNeedle = ${JSON.stringify(WRAPPER_HEADER_NEEDLE)};
+const requireExactArgs = ${JSON.stringify(requireExactArgs)};
+const nodeCmdShimTargetPattern = ${NODE_CMD_SHIM_TARGET_PATTERN.toString()};
+const leadingPathSeparatorsPattern = ${LEADING_PATH_SEPARATORS_PATTERN.toString()};
+const windowsBatchExtensionPattern = ${WINDOWS_BATCH_EXTENSION_PATTERN.toString()};
+const nodeShebangPattern = ${NODE_SHEBANG_PATTERN.toString()};
 
 function normalizePath(value) {
   try {
@@ -196,6 +216,23 @@ function hasWrapperMarker(candidate) {
   }
 }
 
+function getNodeCmdShimEntrypoint(candidate) {
+  if (!windowsBatchExtensionPattern.test(candidate)) return null;
+  try {
+    const source = fs.readFileSync(candidate, "utf8");
+    const match = nodeCmdShimTargetPattern.exec(source);
+    if (!match) return null;
+    const relativeScript = match[1].replace(leadingPathSeparatorsPattern, "");
+    const entrypoint = path.resolve(path.dirname(candidate), relativeScript);
+    const stat = fs.statSync(entrypoint);
+    if (!stat.isFile()) return null;
+    const header = fs.readFileSync(entrypoint, "utf8").slice(0, 256);
+    return nodeShebangPattern.test(header) ? entrypoint : null;
+  } catch {
+    return null;
+  }
+}
+
 function findRealBinary(name) {
   const pathValue = process.env.Path || process.env.PATH || "";
   for (const dir of pathValue.split(path.delimiter)) {
@@ -204,6 +241,15 @@ function findRealBinary(name) {
       try {
         const stat = fs.statSync(candidate);
         if (!stat.isFile() || hasWrapperMarker(candidate)) continue;
+        if (
+          requireExactArgs &&
+          windowsBatchExtensionPattern.test(candidate) &&
+          !getNodeCmdShimEntrypoint(candidate)
+        ) {
+          // Keep walking PATH for a native executable. Passing exact arguments
+          // through an unknown batch file would re-enable cmd.exe expansion.
+          continue;
+        }
         return candidate;
       } catch {
         // Continue searching.
@@ -215,17 +261,27 @@ function findRealBinary(name) {
 
 const realBin = findRealBinary(binaryName);
 if (!realBin) {
-  console.error(missingMessage);
+  console.error(
+    requireExactArgs
+      ? "ADE: " + binaryName + " has no safe Windows launcher on PATH. Install its official npm shim or native executable, then retry."
+      : missingMessage,
+  );
   process.exit(127);
 }
 
 const env = { ...process.env, ...extraEnv };
 const args = [...argsPrefix, ...process.argv.slice(2)];
 ${prelude}
-const child = spawn(realBin, args, {
+const shimEntrypoint = getNodeCmdShimEntrypoint(realBin);
+const localNode = path.join(path.dirname(realBin), "node.exe");
+const launchCommand = shimEntrypoint
+  ? (fs.existsSync(localNode) ? localNode : process.execPath)
+  : realBin;
+const launchArgs = shimEntrypoint ? [shimEntrypoint, ...args] : args;
+const child = spawn(launchCommand, launchArgs, {
   stdio: "inherit",
   env,
-  shell: /\\.(cmd|bat)$/i.test(realBin),
+  shell: !shimEntrypoint && windowsBatchExtensionPattern.test(realBin),
 });
 
 child.on("error", (error) => {

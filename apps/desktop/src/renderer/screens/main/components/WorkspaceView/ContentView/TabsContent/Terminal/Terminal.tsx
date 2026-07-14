@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { useTabsStore } from "renderer/stores/tabs/store";
 import { useTerminalTheme } from "renderer/stores/theme";
+import { resolveSubscriptionProfileGate } from "shared/subscription-profile-rebind";
 import { getTerminalProfile } from "shared/terminal-profiles";
 import { SessionKilledOverlay } from "./components";
 import {
@@ -27,6 +28,7 @@ import {
 	useTerminalStream,
 } from "./hooks";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { SubscriptionProfileRebindNotice } from "./SubscriptionProfileRebindNotice";
 import { TerminalSearch } from "./TerminalSearch";
 import type {
 	TerminalExitReason,
@@ -38,10 +40,72 @@ import { shellEscapePaths, validateDroppedPaths } from "./utils";
 const stripLeadingEmoji = (text: string) =>
 	text.trim().replace(/^[\p{Emoji}\p{Symbol}]\s*/u, "");
 
-export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
+export const Terminal = (props: TerminalProps) => {
+	const pane = useTabsStore((state) => state.panes[props.paneId]);
+	const setPaneSubscriptionProfile = useTabsStore(
+		(state) => state.setPaneSubscriptionProfile,
+	);
+	const subscriptionProvider =
+		pane?.agentRuntime === "claude" || pane?.agentRuntime === "codex"
+			? pane.agentRuntime
+			: null;
+	const shouldLookupBinding =
+		subscriptionProvider !== null &&
+		pane?.subscriptionProfilePinned === true &&
+		pane.subscriptionProfileId === undefined;
+	const paneBinding =
+		electronTrpc.settings.subscriptionConnections.paneBinding.useQuery(
+			{
+				provider: subscriptionProvider ?? "claude",
+				paneId: props.paneId,
+				workspaceId: props.workspaceId,
+			},
+			{
+				enabled: shouldLookupBinding,
+				staleTime: 0,
+				retry: false,
+			},
+		);
+	const gate = resolveSubscriptionProfileGate({
+		agentRuntime: pane?.agentRuntime,
+		subscriptionProfileId: pane?.subscriptionProfileId,
+		subscriptionProfilePinned: pane?.subscriptionProfilePinned,
+		binding: paneBinding.data,
+		isBindingLoading: shouldLookupBinding && paneBinding.isPending,
+	});
+	const accountProfiles =
+		electronTrpc.settings.subscriptionConnections.profiles.useQuery(undefined, {
+			enabled: gate === "rebind",
+			staleTime: 30_000,
+		});
+
+	if (subscriptionProvider && gate !== "ready") {
+		return (
+			<SubscriptionProfileRebindNotice
+				provider={subscriptionProvider}
+				isLoading={
+					gate === "loading" || (gate === "rebind" && accountProfiles.isPending)
+				}
+				isError={accountProfiles.isError || paneBinding.isError}
+				profiles={accountProfiles.data?.profiles ?? []}
+				onSelect={(profileId) =>
+					setPaneSubscriptionProfile(props.paneId, profileId)
+				}
+				onRetry={() =>
+					void Promise.all([accountProfiles.refetch(), paneBinding.refetch()])
+				}
+			/>
+		);
+	}
+
+	return <TerminalSession {...props} />;
+};
+
+const TerminalSession = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 	const pane = useTabsStore((s) => s.panes[paneId]);
 	const paneInitialCwd = pane?.initialCwd;
 	const agentRuntime = pane?.agentRuntime;
+	const subscriptionProfileId = pane?.subscriptionProfileId;
 	const allowKilledRestore = pane?.allowKilledRestore;
 	const clearPaneInitialData = useTabsStore((s) => s.clearPaneInitialData);
 
@@ -239,6 +303,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		tabId,
 		workspaceId,
 		agentRuntime,
+		subscriptionProfileId,
 		xtermRef,
 		fitAddonRef,
 		isStreamReadyRef,
@@ -356,6 +421,7 @@ export const Terminal = ({ paneId, tabId, workspaceId }: TerminalProps) => {
 		tabIdRef,
 		workspaceId,
 		agentRuntime,
+		subscriptionProfileId,
 		allowKilledRestore,
 		terminalRef,
 		xtermRef,

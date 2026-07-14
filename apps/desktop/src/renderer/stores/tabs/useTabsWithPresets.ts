@@ -12,18 +12,24 @@ import {
 	launchCommandInPane,
 } from "renderer/lib/terminal/launch-command";
 import {
+	chunkPresetCommands,
+	distributePresetCommands,
 	getPresetLaunchPlan,
 	type PresetMode,
 	type PresetOpenTarget,
 } from "./preset-launch";
 import { useTabsStore } from "./store";
 import type { AddTabOptions } from "./types";
-import { resolveActiveTabIdForWorkspace } from "./utils";
+import {
+	getRemainingPaneCapacity,
+	resolveActiveTabIdForWorkspace,
+} from "./utils";
 
 interface OpenPresetOptions {
 	target?: PresetOpenTarget;
 	modeOverride?: PresetMode;
 	runtime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 interface PreparedPreset {
@@ -32,6 +38,7 @@ interface PreparedPreset {
 	initialCwd?: string;
 	name?: string;
 	runtime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 interface PresetPaneLaunch {
@@ -40,6 +47,7 @@ interface PresetPaneLaunch {
 	workspaceId: string;
 	command: string;
 	runtime?: AgentRuntime;
+	subscriptionProfileId?: string | null;
 }
 
 function preparePreset(preset: TerminalPreset): PreparedPreset {
@@ -101,13 +109,21 @@ export function useTabsWithPresets() {
 	}, []);
 
 	const launchPresetCommand = useCallback(
-		({ paneId, tabId, workspaceId, command, runtime }: PresetPaneLaunch) => {
+		({
+			paneId,
+			tabId,
+			workspaceId,
+			command,
+			runtime,
+			subscriptionProfileId,
+		}: PresetPaneLaunch) => {
 			void launchCommandInPane({
 				paneId,
 				tabId,
 				workspaceId,
 				command,
 				runtime,
+				subscriptionProfileId,
 				createOrAttach: (input) => createOrAttach.mutateAsync(input),
 				write: (input) => writeToTerminal.mutateAsync(input),
 			}).catch((error) => {
@@ -183,6 +199,7 @@ export function useTabsWithPresets() {
 					const result = storeAddTab(workspaceId, {
 						initialCwd: preset.initialCwd,
 						agentRuntime: preset.runtime,
+						subscriptionProfileId: preset.subscriptionProfileId,
 					});
 					if (!firstResult) {
 						firstResult = result;
@@ -193,6 +210,7 @@ export function useTabsWithPresets() {
 						workspaceId,
 						command,
 						runtime: preset.runtime,
+						subscriptionProfileId: preset.subscriptionProfileId,
 					});
 					applyTabName(result.tabId, preset.name);
 				}
@@ -205,41 +223,78 @@ export function useTabsWithPresets() {
 				const fallback = storeAddTab(workspaceId, {
 					initialCwd: preset.initialCwd,
 					agentRuntime: preset.runtime,
+					subscriptionProfileId: preset.subscriptionProfileId,
 				});
 				applyTabName(fallback.tabId, preset.name);
 				return fallback;
 			}
 
 			if (hasMultipleCommands) {
-				const multiPane = storeAddTabWithMultiplePanes(workspaceId, {
-					commands: preset.commands,
-					initialCwd: preset.initialCwd,
-					agentRuntime: preset.runtime,
-				});
-				const launches: PresetPaneLaunch[] = multiPane.paneIds.flatMap(
-					(paneId, index) => {
-						const command = preset.commands[index];
-						if (command === undefined) return [];
-						return [
-							{
-								paneId,
-								tabId: multiPane.tabId,
-								workspaceId,
-								command,
-								runtime: preset.runtime,
-							},
-						];
-					},
-				);
+				let firstResult: { tabId: string; paneId: string } | null = null;
+				const launches: PresetPaneLaunch[] = [];
+
+				for (const commandGroup of chunkPresetCommands(preset.commands)) {
+					const multiPane = storeAddTabWithMultiplePanes(workspaceId, {
+						commands: commandGroup,
+						initialCwd: preset.initialCwd,
+						agentRuntime: preset.runtime,
+						subscriptionProfileId: preset.subscriptionProfileId,
+					});
+					const createdCount = Math.min(
+						multiPane.paneIds.length,
+						commandGroup.length,
+					);
+
+					if (createdCount > 0) {
+						firstResult ??= {
+							tabId: multiPane.tabId,
+							paneId: multiPane.paneIds[0],
+						};
+						applyTabName(multiPane.tabId, preset.name);
+					}
+
+					for (let index = 0; index < createdCount; index++) {
+						launches.push({
+							paneId: multiPane.paneIds[index],
+							tabId: multiPane.tabId,
+							workspaceId,
+							command: commandGroup[index],
+							runtime: preset.runtime,
+							subscriptionProfileId: preset.subscriptionProfileId,
+						});
+					}
+
+					// Store limits should accept every pre-chunked command. If a store
+					// implementation ever returns fewer panes, preserve the remainder in
+					// individual tabs instead of silently losing commands.
+					for (const command of commandGroup.slice(createdCount)) {
+						const fallback = storeAddTab(workspaceId, {
+							initialCwd: preset.initialCwd,
+							agentRuntime: preset.runtime,
+							subscriptionProfileId: preset.subscriptionProfileId,
+						});
+						firstResult ??= fallback;
+						applyTabName(fallback.tabId, preset.name);
+						launches.push({
+							paneId: fallback.paneId,
+							tabId: fallback.tabId,
+							workspaceId,
+							command,
+							runtime: preset.runtime,
+							subscriptionProfileId: preset.subscriptionProfileId,
+						});
+					}
+				}
+
 				launchPresetCommands(launches);
-				applyTabName(multiPane.tabId, preset.name);
-				return { tabId: multiPane.tabId, paneId: multiPane.paneIds[0] };
+				if (firstResult) return firstResult;
 			}
 
 			const command = buildTerminalCommand(preset.commands);
 			const result = storeAddTab(workspaceId, {
 				initialCwd: preset.initialCwd,
 				agentRuntime: preset.runtime,
+				subscriptionProfileId: preset.subscriptionProfileId,
 			});
 			if (command !== null) {
 				launchPresetCommand({
@@ -248,6 +303,7 @@ export function useTabsWithPresets() {
 					workspaceId,
 					command,
 					runtime: preset.runtime,
+					subscriptionProfileId: preset.subscriptionProfileId,
 				});
 			}
 			applyTabName(result.tabId, preset.name);
@@ -277,15 +333,35 @@ export function useTabsWithPresets() {
 			});
 
 			if (plan === "active-tab-multi-pane" && activeTabId) {
-				const paneIds = storeAddPanesToTab(activeTabId, {
+				const activeTab = useTabsStore
+					.getState()
+					.tabs.find((tab) => tab.id === activeTabId);
+				const capacity = activeTab
+					? getRemainingPaneCapacity(activeTab.layout)
+					: 0;
+				const distribution = distributePresetCommands({
 					commands: preset.commands,
-					initialCwd: preset.initialCwd,
-					agentRuntime: preset.runtime,
+					activeTabCapacity: capacity,
 				});
-				if (paneIds.length > 0) {
-					const launches: PresetPaneLaunch[] = paneIds.flatMap(
-						(paneId, index) => {
-							const command = preset.commands[index];
+				const activeCommands = distribution.activeTabCommands;
+				let overflowCommands = distribution.overflowTabGroups.flat();
+				let activeResult: { tabId: string; paneId: string } | null = null;
+
+				const paneIds =
+					activeCommands.length > 0
+						? storeAddPanesToTab(activeTabId, {
+								commands: activeCommands,
+								initialCwd: preset.initialCwd,
+								agentRuntime: preset.runtime,
+								subscriptionProfileId: preset.subscriptionProfileId,
+							})
+						: [];
+				const createdCount = Math.min(paneIds.length, activeCommands.length);
+				if (createdCount > 0) {
+					const launches: PresetPaneLaunch[] = paneIds
+						.slice(0, createdCount)
+						.flatMap((paneId, index) => {
+							const command = activeCommands[index];
 							if (command === undefined) return [];
 							return [
 								{
@@ -294,21 +370,43 @@ export function useTabsWithPresets() {
 									workspaceId,
 									command,
 									runtime: preset.runtime,
+									subscriptionProfileId: preset.subscriptionProfileId,
 								},
 							];
-						},
-					);
+						});
 					launchPresetCommands(launches);
-					return { tabId: activeTabId, paneId: paneIds[0] };
+					activeResult = { tabId: activeTabId, paneId: paneIds[0] };
 				}
+				overflowCommands = [
+					...activeCommands.slice(createdCount),
+					...overflowCommands,
+				];
+
+				if (overflowCommands.length > 0) {
+					const overflowResult = executePresetInNewTab(workspaceId, {
+						...preset,
+						commands: overflowCommands,
+					});
+					return activeResult ?? overflowResult;
+				}
+
+				if (activeResult) return activeResult;
 				return executePresetInNewTab(workspaceId, preset);
 			}
 
 			if (plan === "active-tab-single" && activeTabId) {
+				const activeTab = useTabsStore
+					.getState()
+					.tabs.find((tab) => tab.id === activeTabId);
+				if (!activeTab || getRemainingPaneCapacity(activeTab.layout) === 0) {
+					return executePresetInNewTab(workspaceId, preset);
+				}
+
 				const command = buildTerminalCommand(preset.commands);
 				const paneId = storeAddPane(activeTabId, {
 					initialCwd: preset.initialCwd,
 					agentRuntime: preset.runtime,
+					subscriptionProfileId: preset.subscriptionProfileId,
 				});
 				if (paneId) {
 					if (command !== null) {
@@ -318,6 +416,7 @@ export function useTabsWithPresets() {
 							workspaceId,
 							command,
 							runtime: preset.runtime,
+							subscriptionProfileId: preset.subscriptionProfileId,
 						});
 					}
 					return { tabId: activeTabId, paneId };
@@ -348,7 +447,12 @@ export function useTabsWithPresets() {
 			const mode = options?.modeOverride ?? prepared.mode;
 			return executePreset(
 				workspaceId,
-				{ ...prepared, mode, runtime: options?.runtime },
+				{
+					...prepared,
+					mode,
+					runtime: options?.runtime,
+					subscriptionProfileId: options?.subscriptionProfileId,
+				},
 				target,
 			);
 		},

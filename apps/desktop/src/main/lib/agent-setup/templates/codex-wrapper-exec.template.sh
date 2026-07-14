@@ -36,6 +36,11 @@ if [ -n "$SUPERSET_TAB_ID" ] && [ -f "{{NOTIFY_PATH}}" ]; then
   SUPERSET_CODEX_START_WATCHER_PID=$!
 fi
 
+if [ -n "${ADE_CODEX_INSTRUCTIONS_CONFIG_PATH:-}" ] && [ -f "$ADE_CODEX_INSTRUCTIONS_CONFIG_PATH" ]; then
+  _superset_codex_instructions="$(cat "$ADE_CODEX_INSTRUCTIONS_CONFIG_PATH")"
+  set -- -c "$_superset_codex_instructions" "$@"
+fi
+
 "$REAL_BIN" -c 'notify=["bash","{{NOTIFY_PATH}}"]' "$@"
 SUPERSET_CODEX_STATUS=$?
 

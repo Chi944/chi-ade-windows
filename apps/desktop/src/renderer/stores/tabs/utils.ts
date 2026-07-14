@@ -1,4 +1,8 @@
-import type { MosaicBranch, MosaicNode } from "react-mosaic-component";
+import {
+	type MosaicBranch,
+	type MosaicNode,
+	updateTree,
+} from "react-mosaic-component";
 import {
 	type ChangeCategory,
 	type FileStatus,
@@ -145,12 +149,26 @@ export const extractPaneIdsFromLayout = (
 /** Alias for extractPaneIdsFromLayout emphasizing the visual ordering contract */
 export const getPaneIdsInVisualOrder = extractPaneIdsFromLayout;
 
+export const MAX_PANES_PER_TAB = 6;
+
+export const getRemainingPaneCapacity = (layout: MosaicNode<string>): number =>
+	Math.max(0, MAX_PANES_PER_TAB - extractPaneIdsFromLayout(layout).length);
+
+export const canAddPanesToLayout = (
+	layout: MosaicNode<string>,
+	paneCount = 1,
+): boolean =>
+	Number.isInteger(paneCount) &&
+	paneCount > 0 &&
+	paneCount <= getRemainingPaneCapacity(layout);
+
 /**
  * Options for creating a pane with preset configuration
  */
 export interface CreatePaneOptions {
 	initialCwd?: string;
 	agentRuntime?: Pane["agentRuntime"];
+	subscriptionProfileId?: string | null;
 }
 
 /**
@@ -162,6 +180,8 @@ export const createPane = (
 	options?: CreatePaneOptions,
 ): Pane => {
 	const id = generateId("pane");
+	const hasExplicitSubscriptionProfile =
+		options?.subscriptionProfileId !== undefined;
 
 	return {
 		id,
@@ -171,6 +191,12 @@ export const createPane = (
 		isNew: true,
 		initialCwd: options?.initialCwd,
 		agentRuntime: options?.agentRuntime,
+		...(hasExplicitSubscriptionProfile
+			? {
+					subscriptionProfileId: options.subscriptionProfileId,
+					subscriptionProfilePinned: true,
+				}
+			: {}),
 	};
 };
 
@@ -570,26 +596,10 @@ export const findPanePath = (
 };
 
 /**
- * Adds a pane to an existing layout by creating a split
+ * Builds a balanced grid with at most two columns. Rows are recursively split
+ * in proportion to how many rows each branch contains so every row is equal.
  */
-export const addPaneToLayout = (
-	existingLayout: MosaicNode<string>,
-	newPaneId: string,
-): MosaicNode<string> => ({
-	direction: "row",
-	first: existingLayout,
-	second: newPaneId,
-	splitPercentage: 50,
-});
-
-/**
- * Builds a balanced multi-pane Mosaic layout using recursive binary splits.
- * For 3+ panes, alternates between column and row splits to create a grid.
- */
-export const buildMultiPaneLayout = (
-	paneIds: string[],
-	direction: "row" | "column" = "column",
-): MosaicNode<string> => {
+export const buildMultiPaneLayout = (paneIds: string[]): MosaicNode<string> => {
 	if (paneIds.length === 0) {
 		throw new Error("Cannot build layout with zero panes");
 	}
@@ -598,24 +608,83 @@ export const buildMultiPaneLayout = (
 		return paneIds[0];
 	}
 
+	const rows: MosaicNode<string>[] = [];
+	for (let index = 0; index < paneIds.length; index += 2) {
+		const first = paneIds[index];
+		const second = paneIds[index + 1];
+		rows.push(
+			second === undefined
+				? first
+				: {
+						direction: "row",
+						first,
+						second,
+						splitPercentage: 50,
+					},
+		);
+	}
+
+	const buildRows = (rowNodes: MosaicNode<string>[]): MosaicNode<string> => {
+		if (rowNodes.length === 1) {
+			return rowNodes[0];
+		}
+
+		const mid = Math.ceil(rowNodes.length / 2);
+		return {
+			direction: "column",
+			first: buildRows(rowNodes.slice(0, mid)),
+			second: buildRows(rowNodes.slice(mid)),
+			splitPercentage: (mid * 100) / rowNodes.length,
+		};
+	};
+
+	return buildRows(rows);
+};
+
+/** Adds a pane and rebalances the layout without changing visual order. */
+export const addPaneToLayout = (
+	existingLayout: MosaicNode<string>,
+	newPaneId: string,
+	firstSplitDirection: "row" | "column" = "row",
+): MosaicNode<string> => {
+	const paneIds = [...extractPaneIdsFromLayout(existingLayout), newPaneId];
 	if (paneIds.length === 2) {
 		return {
-			direction: "row",
+			direction: firstSplitDirection,
 			first: paneIds[0],
 			second: paneIds[1],
 			splitPercentage: 50,
 		};
 	}
+	return buildMultiPaneLayout(paneIds);
+};
 
-	const mid = Math.ceil(paneIds.length / 2);
-	const nextDirection = direction === "column" ? "row" : "column";
-
-	return {
+/**
+ * Splits the pane the user selected without rebuilding unrelated branches or
+ * resetting their manually adjusted sizes.
+ */
+export const splitPaneInLayout = (
+	existingLayout: MosaicNode<string>,
+	sourcePaneId: string,
+	newPaneId: string,
+	direction: "row" | "column",
+	path?: MosaicBranch[],
+): MosaicNode<string> => {
+	const split: MosaicNode<string> = {
 		direction,
-		first: buildMultiPaneLayout(paneIds.slice(0, mid), nextDirection),
-		second: buildMultiPaneLayout(paneIds.slice(mid), nextDirection),
+		first: sourcePaneId,
+		second: newPaneId,
 		splitPercentage: 50,
 	};
+	if (!path || path.length === 0) {
+		return {
+			direction,
+			first: existingLayout,
+			second: newPaneId,
+			splitPercentage: 50,
+		};
+	}
+	return updateTree(existingLayout, [{ path, spec: { $set: split } }]);
 };
 
 /**

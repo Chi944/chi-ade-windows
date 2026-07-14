@@ -16,6 +16,7 @@ import { useParams } from "@tanstack/react-router";
 import { SquareTerminalIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { HiOutlinePlus } from "react-icons/hi2";
+import { TbLayoutGrid, TbLayoutNavbar } from "react-icons/tb";
 import {
 	getPresetIcon,
 	useIsDarkTheme,
@@ -50,17 +51,29 @@ export function ModelBar() {
 	const { openrouterConfigured, huggingfaceConfigured } = useProviderKeys();
 	const profiles = useProviderProfiles((state) => state.profiles);
 	const { isAvailable, recheck, isFetching } = useRuntimeAvailability();
+	const accountProfiles =
+		electronTrpc.settings.subscriptionConnections.profiles.useQuery(undefined, {
+			staleTime: 5_000,
+		});
 
 	const { data: workspace } = electronTrpc.workspaces.get.useQuery(
 		{ id: workspaceId ?? "" },
 		{ enabled: !!workspaceId },
 	);
+	const { data: remoteBinding, isPending: isRemoteBindingPending } =
+		electronTrpc.remote.binding.useQuery(
+			{ workspaceId: workspaceId ?? "" },
+			{ enabled: !!workspaceId, staleTime: 30_000 },
+		);
 
 	const [dialog, setDialog] = useState<{
 		mode: ProviderKeyDialogMode;
 		model?: ModelDescriptor;
 	} | null>(null);
 	const [installBinary, setInstallBinary] = useState<AgentBinary | null>(null);
+	const [sessionTarget, setSessionTarget] = useState<"new-tab" | "active-tab">(
+		"active-tab",
+	);
 
 	// Close the install dialog once a re-check confirms the tool is now present.
 	useEffect(() => {
@@ -72,20 +85,49 @@ export function ModelBar() {
 	if (!workspaceId) return null;
 
 	const worktreePath = workspace?.worktreePath ?? null;
-	const ready = !!worktreePath;
+	const ready = !!worktreePath && !isRemoteBindingPending;
 	const customAgents = presets.filter((preset) => preset.pinnedToBar);
 
 	const spawn = (
 		model: ModelDescriptor,
-		options?: { commands?: string[]; name?: string },
+		options?: {
+			commands?: string[];
+			name?: string;
+			target?: "new-tab" | "active-tab";
+			subscriptionProfileId?: string | null;
+		},
 	) => {
+		const subscriptionProvider =
+			model.runtime === "claude" || model.runtime === "codex"
+				? model.runtime
+				: null;
+		const selectedProfileId = subscriptionProvider
+			? accountProfiles.data
+				? (accountProfiles.data.selected[subscriptionProvider] ?? null)
+				: undefined
+			: undefined;
+		const hasExplicitProfile =
+			options !== undefined && "subscriptionProfileId" in options;
+		const subscriptionProfileId = remoteBinding
+			? undefined
+			: hasExplicitProfile
+				? options.subscriptionProfileId
+				: selectedProfileId;
+
 		spawnAgentSession(
 			{
 				id: workspaceId,
 				runtime: model.runtime,
 				worktreePath,
 			},
-			options,
+			{
+				commands: options?.commands,
+				name: options?.name,
+				target: options?.target ?? sessionTarget,
+				...(subscriptionProfileId !== undefined
+					? { subscriptionProfileId }
+					: {}),
+			},
 		);
 	};
 
@@ -112,7 +154,10 @@ export function ModelBar() {
 		});
 	};
 
-	const connectSubscription = (provider: SubscriptionProvider) => {
+	const connectSubscription = (
+		provider: SubscriptionProvider,
+		subscriptionProfileId?: string | null,
+	) => {
 		const binary: AgentBinary = provider;
 		if (!isAvailable(binary as CheckedBinary)) {
 			setInstallBinary(binary);
@@ -128,15 +173,25 @@ export function ModelBar() {
 				}),
 			],
 			name: `Connect ${model.label}`,
+			target: "new-tab",
+			...(subscriptionProfileId !== undefined ? { subscriptionProfileId } : {}),
 		});
 	};
 
 	const launchPreset = (preset: (typeof presets)[number]) => {
 		if (!ready) return;
-		openPreset(workspaceId, preset, { target: "new-tab" });
+		openPreset(workspaceId, preset, {
+			target: sessionTarget,
+			...(sessionTarget === "active-tab"
+				? { modeOverride: "split-pane" as const }
+				: {}),
+		});
 	};
 
-	const handleModelClick = async (model: ModelDescriptor) => {
+	const handleModelClick = async (
+		model: ModelDescriptor,
+		subscriptionProfileId?: string | null,
+	) => {
 		try {
 			if (!ready) return;
 			if (model.provider === "huggingface" || model.provider === "ollama") {
@@ -170,7 +225,11 @@ export function ModelBar() {
 				await launchOpenRouter(model);
 				return;
 			}
-			spawn(model);
+			spawn(model, {
+				...(subscriptionProfileId !== undefined
+					? { subscriptionProfileId }
+					: {}),
+			});
 		} catch (error) {
 			toast.error(
 				error instanceof Error ? error.message : "Could not launch this model",
@@ -198,6 +257,10 @@ export function ModelBar() {
 					const selectedModel = modelProvider
 						? profiles[modelProvider].selectedModelId
 						: "";
+					const subscriptionProvider =
+						model.runtime === "claude" || model.runtime === "codex"
+							? model.runtime
+							: null;
 					return (
 						<Tooltip key={model.runtime}>
 							<TooltipTrigger asChild>
@@ -209,7 +272,13 @@ export function ModelBar() {
 											: `New session — ${model.label}`
 									}
 									disabled={!ready}
-									onClick={() => handleModelClick(model)}
+									onClick={() => {
+										if (subscriptionProvider && !remoteBinding) {
+											setDialog({ mode: "launch", model });
+											return;
+										}
+										void handleModelClick(model);
+									}}
 									className="group relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted"
 								>
 									{modelProvider ? (
@@ -282,6 +351,40 @@ export function ModelBar() {
 				))}
 			</div>
 
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<button
+						type="button"
+						aria-label={
+							sessionTarget === "active-tab"
+								? "Agents open as split views"
+								: "Agents open in new tabs"
+						}
+						aria-pressed={sessionTarget === "active-tab"}
+						onClick={() =>
+							setSessionTarget((current) =>
+								current === "active-tab" ? "new-tab" : "active-tab",
+							)
+						}
+						className="flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-1.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
+					>
+						{sessionTarget === "active-tab" ? (
+							<TbLayoutGrid className="h-4 w-4" />
+						) : (
+							<TbLayoutNavbar className="h-4 w-4" />
+						)}
+						<span className="hidden text-[11px] xl:inline">
+							{sessionTarget === "active-tab" ? "Split" : "Tabs"}
+						</span>
+					</button>
+				</TooltipTrigger>
+				<TooltipContent side="bottom" showArrow={false}>
+					{sessionTarget === "active-tab"
+						? "Split target: launch together (up to 6 per tab)"
+						: "Tab target: launch each agent in a new tab"}
+				</TooltipContent>
+			</Tooltip>
+
 			<div className="mx-1 h-4 w-px shrink-0 bg-border" />
 
 			<Tooltip>
@@ -307,12 +410,30 @@ export function ModelBar() {
 				mode={dialog?.mode ?? "manage"}
 				modelLabel={dialog?.model?.label}
 				initialProvider={dialog?.model?.provider}
+				initialSubscriptionProvider={
+					dialog?.model?.runtime === "claude" ||
+					dialog?.model?.runtime === "codex"
+						? dialog.model.runtime
+						: undefined
+				}
+				remoteWorkspace={!!remoteBinding}
 				onLaunchOpenRouter={async () => {
 					if (dialog?.model) await launchOpenRouter(dialog.model);
 					setDialog(null);
 				}}
 				onLaunchModel={launchProviderModel}
-				onConnectSubscription={connectSubscription}
+				onConnectSubscription={remoteBinding ? undefined : connectSubscription}
+				onLaunchSubscription={
+					remoteBinding
+						? undefined
+						: ({ provider, profileId }) => {
+								const model = MODEL_BAR_MODELS.find(
+									(item) => item.runtime === provider,
+								);
+								if (model) void handleModelClick(model, profileId);
+								setDialog(null);
+							}
+				}
 				onLaunchPreset={launchPreset}
 			/>
 

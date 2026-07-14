@@ -137,6 +137,16 @@ export function buildWindowsCodexWrapperScript(notifyPath: string): string {
 	return buildWindowsWrapperScript("codex", {
 		argsPrefix: ["-c", notifyConfig],
 		env: { CODEX_TUI_RECORD_SESSION: "1" },
+		requireExactArgs: true,
+		prelude: `const instructionsPath = process.env.ADE_CODEX_INSTRUCTIONS_CONFIG_PATH;
+if (instructionsPath) {
+  try {
+    const instructionsConfig = fs.readFileSync(instructionsPath, "utf8");
+    if (instructionsConfig) args.unshift("-c", instructionsConfig);
+  } catch {
+    // Missing optional workspace memory must not block the provider CLI.
+  }
+}`,
 	});
 }
 

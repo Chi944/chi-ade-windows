@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentRuntime } from "@superset/local-db";
 import {
 	getAgentCodexHome,
+	getAgentCodexInstructionsConfigPath,
 	getAgentHome,
 	getAgentMemoryDir,
 	getAgentWorktreePath,
@@ -351,6 +352,96 @@ process.exit(0);
 
 /** Bridge files written into the worktree (git-excluded, never committed). */
 const BRIDGE_EXCLUDES = ["CLAUDE.md", ".claude/", "opencode.json", "AGENTS.md"];
+const CODEX_DEVELOPER_INSTRUCTIONS_RAW_MAX_BYTES = 5 * 1024;
+const CODEX_DEVELOPER_INSTRUCTIONS_CONFIG_MAX_BYTES = 4 * 1024;
+const CODEX_DEVELOPER_INSTRUCTIONS_CONFIG_PREFIX = "developer_instructions=";
+
+function takeUtf8Prefix(value: string, maxBytes: number): string {
+	let result = "";
+	let used = 0;
+	for (const character of value) {
+		const bytes = Buffer.byteLength(character, "utf8");
+		if (used + bytes > maxBytes) break;
+		result += character;
+		used += bytes;
+	}
+	return result;
+}
+
+function takeUtf8Suffix(value: string, maxBytes: number): string {
+	const result: string[] = [];
+	let used = 0;
+	for (const character of Array.from(value).reverse()) {
+		const bytes = Buffer.byteLength(character, "utf8");
+		if (used + bytes > maxBytes) break;
+		result.push(character);
+		used += bytes;
+	}
+	return result.reverse().join("");
+}
+
+function compactUtf8(value: string, maxBytes: number): string {
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	const marker = "\n\n[... older ADE memory compacted for launch ...]\n\n";
+	const markerBytes = Buffer.byteLength(marker, "utf8");
+	const contentBudget = Math.max(0, maxBytes - markerBytes);
+	const tailBytes = Math.min(1_200, Math.floor(contentBudget / 3));
+	const headBytes = contentBudget - tailBytes;
+	return `${takeUtf8Prefix(value, headBytes)}${marker}${takeUtf8Suffix(value, tailBytes)}`;
+}
+
+function compactCodexDeveloperInstructions(
+	parts: string[],
+	maxBytes: number,
+): string {
+	const instructions = parts.join("\n\n");
+	if (Buffer.byteLength(instructions, "utf8") <= maxBytes) {
+		return instructions;
+	}
+
+	// Keep the managed coordination policy independently readable. A single
+	// head/tail slice over the whole bridge could start halfway through this
+	// final section, dropping its heading and opening safety rules.
+	const separator = "\n\n";
+	const policy = parts.at(-1) ?? "";
+	const policyBudget = Math.floor(maxBytes / 2);
+	const compactPolicy = compactUtf8(policy, policyBudget);
+	const bodyBudget =
+		maxBytes -
+		Buffer.byteLength(separator, "utf8") -
+		Buffer.byteLength(compactPolicy, "utf8");
+	const compactBody = compactUtf8(
+		parts.slice(0, -1).join(separator),
+		bodyBudget,
+	);
+	return `${compactBody}${separator}${compactPolicy}`;
+}
+
+function serializeCodexDeveloperInstructions(parts: string[]): string {
+	// The Windows wrapper launches npm's codex.cmd through cmd.exe, whose full
+	// command line is limited to 8,191 characters. Cap the final TOML override
+	// after JSON/TOML escaping (not just the raw memory), leaving ample room for
+	// wrapper flags and cmd.exe's additional argument quoting.
+	for (
+		let rawBudget = CODEX_DEVELOPER_INSTRUCTIONS_RAW_MAX_BYTES;
+		rawBudget >= 256;
+		rawBudget -= 128
+	) {
+		const instructions = compactCodexDeveloperInstructions(parts, rawBudget);
+		const serialized = `${CODEX_DEVELOPER_INSTRUCTIONS_CONFIG_PREFIX}${JSON.stringify(instructions)}`;
+		if (
+			Buffer.byteLength(serialized, "utf8") <=
+			CODEX_DEVELOPER_INSTRUCTIONS_CONFIG_MAX_BYTES
+		) {
+			return serialized;
+		}
+	}
+
+	// The fixed compaction markers and a 256-byte raw budget serialize well
+	// below the limit. Keep an explicit invariant failure in case that contract
+	// is changed later instead of emitting an unsafe command-line argument.
+	throw new Error("Could not compact Codex workspace instructions safely");
+}
 
 /**
  * Regenerate <agent-home>/.codex/AGENTS.md from the canonical memory files.
@@ -378,7 +469,17 @@ export function regenerateCodexAgentsMd(agentId: string): void {
 	// enabled): leave any existing bridge untouched rather than clobbering it
 	// with an empty file. Codex then falls back to no global AGENTS.md.
 	if (parts.length === 0) return;
-	writeFileSync(join(codexHome, "AGENTS.md"), parts.join("\n\n"), "utf8");
+	const instructions = parts.join("\n\n");
+	writeFileSync(join(codexHome, "AGENTS.md"), instructions, "utf8");
+	// Account profiles replace CODEX_HOME, so the global AGENTS.md above is not
+	// always discoverable. The Codex wrapper reads this pre-serialized `-c`
+	// override and injects the same workspace memory as additional developer
+	// instructions without copying credentials or modifying the repository.
+	writeFileSync(
+		getAgentCodexInstructionsConfigPath(agentId),
+		serializeCodexDeveloperInstructions(parts),
+		"utf8",
+	);
 }
 
 /**

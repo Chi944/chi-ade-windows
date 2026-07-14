@@ -32,7 +32,7 @@ These validated builds are unsigned, so Windows SmartScreen or macOS Gatekeeper 
 
 - **Parallel Git worktrees** keep branches and agents isolated while sharing Git object storage. Existing local repositories can be linked without copying them.
 - **Durable agent handoffs** let Claude, Codex, OpenCode, and any terminal agent exchange project-scoped messages, decisions, artifacts, and compact resume packets without sharing provider credentials or raw transcripts.
-- **Persistent split panes** place agents, PowerShell or other shells, files, diffs, and browser previews side by side. Layout and bounded terminal history survive restarts.
+- **Up to six persistent split views per tab** place independent agents, PowerShell or other shells, files, diffs, and browser previews together. Automatic agent launches use a balanced two-column grid, while manual horizontal and vertical splits keep their chosen placement. Extra launches continue safely in another tab; layouts and bounded terminal history survive restarts.
 - **Any terminal agent** can run in ADE. Use a built-in runtime or pin any installed CLI command as a custom Agent Bar preset.
 - **Provider Hub** brings Claude and Codex account profiles, Codex usage/reset windows, OpenRouter, remote Hugging Face models, and Ollama models into one place.
 - **Design Mode** previews trusted localhost apps at desktop, tablet, or mobile sizes and copies a selected element's safe context for an agent.
@@ -98,7 +98,7 @@ ADE applies a single compact context policy instead of stacking multiple always-
 
 ## Accounts and usage
 
-Each Claude or Codex profile completes its provider's official CLI login once. Selecting a profile affects new panes; running panes and resumed sessions stay pinned to the profile that created them.
+Each Claude or Codex profile completes its provider's official CLI login once. Choose **split views** or **new tabs** in the Agent Bar, then choose the system or named account when launching Claude or Codex. Each pane is pinned to that account, so multiple agents and different accounts can run concurrently without a later account switch changing an existing session.
 
 ADE stores profile labels, IDs, and pane bindings, while each provider CLI owns its credentials. ADE does not copy or parse those credentials. Codex usage and reset windows are fetched on demand. Claude usage remains available through Claude Code's `/usage` command. Because Claude credentials can also be tied to macOS Keychain, switching a Claude profile on macOS may require the official login flow again.
 

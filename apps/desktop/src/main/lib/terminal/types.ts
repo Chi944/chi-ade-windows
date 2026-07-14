@@ -127,6 +127,8 @@ export interface CreateSessionParams {
 	 * env (e.g. CODEX_HOME for codex). Null/undefined for non-agent workspaces.
 	 */
 	runtime?: AgentRuntime | null;
+	/** Explicit account binding requested for this pane; null selects the system account. */
+	subscriptionProfileId?: string | null;
 	/** Validated server-derived launch details for SSH and other transports. */
 	launch?: TerminalLaunchSpec;
 }

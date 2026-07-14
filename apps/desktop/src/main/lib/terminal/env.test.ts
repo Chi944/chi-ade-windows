@@ -752,14 +752,21 @@ describe("env", () => {
 
 		describe("CODEX_HOME for codex runtime", () => {
 			it("sets CODEX_HOME to the agent .codex home and it survives the terminal-host buildSafeEnv re-filter", async () => {
-				const { getAgentCodexHome } = await import("../agent-home");
+				const { getAgentCodexHome, getAgentCodexInstructionsConfigPath } =
+					await import("../agent-home");
 				const result = buildTerminalEnv({ ...baseParams, runtime: "codex" });
 				const expected = getAgentCodexHome(baseParams.workspaceId);
 				expect(result.CODEX_HOME).toBe(expected);
 				expect(result.CODEX_HOME).toMatch(/[\\/]\.codex/);
+				expect(result.ADE_CODEX_INSTRUCTIONS_CONFIG_PATH).toBe(
+					getAgentCodexInstructionsConfigPath(baseParams.workspaceId),
+				);
 				// The terminal-host service re-applies buildSafeEnv before the pty
 				// spawn; CODEX_HOME must survive it to reach the codex process.
 				expect(buildSafeEnv(result).CODEX_HOME).toBe(expected);
+				expect(buildSafeEnv(result).ADE_CODEX_INSTRUCTIONS_CONFIG_PATH).toBe(
+					getAgentCodexInstructionsConfigPath(baseParams.workspaceId),
+				);
 			});
 
 			it("does not set CODEX_HOME for a claude runtime", () => {
@@ -883,7 +890,10 @@ describe("env", () => {
 				).toThrow("damaged account profile");
 			});
 
-			it("removes the per-agent Codex home for the system account", () => {
+			it("uses native system auth while retaining workspace instructions", async () => {
+				const { getAgentCodexInstructionsConfigPath } = await import(
+					"../agent-home"
+				);
 				setProviderEnvironmentResolver(() => ({
 					environment: {},
 					subscriptionSource: "system",
@@ -895,9 +905,15 @@ describe("env", () => {
 				});
 
 				expect(result.CODEX_HOME).toBeUndefined();
+				expect(result.ADE_CODEX_INSTRUCTIONS_CONFIG_PATH).toBe(
+					getAgentCodexInstructionsConfigPath(baseParams.workspaceId),
+				);
 			});
 
-			it("uses an isolated Codex home for a named account profile", () => {
+			it("uses isolated named auth while retaining workspace instructions", async () => {
+				const { getAgentCodexInstructionsConfigPath } = await import(
+					"../agent-home"
+				);
 				setProviderEnvironmentResolver(() => ({
 					environment: { CODEX_HOME: "/profiles/codex-personal" },
 					subscriptionSource: "profile",
@@ -909,6 +925,9 @@ describe("env", () => {
 				});
 
 				expect(result.CODEX_HOME).toBe("/profiles/codex-personal");
+				expect(result.ADE_CODEX_INSTRUCTIONS_CONFIG_PATH).toBe(
+					getAgentCodexInstructionsConfigPath(baseParams.workspaceId),
+				);
 			});
 
 			it("injects Hugging Face credentials only for its explicit runtime", () => {

@@ -14,11 +14,12 @@
  */
 
 import { EventEmitter } from "node:events";
-import { stat, readFile } from "node:fs/promises";
 import { watch } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
 import { APP_STATE_PATH } from "../app-environment";
-import type { AppState } from "./schemas";
 import { getDeviceId } from ".";
+import type { AppState } from "./schemas";
 
 const DEBOUNCE_MS = 250;
 const STABILITY_MS = 500;
@@ -104,15 +105,19 @@ async function handleChange(): Promise<void> {
 
 	const writerDeviceId = parsed.sync?.deviceId ?? null;
 	// Only react to peer writes — ignore our own.
-	if (
-		!writerDeviceId ||
-		!localDeviceId ||
-		writerDeviceId === localDeviceId
-	) {
+	if (!writerDeviceId || !localDeviceId || writerDeviceId === localDeviceId) {
 		return;
 	}
 
-	appStateWatcher.emit("peer-update", { state: parsed });
+	const sanitizedTabsState = sanitizeSubscriptionProfilesForPersistence({
+		state: parsed.tabsState,
+	});
+	appStateWatcher.emit("peer-update", {
+		state:
+			sanitizedTabsState === parsed.tabsState
+				? parsed
+				: { ...parsed, tabsState: sanitizedTabsState },
+	});
 }
 
 function scheduleHandle(): void {
