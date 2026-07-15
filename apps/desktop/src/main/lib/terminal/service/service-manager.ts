@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { type AgentRuntime, workspaces } from "@superset/local-db";
 import { track } from "main/lib/analytics";
 import { appState } from "main/lib/app-state";
@@ -7,6 +8,7 @@ import {
 	releaseSubscriptionProfilePane,
 	releaseSubscriptionProfileWorkspace,
 } from "main/lib/subscription-profiles";
+import pidtree from "pidtree";
 import { isValidAgentSessionId } from "shared/agent-session-recovery";
 import {
 	cleanupTerminalHistoryForWorkspace,
@@ -19,7 +21,9 @@ import {
 	getTerminalHostClient,
 	type TerminalHostClient,
 } from "../../terminal-host/client";
+import { PID_PATH } from "../../terminal-host/paths";
 import type { ListSessionsResponse } from "../../terminal-host/types";
+import { treeKillWithEscalation } from "../../tree-kill";
 import { buildTerminalEnv, getDefaultShell } from "../env";
 import { TerminalKilledError } from "../errors";
 import { portManager } from "../port-manager";
@@ -35,6 +39,69 @@ import {
 import { HistoryManager, scanAgentSessionOutput } from "./history-manager";
 import { PrioritySemaphore } from "./priority-semaphore";
 import type { ColdRestoreInfo, SessionInfo } from "./types";
+
+const MIGRATION_PROCESS_EXIT_TIMEOUT_MS = 7000;
+const MIGRATION_PROCESS_POLL_INTERVAL_MS = 50;
+
+export interface SubscriptionProfileMigrationShutdownDependencies {
+	enumerateProcessTree?: (pid: number) => Promise<number[]>;
+	terminateProcessTree?: (
+		pid: number,
+	) => Promise<{ success: boolean; error?: string }>;
+	isProcessAlive?: (pid: number) => boolean;
+	hostPidArtifactExists?: () => boolean;
+	readHostPid?: () => number | null;
+	sleep?: (durationMs: number) => Promise<void>;
+	timeoutMs?: number;
+}
+
+function isProcessAliveForMigration(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+function readTerminalHostPidForMigration(): number | null {
+	if (!existsSync(PID_PATH)) return null;
+	try {
+		if (lstatSync(PID_PATH).isSymbolicLink()) {
+			throw new Error("Refusing a linked terminal host PID file");
+		}
+		const pid = Number.parseInt(readFileSync(PID_PATH, "utf8").trim(), 10);
+		return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+async function waitForMigrationProcessesToExit({
+	pids,
+	label,
+	isProcessAlive,
+	sleep,
+	timeoutMs,
+}: {
+	pids: ReadonlySet<number>;
+	label: string;
+	isProcessAlive: (pid: number) => boolean;
+	sleep: (durationMs: number) => Promise<void>;
+	timeoutMs: number;
+}): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (true) {
+		if (![...pids].some((pid) => isProcessAlive(pid))) return;
+		if (Date.now() >= deadline) {
+			throw new Error(
+				`${label} did not stop before provider storage migration`,
+			);
+		}
+		await sleep(MIGRATION_PROCESS_POLL_INTERVAL_MS);
+	}
+}
 
 export class ServiceTerminalManager extends EventEmitter {
 	private client!: TerminalHostClient;
@@ -1228,6 +1295,130 @@ export class ServiceTerminalManager extends EventEmitter {
 		this.sessions.clear();
 		this.pendingSessionWorkspaceIds.clear();
 		this.stoppedWorkspacePaneIds.clear();
+	}
+
+	/**
+	 * Stops every process that could retain a provider credential path, then
+	 * proves both the captured descendants and terminal host have exited.
+	 */
+	async shutdownForSubscriptionProfileMigration(
+		dependencies: SubscriptionProfileMigrationShutdownDependencies = {},
+	): Promise<void> {
+		const enumerateProcessTree =
+			dependencies.enumerateProcessTree ??
+			((pid: number) => pidtree(pid, { root: true }));
+		const terminateProcessTree =
+			dependencies.terminateProcessTree ??
+			((pid: number) => treeKillWithEscalation({ pid, signal: "SIGKILL" }));
+		const isProcessAlive =
+			dependencies.isProcessAlive ?? isProcessAliveForMigration;
+		const readHostPid =
+			dependencies.readHostPid ?? readTerminalHostPidForMigration;
+		const hostPidArtifactExists =
+			dependencies.hostPidArtifactExists ?? (() => existsSync(PID_PATH));
+		const sleep =
+			dependencies.sleep ??
+			((durationMs: number) =>
+				new Promise<void>((resolve) => setTimeout(resolve, durationMs)));
+		const timeoutMs =
+			dependencies.timeoutMs ?? MIGRATION_PROCESS_EXIT_TIMEOUT_MS;
+		const hasHostPidArtifact = hostPidArtifactExists();
+		const hostPid = readHostPid();
+		const connected = await this.client.tryConnectAndAuthenticate();
+
+		if (!connected) {
+			if (hasHostPidArtifact) {
+				throw new Error(
+					"An unreachable terminal host left a PID artifact, so descendant shutdown cannot be proven for provider storage migration",
+				);
+			}
+			return;
+		}
+		if (!hostPid || !isProcessAlive(hostPid)) {
+			throw new Error(
+				"The terminal host process identity is unavailable for provider storage migration",
+			);
+		}
+
+		const { sessions } = await this.client.listSessions();
+		const processRoots = new Set<number>();
+		const capturedProcesses = new Set<number>();
+		try {
+			for (const processPid of await enumerateProcessTree(hostPid)) {
+				if (
+					processPid !== hostPid &&
+					Number.isSafeInteger(processPid) &&
+					processPid > 0
+				) {
+					capturedProcesses.add(processPid);
+				}
+			}
+		} catch (error) {
+			throw new Error(
+				"Could not inventory terminal host descendants before provider storage migration",
+				{ cause: error },
+			);
+		}
+		for (const session of sessions) {
+			const pid = session.pid;
+			if (!pid || !Number.isSafeInteger(pid) || pid <= 0) continue;
+			processRoots.add(pid);
+			try {
+				for (const processPid of await enumerateProcessTree(pid)) {
+					if (Number.isSafeInteger(processPid) && processPid > 0) {
+						capturedProcesses.add(processPid);
+					}
+				}
+				capturedProcesses.add(pid);
+			} catch (error) {
+				if (isProcessAlive(pid)) {
+					throw new Error(
+						"Could not inventory a provider terminal process tree before storage migration",
+						{ cause: error },
+					);
+				}
+			}
+		}
+
+		for (const pid of processRoots) {
+			if (!isProcessAlive(pid)) continue;
+			const result = await terminateProcessTree(pid);
+			if (!result.success) {
+				throw new Error(
+					"A provider terminal process tree could not be stopped before storage migration",
+				);
+			}
+		}
+		for (const pid of capturedProcesses) {
+			if (!isProcessAlive(pid)) continue;
+			const result = await terminateProcessTree(pid);
+			if (!result.success) {
+				throw new Error(
+					"A provider terminal process could not be stopped before storage migration",
+				);
+			}
+		}
+		await waitForMigrationProcessesToExit({
+			pids: capturedProcesses,
+			label: "A provider terminal process",
+			isProcessAlive,
+			sleep,
+			timeoutMs,
+		});
+
+		await this.client.shutdownIfRunning({ killSessions: true });
+		await waitForMigrationProcessesToExit({
+			pids: new Set([hostPid]),
+			label: "The terminal host process",
+			isProcessAlive,
+			sleep,
+			timeoutMs,
+		});
+		if ([...capturedProcesses].some((pid) => isProcessAlive(pid))) {
+			throw new Error(
+				"A provider terminal process restarted during storage migration shutdown",
+			);
+		}
 	}
 
 	reset(): void {

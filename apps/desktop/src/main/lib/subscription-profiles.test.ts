@@ -1,15 +1,27 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setSubscriptionProfileStorageRootForTests } from "./subscription-profile-storage";
 import {
 	bindSubscriptionProfileToPane,
 	createSubscriptionProfile,
@@ -18,8 +30,10 @@ import {
 	getSubscriptionProfileEnvironmentForPane,
 	getSubscriptionProfileHome,
 	getSubscriptionProfilePaneBinding,
+	initializeSubscriptionProfiles,
 	listSubscriptionProfiles,
 	pruneOrphanedSubscriptionHomes,
+	reconcileSubscriptionProfilePaneBindings,
 	releaseSubscriptionProfilePane,
 	releaseSubscriptionProfileWorkspace,
 	removeSubscriptionProfile,
@@ -528,5 +542,752 @@ describe("subscription profiles", () => {
 			"metadata is damaged",
 		);
 		expect(readFileSync(metadata, "utf8")).toBe("{truncated");
+	});
+});
+
+const MIGRATION_TEST_ROOT = join(
+	tmpdir(),
+	`ade-subscription-profile-migration-${process.pid}-${Date.now()}`,
+);
+const MIGRATION_ADE_HOME = join(MIGRATION_TEST_ROOT, "syncable-home");
+const MIGRATION_LEGACY_ROOT = join(MIGRATION_ADE_HOME, "provider-accounts");
+const MIGRATION_PRIVATE_ROOT = join(
+	MIGRATION_TEST_ROOT,
+	"local-private",
+	"provider-accounts",
+);
+
+function copyRegularFile(source: string, destination: string): void {
+	copyFileSync(source, destination);
+}
+
+function createLegacyProfileFixture(): {
+	profileId: string;
+	credentialPath: string;
+} {
+	setSubscriptionProfilesRootForTests(MIGRATION_LEGACY_ROOT);
+	const profile = createSubscriptionProfile("codex", "Migrated Codex");
+	bindSubscriptionProfileToPane(
+		"codex",
+		"migrated-pane",
+		profile.id,
+		"migrated-workspace",
+	);
+	const credentialPath = join(getSubscriptionProfileHome(profile), "auth.json");
+	writeFileSync(credentialPath, '{"token":"device-secret"}\n', {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	setSubscriptionProfilesRootForTests(null);
+	return { profileId: profile.id, credentialPath };
+}
+
+function writeSimpleAccountTree(root: string, value: string): void {
+	mkdirSync(join(root, "claude", "11111111-1111-4111-8111-111111111111"), {
+		recursive: true,
+		mode: 0o700,
+	});
+	writeFileSync(
+		join(
+			root,
+			"claude",
+			"11111111-1111-4111-8111-111111111111",
+			"credentials.json",
+		),
+		value,
+		"utf8",
+	);
+}
+
+describe("subscription profile storage migration", () => {
+	beforeEach(() => {
+		rmSync(MIGRATION_TEST_ROOT, { recursive: true, force: true });
+		mkdirSync(MIGRATION_ADE_HOME, { recursive: true, mode: 0o700 });
+		setSubscriptionProfilesRootForTests(null);
+		setSubscriptionProfileStorageRootForTests(MIGRATION_PRIVATE_ROOT);
+	});
+
+	afterEach(() => {
+		setSubscriptionProfileStorageRootForTests(null);
+		setSubscriptionProfilesRootForTests(TEST_ROOT);
+		rmSync(MIGRATION_TEST_ROOT, { recursive: true, force: true });
+	});
+
+	it("migrates profiles, Codex configuration, and pane bindings after a safe host stop", async () => {
+		const fixture = createLegacyProfileFixture();
+		const events: string[] = [];
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {
+				events.push("stop");
+				expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(true);
+				expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(false);
+			},
+			resetTerminalService: () => {
+				events.push("reset");
+				expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(true);
+				expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(true);
+			},
+		});
+
+		expect(result).toMatchObject({
+			root: MIGRATION_PRIVATE_ROOT,
+			migrationStatus: "migrated",
+		});
+		expect(events).toEqual(["stop", "reset"]);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+		expect(
+			readFileSync(join(MIGRATION_PRIVATE_ROOT, "profiles.json"), "utf8"),
+		).toContain(fixture.profileId);
+		expect(
+			readFileSync(
+				join(MIGRATION_PRIVATE_ROOT, "codex", fixture.profileId, "config.toml"),
+				"utf8",
+			),
+		).toContain('cli_auth_credentials_store = "file"');
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"codex",
+				"migrated-pane",
+				"migrated-workspace",
+			)?.profileId,
+		).toBe(fixture.profileId);
+		expect(existsSync(fixture.credentialPath)).toBe(false);
+		expect(
+			readFileSync(
+				join(MIGRATION_PRIVATE_ROOT, "codex", fixture.profileId, "auth.json"),
+				"utf8",
+			),
+		).toContain("device-secret");
+	});
+
+	it("falls back to a verified copy when atomic promotion reports EXDEV", async () => {
+		createLegacyProfileFixture();
+		let promotionAttempts = 0;
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+			renameForMigration: (source, destination) => {
+				if (
+					destination === MIGRATION_PRIVATE_ROOT &&
+					promotionAttempts++ === 0
+				) {
+					const error = new Error(
+						"cross-device rename",
+					) as NodeJS.ErrnoException;
+					error.code = "EXDEV";
+					throw error;
+				}
+				renameSync(source, destination);
+			},
+		});
+
+		expect(result.migrationStatus).toBe("migrated");
+		expect(promotionAttempts).toBeGreaterThan(0);
+		expect(existsSync(join(MIGRATION_PRIVATE_ROOT, "profiles.json"))).toBe(
+			true,
+		);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+	});
+
+	it("keeps the final destination absent throughout an EXDEV fallback copy", async () => {
+		createLegacyProfileFixture();
+		let promotionAttempts = 0;
+		let fallbackCopyObserved = false;
+		let destinationWasVisibleDuringFallback = false;
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+			renameForMigration: (source, destination) => {
+				if (
+					destination === MIGRATION_PRIVATE_ROOT &&
+					promotionAttempts++ === 0
+				) {
+					const error = new Error(
+						"cross-device rename",
+					) as NodeJS.ErrnoException;
+					error.code = "EXDEV";
+					throw error;
+				}
+				renameSync(source, destination);
+			},
+			copyFileForMigration: (source, destination) => {
+				if (source.includes(".provider-accounts-migration-")) {
+					fallbackCopyObserved = true;
+					destinationWasVisibleDuringFallback ||= existsSync(
+						MIGRATION_PRIVATE_ROOT,
+					);
+				}
+				copyRegularFile(source, destination);
+			},
+		});
+
+		expect(result.migrationStatus).toBe("migrated");
+		expect(fallbackCopyObserved).toBe(true);
+		expect(destinationWasVisibleDuringFallback).toBe(false);
+	});
+
+	it("keeps the legacy root active when staged hashes do not verify", async () => {
+		const fixture = createLegacyProfileFixture();
+		let resetCalls = 0;
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {
+				resetCalls += 1;
+			},
+			copyFileForMigration: (source, destination) => {
+				copyRegularFile(source, destination);
+				if (source.endsWith("auth.json")) {
+					writeFileSync(destination, "corrupted-copy", "utf8");
+				}
+			},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_LEGACY_ROOT);
+		expect(result.warning).toContain("retry");
+		expect(resetCalls).toBe(0);
+		expect(existsSync(fixture.credentialPath)).toBe(true);
+		expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(false);
+	});
+
+	it("keeps the verified private copy active when legacy removal is partial", async () => {
+		const fixture = createLegacyProfileFixture();
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+			removeTreeForMigration: (root) => {
+				rmSync(join(root, "profiles.json"), { force: true });
+				throw new Error("simulated partial legacy cleanup");
+			},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(result.warning).toContain("cleanup");
+		expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(true);
+		expect(
+			readFileSync(
+				join(MIGRATION_PRIVATE_ROOT, "codex", fixture.profileId, "auth.json"),
+				"utf8",
+			),
+		).toContain("device-secret");
+	});
+
+	it("keeps intact legacy active when cutover reset fails without deleting the verified copy", async () => {
+		const fixture = createLegacyProfileFixture();
+
+		const first = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {
+				throw new Error("simulated reset failure");
+			},
+		});
+
+		expect(first.migrationStatus).toBe("deferred");
+		expect(first.root).toBe(MIGRATION_LEGACY_ROOT);
+		expect(existsSync(fixture.credentialPath)).toBe(true);
+		expect(
+			readFileSync(
+				join(MIGRATION_PRIVATE_ROOT, "codex", fixture.profileId, "auth.json"),
+				"utf8",
+			),
+		).toContain("device-secret");
+
+		const second = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(second.migrationStatus).toBe("duplicate-removed");
+		expect(second.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+	});
+
+	it("never reactivates a partially removed legacy conflict on the next launch", async () => {
+		writeSimpleAccountTree(MIGRATION_LEGACY_ROOT, "legacy-credential");
+		writeSimpleAccountTree(MIGRATION_PRIVATE_ROOT, "private-credential");
+
+		const first = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+			removeTreeForMigration: (root) => {
+				rmSync(
+					join(
+						root,
+						"claude",
+						"11111111-1111-4111-8111-111111111111",
+						"credentials.json",
+					),
+					{ force: true },
+				);
+				throw new Error("simulated partial conflict cleanup");
+			},
+		});
+
+		expect(first.migrationStatus).toBe("deferred");
+		expect(first.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(first.recoveryRoot).toBeTruthy();
+
+		const second = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(second.migrationStatus).toBe("deferred");
+		expect(second.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(second.recoveryRoot).toBe(first.recoveryRoot);
+		expect(
+			readFileSync(
+				join(
+					first.recoveryRoot as string,
+					"claude",
+					"11111111-1111-4111-8111-111111111111",
+					"credentials.json",
+				),
+				"utf8",
+			),
+		).toBe("legacy-credential");
+	});
+
+	it("keeps an existing verified private root active when recovery is unusable", async () => {
+		writeSimpleAccountTree(MIGRATION_LEGACY_ROOT, "legacy-credential");
+		writeSimpleAccountTree(MIGRATION_PRIVATE_ROOT, "private-credential");
+		const linkedTarget = join(MIGRATION_TEST_ROOT, "linked-recovery-target");
+		mkdirSync(linkedTarget, { recursive: true });
+		symlinkSync(
+			linkedTarget,
+			join(
+				join(MIGRATION_PRIVATE_ROOT, ".."),
+				"provider-accounts-legacy-recovery",
+			),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(true);
+	});
+
+	it("refuses nested links in legacy provider storage", async () => {
+		writeSimpleAccountTree(MIGRATION_LEGACY_ROOT, "legacy-credential");
+		const linkedTarget = join(MIGRATION_TEST_ROOT, "linked-legacy-target");
+		mkdirSync(linkedTarget, { recursive: true });
+		symlinkSync(
+			linkedTarget,
+			join(MIGRATION_LEGACY_ROOT, "claude", "linked-home"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		let resetCalls = 0;
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {
+				resetCalls += 1;
+			},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_LEGACY_ROOT);
+		expect(resetCalls).toBe(0);
+		expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(false);
+	});
+
+	it("removes only a verified legacy duplicate when both roots are identical", async () => {
+		writeSimpleAccountTree(MIGRATION_LEGACY_ROOT, "same-credential");
+		writeSimpleAccountTree(MIGRATION_PRIVATE_ROOT, "same-credential");
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(result.migrationStatus).toBe("duplicate-removed");
+		expect(result.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+		expect(
+			readFileSync(
+				join(
+					MIGRATION_PRIVATE_ROOT,
+					"claude",
+					"11111111-1111-4111-8111-111111111111",
+					"credentials.json",
+				),
+				"utf8",
+			),
+		).toBe("same-credential");
+	});
+
+	it("moves a conflicting legacy tree to one local recovery location", async () => {
+		writeSimpleAccountTree(MIGRATION_LEGACY_ROOT, "legacy-credential");
+		writeSimpleAccountTree(MIGRATION_PRIVATE_ROOT, "private-credential");
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(result.migrationStatus).toBe("conflict-recovered");
+		expect(result.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(result.warning).toContain("conflict");
+		expect(result.recoveryRoot).toBeTruthy();
+		expect(result.recoveryRoot?.startsWith(MIGRATION_ADE_HOME)).toBe(false);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+		expect(
+			readFileSync(
+				join(
+					MIGRATION_PRIVATE_ROOT,
+					"claude",
+					"11111111-1111-4111-8111-111111111111",
+					"credentials.json",
+				),
+				"utf8",
+			),
+		).toBe("private-credential");
+		expect(
+			readFileSync(
+				join(
+					result.recoveryRoot as string,
+					"claude",
+					"11111111-1111-4111-8111-111111111111",
+					"credentials.json",
+				),
+				"utf8",
+			),
+		).toBe("legacy-credential");
+	});
+
+	it("keeps the legacy root active when terminal shutdown fails", async () => {
+		createLegacyProfileFixture();
+		let resetCalls = 0;
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {
+				throw new Error("host did not stop");
+			},
+			resetTerminalService: () => {
+				resetCalls += 1;
+			},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_LEGACY_ROOT);
+		expect(result.warning).toContain("retry");
+		expect(resetCalls).toBe(0);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(true);
+		expect(existsSync(MIGRATION_PRIVATE_ROOT)).toBe(false);
+	});
+
+	it("keeps existing legacy data active when private-root resolution fails", async () => {
+		createLegacyProfileFixture();
+		setSubscriptionProfileStorageRootForTests(null);
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			platform: "win32",
+			env: {},
+			homeDir: MIGRATION_TEST_ROOT,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_LEGACY_ROOT);
+		expect(existsSync(join(MIGRATION_LEGACY_ROOT, "profiles.json"))).toBe(true);
+	});
+
+	it("never falls back into ADE home when new private storage is unsafe", async () => {
+		const linkedTarget = join(MIGRATION_TEST_ROOT, "linked-private-target");
+		mkdirSync(linkedTarget, { recursive: true });
+		mkdirSync(join(MIGRATION_TEST_ROOT, "local-private"), { recursive: true });
+		symlinkSync(
+			linkedTarget,
+			MIGRATION_PRIVATE_ROOT,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		const result = await initializeSubscriptionProfiles({
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {},
+			resetTerminalService: () => {},
+		});
+
+		expect(result.migrationStatus).toBe("deferred");
+		expect(result.root).toBe(MIGRATION_PRIVATE_ROOT);
+		expect(result.warning).toContain("unavailable");
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+		expect(() => createSubscriptionProfile("codex", "Unsafe fallback")).toThrow(
+			"linked account storage",
+		);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+	});
+
+	it("is idempotent on the second launch and leaves no credential tree in ADE home", async () => {
+		createLegacyProfileFixture();
+		let stopCalls = 0;
+		let resetCalls = 0;
+		const options = {
+			adeHomeDir: MIGRATION_ADE_HOME,
+			stopTerminalSessions: async () => {
+				stopCalls += 1;
+			},
+			resetTerminalService: () => {
+				resetCalls += 1;
+			},
+		};
+
+		expect(
+			(await initializeSubscriptionProfiles(options)).migrationStatus,
+		).toBe("migrated");
+		expect(
+			(await initializeSubscriptionProfiles(options)).migrationStatus,
+		).toBe("not-needed");
+		expect(stopCalls).toBe(1);
+		expect(resetCalls).toBe(1);
+		expect(existsSync(MIGRATION_LEGACY_ROOT)).toBe(false);
+		const remainingSyncableEntries = readdirSync(MIGRATION_ADE_HOME, {
+			recursive: true,
+		}).map(String);
+		expect(
+			remainingSyncableEntries.some((entry) =>
+				/(?:provider-accounts|auth\.json|credentials\.json|profiles\.json)/.test(
+					entry,
+				),
+			),
+		).toBe(false);
+	});
+});
+
+const RECONCILE_TEST_ROOT = join(
+	tmpdir(),
+	`ade-subscription-profile-reconcile-${process.pid}-${Date.now()}`,
+);
+
+describe("subscription profile binding reconciliation", () => {
+	beforeEach(() => {
+		rmSync(RECONCILE_TEST_ROOT, { recursive: true, force: true });
+		setSubscriptionProfilesRootForTests(RECONCILE_TEST_ROOT);
+	});
+
+	afterEach(() => {
+		setSubscriptionProfilesRootForTests(TEST_ROOT);
+		rmSync(RECONCILE_TEST_ROOT, { recursive: true, force: true });
+	});
+
+	it("removes only pane IDs absent from trusted durable state and unlocks named profiles", () => {
+		const staleProfile = createSubscriptionProfile("claude", "Stale account");
+		const retainedProfile = createSubscriptionProfile(
+			"claude",
+			"Retained account",
+		);
+		bindSubscriptionProfileToPane(
+			"claude",
+			"stale-named-pane",
+			staleProfile.id,
+			"resolved-workspace",
+		);
+		bindSubscriptionProfileToPane(
+			"claude",
+			"retained-pane",
+			retainedProfile.id,
+			"resolved-workspace",
+		);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [
+				{
+					paneId: "retained-pane",
+					provider: "claude",
+					workspaceId: "resolved-workspace",
+				},
+			],
+		});
+
+		expect(result).toMatchObject({
+			removedBindings: 1,
+			preservedUnresolvedBindings: 0,
+		});
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"claude",
+				"retained-pane",
+				"resolved-workspace",
+			)?.profileId,
+		).toBe(retainedProfile.id);
+		expect(() =>
+			removeSubscriptionProfile("claude", staleProfile.id),
+		).not.toThrow();
+	});
+
+	it("removes a reused pane ID whose durable provider or workspace changed", () => {
+		const wrongWorkspace = createSubscriptionProfile(
+			"claude",
+			"Wrong workspace",
+		);
+		const wrongProvider = createSubscriptionProfile("codex", "Wrong provider");
+		bindSubscriptionProfileToPane(
+			"claude",
+			"workspace-reused-pane",
+			wrongWorkspace.id,
+			"old-workspace",
+		);
+		bindSubscriptionProfileToPane(
+			"codex",
+			"provider-reused-pane",
+			wrongProvider.id,
+			"current-workspace",
+		);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [
+				{
+					paneId: "workspace-reused-pane",
+					provider: "claude",
+					workspaceId: "current-workspace",
+				},
+				{
+					paneId: "provider-reused-pane",
+					provider: "claude",
+					workspaceId: "current-workspace",
+				},
+			],
+		});
+
+		expect(result.removedBindings).toBe(2);
+		expect(() =>
+			removeSubscriptionProfile("claude", wrongWorkspace.id),
+		).not.toThrow();
+		expect(() =>
+			removeSubscriptionProfile("codex", wrongProvider.id),
+		).not.toThrow();
+	});
+
+	it("backfills a trusted workspace identity on a legacy binding", () => {
+		const profile = createSubscriptionProfile("claude", "Legacy binding");
+		bindSubscriptionProfileToPane(
+			"claude",
+			"legacy-pane",
+			profile.id,
+			"resolved-workspace",
+		);
+		const metadataPath = join(RECONCILE_TEST_ROOT, "profiles.json");
+		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+		delete metadata.bindings["legacy-pane"].workspaceId;
+		writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [
+				{
+					paneId: "legacy-pane",
+					provider: "claude",
+					workspaceId: "resolved-workspace",
+				},
+			],
+		});
+
+		expect(result.backfilledWorkspaceIds).toBe(1);
+		const persisted = JSON.parse(readFileSync(metadataPath, "utf8"));
+		expect(persisted.bindings["legacy-pane"].workspaceId).toBe(
+			"resolved-workspace",
+		);
+	});
+
+	it("prunes a profileless pane home with its stale binding", () => {
+		getSubscriptionProfileEnvironmentForPane(
+			"codex",
+			"stale-system-pane",
+			"resolved-workspace",
+		);
+		const home = legacyUnboundHome(
+			RECONCILE_TEST_ROOT,
+			"codex",
+			"pane:stale-system-pane",
+		);
+		mkdirSync(home, { recursive: true, mode: 0o700 });
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [],
+		});
+
+		expect(result.removedBindings).toBe(1);
+		expect(result.prunedHomes).toBe(1);
+		expect(existsSync(home)).toBe(false);
+	});
+
+	it("preserves bindings whose workspace identity is unresolved", () => {
+		getSubscriptionProfileEnvironmentForPane(
+			"codex",
+			"unresolved-pane",
+			"unresolved-workspace",
+		);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [],
+			unresolvedWorkspaceIds: new Set(["unresolved-workspace"]),
+		});
+
+		expect(result.removedBindings).toBe(0);
+		expect(result.preservedUnresolvedBindings).toBe(1);
+		expect(result.warnings).toHaveLength(1);
+		expect(
+			getSubscriptionProfilePaneBinding(
+				"codex",
+				"unresolved-pane",
+				"unresolved-workspace",
+			),
+		).not.toBeNull();
+	});
+
+	it("skips destructive cleanup for recovered or otherwise untrusted state", () => {
+		getSubscriptionProfileEnvironmentForPane(
+			"claude",
+			"recovered-pane",
+			"resolved-workspace",
+		);
+
+		for (const stateTrust of ["recovered", "untrusted"] as const) {
+			const result = reconcileSubscriptionProfilePaneBindings({
+				stateTrust,
+				durablePanes: [],
+			});
+
+			expect(result.removedBindings).toBe(0);
+			expect(result.warnings).toHaveLength(1);
+			expect(
+				getSubscriptionProfilePaneBinding(
+					"claude",
+					"recovered-pane",
+					"resolved-workspace",
+				),
+			).not.toBeNull();
+		}
 	});
 });

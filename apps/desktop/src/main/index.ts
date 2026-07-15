@@ -20,7 +20,10 @@ import { getWorkspaceName } from "shared/env.shared";
 import { removeLegacyAgentCodexAuthFiles } from "./lib/agent-home";
 import { backfillAgentMemory } from "./lib/agent-memory-backfill";
 import { setupAgentHooks } from "./lib/agent-setup";
-import { SUPERSET_HOME_DIR } from "./lib/app-environment";
+import {
+	ensureSupersetHomeDirExists,
+	SUPERSET_HOME_DIR,
+} from "./lib/app-environment";
 import { initAppState } from "./lib/app-state";
 import { startAppStateWatcher } from "./lib/app-state/watcher";
 import { setupAutoUpdater } from "./lib/auto-updater";
@@ -34,10 +37,15 @@ import {
 } from "./lib/project-icons";
 import { reconcileSshTunnels } from "./lib/remote/tunnel-manager";
 import {
+	initializeSubscriptionProfiles,
 	pruneOrphanedSubscriptionHomes,
-	setSubscriptionProfilesUserDataPathResolver,
 } from "./lib/subscription-profiles";
 import {
+	assertSensitiveSyncIgnoreReady,
+	ensureSensitiveSyncIgnore,
+} from "./lib/sync/sensitive-ignore";
+import {
+	getServiceTerminalManager,
 	prewarmTerminalRuntime,
 	reconcileServiceSessions,
 } from "./lib/terminal";
@@ -49,7 +57,6 @@ console.log("[main] Local database ready:", !!localDb);
 // Local build: set userData to our workspace-specific dir so singleton lock
 // doesn't conflict with the production Superset.app
 app.setPath("userData", SUPERSET_HOME_DIR);
-setSubscriptionProfilesUserDataPathResolver(() => app.getPath("userData"));
 
 // Dev mode: label the app with the workspace name so multiple worktrees are distinguishable
 if (process.env.NODE_ENV === "development") {
@@ -266,6 +273,38 @@ if (!gotTheLock) {
 
 	(async () => {
 		await app.whenReady();
+		ensureSupersetHomeDirExists();
+		let sensitiveSyncIgnoreReady = true;
+		try {
+			ensureSensitiveSyncIgnore(SUPERSET_HOME_DIR);
+		} catch {
+			sensitiveSyncIgnoreReady = false;
+			console.error("[main] Failed to update managed sync ignores");
+		}
+		try {
+			assertSensitiveSyncIgnoreReady({
+				ignoreReady: sensitiveSyncIgnoreReady,
+			});
+		} catch {
+			app.quit();
+			return;
+		}
+
+		const subscriptionStorage = await initializeSubscriptionProfiles({
+			adeHomeDir: SUPERSET_HOME_DIR,
+			stopTerminalSessions: async () => {
+				await getServiceTerminalManager().shutdownForSubscriptionProfileMigration();
+			},
+			resetTerminalService: () => {
+				getServiceTerminalManager().reset();
+			},
+		});
+		if (subscriptionStorage.warning) {
+			console.warn(
+				"[main] Provider account storage warning:",
+				subscriptionStorage.warning,
+			);
+		}
 		registerWithMacOSNotificationCenter();
 
 		// Must register on both default session and the app's custom partition

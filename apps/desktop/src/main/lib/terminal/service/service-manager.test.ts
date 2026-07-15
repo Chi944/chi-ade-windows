@@ -4,9 +4,20 @@ import type { SessionInfo } from "./types";
 
 class MockTerminalHostClient extends EventEmitter {
 	killCalls: Array<{ sessionId: string; deleteHistory?: boolean }> = [];
+	shutdownCalls: Array<{ killSessions?: boolean }> = [];
 	createCalls: Array<{ sessionId: string }> = [];
 	writeCalls: Array<{ sessionId: string; data: string }> = [];
 	createGate: Promise<void> | null = null;
+	connected = true;
+	listedSessions: Array<{
+		sessionId: string;
+		workspaceId: string;
+		paneId: string;
+		isAlive: boolean;
+		attachedClients: number;
+		pid: number | null;
+	}> = [];
+	onShutdown: (() => void) | null = null;
 
 	async createOrAttach(params: { sessionId: string }) {
 		this.createCalls.push(params);
@@ -32,7 +43,17 @@ class MockTerminalHostClient extends EventEmitter {
 	}
 
 	async listSessions() {
-		return { sessions: [] };
+		return { sessions: this.listedSessions };
+	}
+
+	async tryConnectAndAuthenticate() {
+		return this.connected;
+	}
+
+	async shutdownIfRunning(params: { killSessions?: boolean }) {
+		this.shutdownCalls.push(params);
+		this.onShutdown?.();
+		return { wasRunning: this.connected };
 	}
 
 	writeNoAck(params: { sessionId: string; data: string }) {
@@ -102,6 +123,141 @@ describe("ServiceTerminalManager kill tracking", () => {
 		mockClient = new MockTerminalHostClient();
 		releasedProviderPanes.length = 0;
 		releasedProviderWorkspaces.length = 0;
+	});
+
+	it("proves captured provider process trees and the host are dead before migration", async () => {
+		const manager = new ServiceTerminalManager();
+		mockClient.listedSessions = [
+			{
+				sessionId: "provider-pane",
+				workspaceId: "workspace",
+				paneId: "provider-pane",
+				isAlive: true,
+				attachedClients: 0,
+				pid: 200,
+			},
+		];
+		const alive = new Set([200, 201, 999]);
+		const events: string[] = [];
+		mockClient.onShutdown = () => {
+			events.push("shutdown-host");
+			alive.delete(999);
+		};
+
+		await manager.shutdownForSubscriptionProfileMigration({
+			enumerateProcessTree: async (pid) => {
+				events.push(`enumerate-${pid}`);
+				return [pid, 201];
+			},
+			terminateProcessTree: async (pid) => {
+				events.push(`terminate-${pid}`);
+				alive.delete(pid);
+				alive.delete(201);
+				return { success: true };
+			},
+			isProcessAlive: (pid) => alive.has(pid),
+			readHostPid: () => 999,
+			sleep: async () => {},
+		});
+
+		expect(events).toEqual([
+			"enumerate-999",
+			"enumerate-200",
+			"terminate-200",
+			"shutdown-host",
+		]);
+		expect(mockClient.shutdownCalls).toEqual([{ killSessions: true }]);
+	});
+
+	it("refuses migration when a captured provider child survives tree termination", async () => {
+		const manager = new ServiceTerminalManager();
+		mockClient.listedSessions = [
+			{
+				sessionId: "provider-pane",
+				workspaceId: "workspace",
+				paneId: "provider-pane",
+				isAlive: true,
+				attachedClients: 0,
+				pid: 200,
+			},
+		];
+		const alive = new Set([200, 201, 999]);
+
+		expect(
+			manager.shutdownForSubscriptionProfileMigration({
+				enumerateProcessTree: async (pid) => [pid, 201],
+				terminateProcessTree: async (pid) => {
+					if (pid === 201) return { success: false };
+					alive.delete(pid);
+					return { success: true };
+				},
+				isProcessAlive: (pid) => alive.has(pid),
+				readHostPid: () => 999,
+				sleep: async () => {},
+				timeoutMs: 0,
+			}),
+		).rejects.toThrow("provider terminal process");
+		expect(mockClient.shutdownCalls).toHaveLength(0);
+	});
+
+	it("refuses migration when shutdown is acknowledged but the host survives", async () => {
+		const manager = new ServiceTerminalManager();
+		const alive = new Set([999]);
+
+		expect(
+			manager.shutdownForSubscriptionProfileMigration({
+				enumerateProcessTree: async (pid) => [pid],
+				terminateProcessTree: async () => ({ success: true }),
+				isProcessAlive: (pid) => alive.has(pid),
+				readHostPid: () => 999,
+				sleep: async () => {},
+				timeoutMs: 0,
+			}),
+		).rejects.toThrow("terminal host process");
+	});
+
+	it("captures a pre-spawn session subprocess through the host process tree", async () => {
+		const manager = new ServiceTerminalManager();
+		mockClient.listedSessions = [
+			{
+				sessionId: "pre-spawn-provider-pane",
+				workspaceId: "workspace",
+				paneId: "pre-spawn-provider-pane",
+				isAlive: true,
+				attachedClients: 0,
+				pid: null,
+			},
+		];
+		const alive = new Set([250, 999]);
+		mockClient.onShutdown = () => alive.delete(999);
+
+		expect(
+			manager.shutdownForSubscriptionProfileMigration({
+				enumerateProcessTree: async (pid) => (pid === 999 ? [999, 250] : [pid]),
+				terminateProcessTree: async (pid) => ({
+					success: pid !== 250,
+				}),
+				isProcessAlive: (pid) => alive.has(pid),
+				readHostPid: () => 999,
+				sleep: async () => {},
+				timeoutMs: 0,
+			}),
+		).rejects.toThrow("provider terminal process");
+		expect(mockClient.shutdownCalls).toHaveLength(0);
+	});
+
+	it("defers migration when an unreachable host leaves a stale PID artifact", async () => {
+		const manager = new ServiceTerminalManager();
+		mockClient.connected = false;
+
+		expect(
+			manager.shutdownForSubscriptionProfileMigration({
+				hostPidArtifactExists: () => true,
+				readHostPid: () => 999,
+				isProcessAlive: () => false,
+			}),
+		).rejects.toThrow("PID artifact");
+		expect(mockClient.shutdownCalls).toHaveLength(0);
 	});
 
 	it("waits for service exit and labels killed sessions", async () => {

@@ -1,4 +1,8 @@
-import { AGENT_RUNTIMES, remoteWorkspaceBindings } from "@superset/local-db";
+import {
+	AGENT_RUNTIMES,
+	remoteWorkspaceBindings,
+	workspaces,
+} from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
 import { appState, getDeviceId } from "main/lib/app-state";
 import type { TabsState, ThemeState } from "main/lib/app-state/schemas";
@@ -337,14 +341,26 @@ async function stampSyncEnvelopeForTabs(input: TabsState): Promise<void> {
 	sync.paneClaudeSessions = paneClaudeSessions;
 }
 
-function getRemoteWorkspaceIds(): ReadonlySet<string> {
-	return new Set(
+function getSubscriptionProfileWorkspaceClassification(): {
+	remoteWorkspaceIds: ReadonlySet<string>;
+	localWorkspaceIds: ReadonlySet<string>;
+} {
+	const remoteWorkspaceIds = new Set(
 		localDb
 			.select({ workspaceId: remoteWorkspaceBindings.workspaceId })
 			.from(remoteWorkspaceBindings)
 			.all()
 			.map(({ workspaceId }) => workspaceId),
 	);
+	const localWorkspaceIds = new Set(
+		localDb
+			.select({ workspaceId: workspaces.id })
+			.from(workspaces)
+			.all()
+			.map(({ workspaceId }) => workspaceId)
+			.filter((workspaceId) => !remoteWorkspaceIds.has(workspaceId)),
+	);
+	return { remoteWorkspaceIds, localWorkspaceIds };
 }
 
 /**
@@ -357,7 +373,7 @@ export const createUiStateRouter = () => {
 			get: publicProcedure.query((): TabsState => {
 				const persistedState = sanitizeSubscriptionProfilesForPersistence({
 					state: appState.data.tabsState,
-					remoteWorkspaceIds: getRemoteWorkspaceIds(),
+					...getSubscriptionProfileWorkspaceClassification(),
 				});
 				// Keep the in-memory copy sanitized too, so a later theme/hotkey write
 				// cannot re-persist stale remote markers or device-local UUIDs.
@@ -370,7 +386,7 @@ export const createUiStateRouter = () => {
 				.mutation(async ({ input }) => {
 					const persistedState = sanitizeSubscriptionProfilesForPersistence({
 						state: input,
-						remoteWorkspaceIds: getRemoteWorkspaceIds(),
+						...getSubscriptionProfileWorkspaceClassification(),
 					});
 					appState.data.tabsState = persistedState;
 					await stampSyncEnvelopeForTabs(persistedState);
