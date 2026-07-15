@@ -20,6 +20,7 @@ import {
 	initAppState,
 	reconcileLoadedAppStateBindings,
 	resetAppStateForTests,
+	takeStartupPeerPaneIds,
 } from ".";
 import { type AppState, createDefaultAppState } from "./schemas";
 
@@ -46,6 +47,45 @@ function requireQuarantineFile(result: { quarantineFile?: string }): string {
 	return result.quarantineFile;
 }
 
+function createPeerStartupState(): AppState {
+	const state = createDefaultAppState("peer-device");
+	state.tabsState = {
+		tabs: [
+			{
+				id: "peer-tab",
+				name: "Peer",
+				workspaceId: "peer-workspace",
+				createdAt: 1,
+				layout: "peer-pane",
+			},
+		],
+		panes: {
+			"peer-pane": {
+				id: "peer-pane",
+				tabId: "peer-tab",
+				type: "terminal",
+				name: "Claude",
+				agentRuntime: "claude",
+			},
+		},
+		activeTabIds: { "peer-workspace": "peer-tab" },
+		focusedPaneIds: { "peer-tab": "peer-pane" },
+		tabHistoryStacks: { "peer-workspace": [] },
+	};
+	state.sync.localToCanonical = {
+		"peer-workspace": "canonical-workspace",
+	};
+	state.sync.workspaceMetadata = {
+		"canonical-workspace": {
+			repository: "example.com/acme/repo",
+			branch: "main",
+			type: "branch",
+		},
+	};
+	state.sync.paneClaudeSessions = { "peer-pane": "session-123" };
+	return state;
+}
+
 afterEach(async () => {
 	resetAppStateForTests();
 	for (const home of temporaryHomes) {
@@ -56,6 +96,81 @@ afterEach(async () => {
 });
 
 describe("validated app-state initialization", () => {
+	test("awaits peer session handoff persistence and exposes pane markers only ephemerally", async () => {
+		const home = await createTemporaryHome();
+		await writeExistingState(home, createPeerStartupState());
+		let releaseHandoff: (() => void) | undefined;
+		let handoffStarted: (() => void) | undefined;
+		const gate = new Promise<void>((resolve) => {
+			releaseHandoff = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			handoffStarted = resolve;
+		});
+		const persisted = mock(async () => {
+			handoffStarted?.();
+			await gate;
+		});
+		let resolved = false;
+		const initializing = initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "local-device",
+			reconciliation: {
+				resolveLocalWorkspaceId: () => "local-workspace",
+				getCanonicalForLocalWorkspaceId: () => null,
+				getRemoteWorkspaceIds: () => new Set(),
+				reconcileBindings: () => ({ removedBindings: 0 }),
+			},
+			persistStartupPeerHandoff: persisted,
+		}).then((value) => {
+			resolved = true;
+			return value;
+		});
+
+		await started;
+		expect(resolved).toBe(false);
+		releaseHandoff?.();
+		await initializing;
+
+		expect(persisted).toHaveBeenCalledWith({
+			paneId: "peer-pane",
+			workspaceId: "local-workspace",
+			claudeSessionId: "session-123",
+		});
+		expect(takeStartupPeerPaneIds()).toEqual(["peer-pane"]);
+		expect(takeStartupPeerPaneIds()).toEqual([]);
+		expect(await readFile(join(home, "app-state.json"), "utf8")).not.toContain(
+			"startupPeerPaneIds",
+		);
+	});
+
+	test("reports a startup handoff failure without bricking initialization", async () => {
+		const home = await createTemporaryHome();
+		await writeExistingState(home, createPeerStartupState());
+
+		const result = await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "local-device",
+			reconciliation: {
+				resolveLocalWorkspaceId: () => "local-workspace",
+				getCanonicalForLocalWorkspaceId: () => null,
+				getRemoteWorkspaceIds: () => new Set(),
+				reconcileBindings: () => ({ removedBindings: 0 }),
+			},
+			persistStartupPeerHandoff: async () => {
+				throw new Error("history unavailable");
+			},
+		});
+
+		expect(result.startupWarnings).toEqual([
+			"A peer Claude session could not be staged for startup.",
+		]);
+		expect(getAppStateSnapshot().tabsState.tabs[0]?.workspaceId).toBe(
+			"local-workspace",
+		);
+		expect(takeStartupPeerPaneIds()).toEqual(["peer-pane"]);
+	});
+
 	test("classifies first run explicitly and atomically materializes defaults", async () => {
 		const home = await createTemporaryHome();
 		const events: AppStateDiagnosticEvent[] = [];
@@ -468,14 +583,8 @@ describe("validated app-state initialization", () => {
 		expect(
 			stored.tabsState.panes["remote-pane"].subscriptionProfilePinned,
 		).toBeUndefined();
-		expect(
-			stored.tabsState.panes["unresolved-pinned-pane"]
-				.subscriptionProfilePinned,
-		).toBe(true);
-		expect(
-			stored.tabsState.panes["unresolved-unpinned-pane"]
-				.subscriptionProfilePinned,
-		).toBeUndefined();
+		expect(stored.tabsState.panes["unresolved-pinned-pane"]).toBeUndefined();
+		expect(stored.tabsState.panes["unresolved-unpinned-pane"]).toBeUndefined();
 		expect(JSON.stringify(stored)).not.toContain(profileId);
 	});
 });
@@ -527,7 +636,7 @@ describe("subscription binding reconciliation gate", () => {
 		};
 		state.sync.workspaceMetadata = {
 			"canonical-peer": {
-				mainRepoPath: "C:\\repo",
+				repository: "example.com/acme/repo",
 				branch: "main",
 				type: "worktree",
 			},

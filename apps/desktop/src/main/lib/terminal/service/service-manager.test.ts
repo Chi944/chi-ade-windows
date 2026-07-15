@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
+import { buildAgentResumeCommand } from "shared/agent-session-recovery";
 import type { SessionInfo } from "./types";
 
 class MockTerminalHostClient extends EventEmitter {
@@ -117,6 +118,68 @@ mock.module("@superset/local-db", () => ({
 }));
 
 const { ServiceTerminalManager } = await import("./service-manager");
+const { HistoryReader } = await import("../../terminal-history");
+
+const VALID_CLAUDE_SESSION_ID = "123e4567-e89b-12d3-a456-426614174000";
+
+async function createFromSessionOnlyMetadata(sessionId: string): Promise<{
+	result: Awaited<
+		ReturnType<InstanceType<typeof ServiceTerminalManager>["createOrAttach"]>
+	>;
+	cleanupCalls: number;
+}> {
+	const originalReadMetadata = HistoryReader.prototype.readMetadata;
+	const originalReadScrollback = HistoryReader.prototype.readScrollback;
+	const originalCleanup = HistoryReader.prototype.cleanup;
+	let metadata: Awaited<ReturnType<typeof originalReadMetadata>> = {
+		cwd: "C:\\repo",
+		cols: 80,
+		rows: 24,
+		agentRuntime: "claude",
+		agentSessionId: sessionId,
+		claudeSessionId: sessionId,
+	};
+	let cleanupCalls = 0;
+
+	HistoryReader.prototype.readMetadata = async () => metadata;
+	HistoryReader.prototype.readScrollback = async () => null;
+	HistoryReader.prototype.cleanup = async () => {
+		cleanupCalls += 1;
+		metadata = null;
+	};
+
+	try {
+		const manager = new ServiceTerminalManager();
+		const historyManager = (
+			manager as unknown as {
+				historyManager: { initHistoryWriter: () => Promise<void> };
+			}
+		).historyManager;
+		historyManager.initHistoryWriter = async () => {};
+
+		const result = await manager.createOrAttach({
+			paneId: `pane-session-only-${sessionId}`,
+			tabId: `tab-session-only-${sessionId}`,
+			workspaceId: `workspace-session-only-${sessionId}`,
+			cwd: "C:\\repo",
+			cols: 80,
+			rows: 24,
+			runtime: "claude",
+			launch: {
+				kind: "ssh",
+				executable: "test-shell",
+				args: [],
+				fingerprint: "test-session-only",
+				env: {},
+			},
+		});
+		return { result, cleanupCalls };
+	} finally {
+		HistoryReader.prototype.readMetadata = originalReadMetadata;
+		HistoryReader.prototype.readScrollback = originalReadScrollback;
+		HistoryReader.prototype.cleanup = originalCleanup;
+	}
+}
 
 describe("ServiceTerminalManager kill tracking", () => {
 	beforeEach(() => {
@@ -576,5 +639,34 @@ describe("ServiceTerminalManager kill tracking", () => {
 		expect(mockClient.writeCalls).toEqual([
 			{ sessionId: "pane-live", data: "\r" },
 		]);
+	});
+
+	it("preserves valid session-only metadata so create/attach can stage resume", async () => {
+		const { result, cleanupCalls } = await createFromSessionOnlyMetadata(
+			VALID_CLAUDE_SESSION_ID,
+		);
+
+		expect(cleanupCalls).toBe(0);
+		expect(result.resumeAvailable).toBe(true);
+		expect(result.agentRuntime).toBe("claude");
+		expect(result.agentSessionId).toBe(VALID_CLAUDE_SESSION_ID);
+		expect(
+			buildAgentResumeCommand({
+				runtime: result.agentRuntime,
+				sessionId: result.agentSessionId,
+			}),
+		).toBe(
+			`claude --resume ${VALID_CLAUDE_SESSION_ID} --dangerously-skip-permissions`,
+		);
+	});
+
+	it("cleans session-only metadata when its resume id is invalid", async () => {
+		const { result, cleanupCalls } = await createFromSessionOnlyMetadata(
+			"not a valid session id",
+		);
+
+		expect(cleanupCalls).toBe(1);
+		expect(result.resumeAvailable).toBe(false);
+		expect(result.agentSessionId).toBeUndefined();
 	});
 });

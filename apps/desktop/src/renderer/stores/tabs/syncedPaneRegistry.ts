@@ -1,3 +1,5 @@
+import { normalizeTerminalCommand } from "renderer/lib/terminal/launch-command";
+
 /**
  * Ephemeral, in-memory registry of pane ids that just arrived via cross-Mac
  * sync (see useTabsSyncSubscription). It exists so the terminal lifecycle hooks
@@ -9,9 +11,8 @@
  * Same-machine cold-restore / reboot behavior is left untouched (it still
  * auto-runs), because the user is fine with that flow.
  *
- * This is deliberately module-level state, mirroring the `skipNextTabsPersist`
- * flag in `renderer/lib/trpc-storage.ts`. It is NOT part of the persisted Pane
- * schema, so the marker never echoes back across Syncthing.
+ * This is deliberately module-level state. It is NOT part of the persisted
+ * Pane schema, so the marker never echoes back across Syncthing.
  */
 
 const syncedPaneIds = new Set<string>();
@@ -28,4 +29,29 @@ export function markSyncedPane(paneId: string): void {
  */
 export function consumeSyncedPane(paneId: string): boolean {
 	return syncedPaneIds.delete(paneId);
+}
+
+/**
+ * A peer pane gets one staged resume command without an Enter key. Later
+ * attempts and ordinary local panes retain the established auto-resume flow.
+ */
+export function preparePaneResumeInput(
+	paneId: string,
+	resumeCommand: string,
+): string {
+	return consumeSyncedPane(paneId)
+		? resumeCommand.replace(/[\r\n]+/g, "")
+		: normalizeTerminalCommand(resumeCommand);
+}
+
+export function restorePaneResumeMarkerAfterWriteFailure(
+	paneId: string,
+	terminalInput: string,
+): void {
+	if (!/[\r\n]$/.test(terminalInput)) markSyncedPane(paneId);
+}
+
+/** @internal Test seam. */
+export function resetSyncedPaneRegistryForTests(): void {
+	syncedPaneIds.clear();
 }

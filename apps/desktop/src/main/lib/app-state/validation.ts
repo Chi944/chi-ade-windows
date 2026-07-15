@@ -253,6 +253,7 @@ export function normalizeAppState(
 			workspaceMetadata: legacySync?.workspaceMetadata ?? {},
 			localToCanonical: legacySync?.localToCanonical ?? {},
 			paneClaudeSessions: legacySync?.paneClaudeSessions ?? {},
+			workspaceTombstones: legacySync?.workspaceTombstones ?? {},
 		},
 	};
 

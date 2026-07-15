@@ -1,5 +1,9 @@
+import type { TabsState } from "main/lib/app-state/schemas";
+import type { TabsSuppressionToken } from "main/lib/app-state/sync-service";
 import type { HotkeysState } from "shared/hotkeys";
+import { hashTabsState } from "shared/tabs-sync";
 import { createJSONStorage, type StateStorage } from "zustand/middleware";
+import { markSyncedPane } from "../stores/tabs/syncedPaneRegistry";
 import { electronTrpcClient } from "./trpc-client";
 
 /**
@@ -12,14 +16,110 @@ export function setSkipNextHotkeysPersist(skip: boolean): void {
 	skipNextHotkeysPersist = skip;
 }
 
-/**
- * Flag to skip the next tabs persist operation.
- * Used when syncing from remote to avoid echo writes.
- */
-let skipNextTabsPersist = false;
+const DEFAULT_SUPPRESSION_CAPACITY = 64;
 
-export function setSkipNextTabsPersist(skip: boolean): void {
-	skipNextTabsPersist = skip;
+export interface TabsSuppressionTokenRegistry {
+	acknowledge: (token: TabsSuppressionToken, tabsState: TabsState) => void;
+	consume: (tabsState: TabsState) => TabsSuppressionToken | null;
+	readonly size: number;
+}
+
+export function createTabsSuppressionTokenRegistry(
+	options: { now?: () => number; capacity?: number } = {},
+): TabsSuppressionTokenRegistry {
+	const now = options.now ?? Date.now;
+	const capacity = Math.max(
+		1,
+		options.capacity ?? DEFAULT_SUPPRESSION_CAPACITY,
+	);
+	const tokens = new Map<string, TabsSuppressionToken>();
+	const purgeExpired = () => {
+		const currentTime = now();
+		for (const [token, value] of tokens) {
+			if (value.expiresAt <= currentTime) tokens.delete(token);
+		}
+	};
+
+	return {
+		acknowledge(token, tabsState) {
+			purgeExpired();
+			if (!token.token || token.expiresAt <= now()) {
+				throw new Error("Tabs suppression token is empty or expired.");
+			}
+			if (token.tabsHash !== hashTabsState(tabsState)) {
+				throw new Error(
+					"Tabs suppression token hash does not match the snapshot.",
+				);
+			}
+			const existing = tokens.get(token.token);
+			if (existing) {
+				if (
+					existing.revision !== token.revision ||
+					existing.tabsHash !== token.tabsHash ||
+					existing.expiresAt !== token.expiresAt
+				) {
+					throw new Error(
+						"Tabs suppression token conflicts with an existing token.",
+					);
+				}
+				return;
+			}
+			tokens.set(token.token, { ...token });
+			while (tokens.size > capacity) {
+				const oldest = tokens.keys().next().value;
+				if (typeof oldest !== "string") break;
+				tokens.delete(oldest);
+			}
+		},
+		consume(tabsState) {
+			purgeExpired();
+			const tabsHash = hashTabsState(tabsState);
+			const match = [...tokens.values()]
+				.filter((token) => token.tabsHash === tabsHash)
+				.sort(
+					(left, right) =>
+						left.revision - right.revision ||
+						left.token.localeCompare(right.token),
+				)[0];
+			if (!match) return null;
+			tokens.delete(match.token);
+			return { ...match };
+		},
+		get size() {
+			purgeExpired();
+			return tokens.size;
+		},
+	};
+}
+
+let tabsSuppressionTokens = createTabsSuppressionTokenRegistry();
+
+export function acknowledgeTabsSuppressionToken(
+	token: TabsSuppressionToken,
+	tabsState: TabsState,
+): void {
+	tabsSuppressionTokens.acknowledge(token, tabsState);
+}
+
+/** @internal Test seam. */
+export function resetTabsSuppressionTokensForTests(): void {
+	tabsSuppressionTokens = createTabsSuppressionTokenRegistry();
+}
+
+export function partializeTabsStoreState(state: {
+	tabs: TabsState["tabs"];
+	panes: TabsState["panes"];
+	activeTabIds: TabsState["activeTabIds"];
+	focusedPaneIds: TabsState["focusedPaneIds"];
+	tabHistoryStacks: TabsState["tabHistoryStacks"];
+}): TabsState {
+	return {
+		tabs: state.tabs,
+		panes: state.panes,
+		activeTabIds: state.activeTabIds,
+		focusedPaneIds: state.focusedPaneIds,
+		tabHistoryStacks: state.tabHistoryStacks,
+	};
 }
 
 /**
@@ -56,11 +156,12 @@ function createTrpcStorageAdapter(config: TrpcStorageConfig): StateStorage {
 					state: unknown;
 					version: number;
 				};
-				// Persist version in localStorage, bare state via tRPC.
-				localStorage.setItem(`${name}:version`, String(parsed.version));
 				await config.set(parsed.state);
+				// Advance the sidecar only after the durable write/ack succeeds.
+				localStorage.setItem(`${name}:version`, String(parsed.version));
 			} catch (error) {
 				console.error("[trpc-storage] Failed to set state:", error);
+				throw error;
 			}
 		},
 		removeItem: async (_name: string): Promise<void> => {
@@ -75,15 +176,22 @@ function createTrpcStorageAdapter(config: TrpcStorageConfig): StateStorage {
  */
 export const trpcTabsStorage = createJSONStorage(() =>
 	createTrpcStorageAdapter({
-		get: () => electronTrpcClient.uiState.tabs.get.query(),
+		get: async () => {
+			const bootstrap = await electronTrpcClient.uiState.tabs.bootstrap.query();
+			for (const paneId of bootstrap.startupPeerPaneIds) {
+				markSyncedPane(paneId);
+			}
+			return bootstrap.state;
+		},
 		set: (input) => {
-			// Skip persistence when syncing from remote to avoid echo writes
-			if (skipNextTabsPersist) {
-				skipNextTabsPersist = false;
+			const persisted = partializeTabsStoreState(
+				input as Parameters<typeof partializeTabsStoreState>[0],
+			);
+			if (tabsSuppressionTokens.consume(persisted)) {
 				return Promise.resolve();
 			}
 			// biome-ignore lint/suspicious/noExplicitAny: Zustand persist passes unknown, tRPC expects typed input
-			return electronTrpcClient.uiState.tabs.set.mutate(input as any);
+			return electronTrpcClient.uiState.tabs.set.mutate(persisted as any);
 		},
 	}),
 );

@@ -19,6 +19,10 @@ export interface AppStateMutationCommit<T> {
 	state: AppState;
 }
 
+export type AppStateConditionalMutationCommit<T> =
+	| ({ status: "committed" } & AppStateMutationCommit<T>)
+	| { status: "stale"; revision: number; state: AppState };
+
 export type AppStateMutator<T> = (draft: AppState) => T | Promise<T>;
 
 /**
@@ -64,6 +68,38 @@ export class AppStateMutationCoordinator {
 
 		// Attach the rejection handler immediately. The returned operation still
 		// rejects for its caller, while the continuation tail is always usable.
+		this.tail = operation.then(() => undefined).catch(() => undefined);
+		return operation;
+	}
+
+	enqueueAtRevision<T>(
+		label: string,
+		expectedRevision: number,
+		mutate: AppStateMutator<T>,
+	): Promise<AppStateConditionalMutationCommit<T>> {
+		const operation = this.tail.then(async () => {
+			if (this.revision !== expectedRevision) {
+				return {
+					status: "stale" as const,
+					revision: this.revision,
+					state: structuredClone(this.committed),
+				};
+			}
+			const draft = structuredClone(this.committed);
+			const result = await mutate(draft);
+			const validated = structuredClone(this.validate(draft));
+			await this.write(structuredClone(validated));
+			this.committed = validated;
+			this.revision += 1;
+			return {
+				status: "committed" as const,
+				label,
+				revision: this.revision,
+				result,
+				state: structuredClone(this.committed),
+			};
+		});
+
 		this.tail = operation.then(() => undefined).catch(() => undefined);
 		return operation;
 	}

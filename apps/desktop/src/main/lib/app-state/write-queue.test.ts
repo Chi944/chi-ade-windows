@@ -184,6 +184,29 @@ describe("AppStateMutationCoordinator", () => {
 
 		expect(coordinator.getSnapshot().tabsState.tabs[0].name).toBe("source");
 	});
+
+	test("checks an expected revision inside the queue before mutating", async () => {
+		const coordinator = createCoordinator();
+		const baseRevision = coordinator.getRevision();
+		const localWrite = coordinator.enqueue("local", (draft) => {
+			draft.themeState.activeThemeId = "system";
+		});
+		const stalePeer = coordinator.enqueueAtRevision(
+			"peer",
+			baseRevision,
+			(draft) => {
+				draft.themeState.activeThemeId = "peer";
+			},
+		);
+
+		await localWrite;
+		expect(await stalePeer).toEqual({
+			status: "stale",
+			revision: 1,
+			state: coordinator.getSnapshot(),
+		});
+		expect(coordinator.getSnapshot().themeState.activeThemeId).toBe("system");
+	});
 });
 
 describe("atomic app-state writer", () => {

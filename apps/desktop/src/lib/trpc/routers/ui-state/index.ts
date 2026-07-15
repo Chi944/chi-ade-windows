@@ -4,6 +4,7 @@ import {
 	enqueueAppStateMutation,
 	getAppStateSnapshot,
 	getDeviceId,
+	takeStartupPeerPaneIds,
 } from "main/lib/app-state";
 import {
 	type AppState,
@@ -15,6 +16,7 @@ import {
 } from "main/lib/app-state/schemas";
 import { hotkeysEmitter } from "main/lib/hotkeys-events";
 import { localDb } from "main/lib/local-db";
+import { getCanonicalForLocalWorkspaceId } from "main/lib/sync/workspace-identity";
 import { HistoryReader } from "main/lib/terminal-history";
 import {
 	buildOverridesFromBindings,
@@ -22,6 +24,10 @@ import {
 	type HotkeysState,
 } from "shared/hotkeys";
 import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
+import {
+	type PortableWorkspaceIdentity,
+	stampLocalTabsMutation,
+} from "shared/tabs-sync";
 import { publicProcedure, router } from "../..";
 
 function stampSyncEnvelopeBare(draft: AppState): void {
@@ -29,39 +35,34 @@ function stampSyncEnvelopeBare(draft: AppState): void {
 	draft.sync.lastWrittenAt = Date.now();
 }
 
-/**
- * Stamp a tabs mutation without creating new path-based workspace metadata.
- * Existing legacy mappings remain readable for migration until Task 3 replaces
- * them with portable repository identities.
- */
 async function stampSyncEnvelopeForTabs(
 	draft: AppState,
 	input: TabsState,
 ): Promise<void> {
 	const deviceId = getDeviceId();
-	const now = Date.now();
-	draft.sync.deviceId = deviceId;
-	draft.sync.lastWrittenAt = now;
-
-	const workspaceIds = new Set(input.tabs.map((tab) => tab.workspaceId));
+	const workspaceIds = new Set([
+		...draft.tabsState.tabs.map((tab) => tab.workspaceId),
+		...input.tabs.map((tab) => tab.workspaceId),
+	]);
+	for (const workspaceId of Object.keys(draft.tabsState.activeTabIds)) {
+		workspaceIds.add(workspaceId);
+	}
 	for (const workspaceId of Object.keys(input.activeTabIds)) {
+		workspaceIds.add(workspaceId);
+	}
+	for (const workspaceId of Object.keys(draft.tabsState.tabHistoryStacks)) {
 		workspaceIds.add(workspaceId);
 	}
 	for (const workspaceId of Object.keys(input.tabHistoryStacks)) {
 		workspaceIds.add(workspaceId);
 	}
-
-	const retainedLocalToCanonical: Record<string, string> = {};
+	const identities: Record<string, PortableWorkspaceIdentity | undefined> = {};
 	for (const workspaceId of workspaceIds) {
-		const canonical = draft.sync.localToCanonical[workspaceId];
-		if (!canonical) continue;
-		retainedLocalToCanonical[workspaceId] = canonical;
-		draft.sync.perWorkspaceWrittenAt[canonical] = {
-			deviceId,
-			at: now,
-		};
+		const identity = getCanonicalForLocalWorkspaceId(workspaceId);
+		identities[workspaceId] = identity
+			? { canonical: identity.canonical, metadata: identity.meta }
+			: undefined;
 	}
-	draft.sync.localToCanonical = retainedLocalToCanonical;
 
 	const workspaceIdByTabId = new Map(
 		input.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
@@ -79,7 +80,19 @@ async function stampSyncEnvelopeForTabs(
 			paneClaudeSessions[paneId] = metadata.claudeSessionId;
 		}
 	}
-	draft.sync.paneClaudeSessions = paneClaudeSessions;
+	const stamp = stampLocalTabsMutation({
+		previousTabs: draft.tabsState,
+		nextTabs: input,
+		envelope: draft.sync,
+		identities,
+		deviceId,
+		now: Date.now(),
+		paneClaudeSessions,
+	});
+	draft.sync = stamp.envelope;
+	for (const warning of stamp.warnings) {
+		console.warn(`[ui-state] ${warning}`);
+	}
 }
 
 function getSubscriptionProfileWorkspaceClassification(): {
@@ -104,16 +117,23 @@ function getSubscriptionProfileWorkspaceClassification(): {
 	return { remoteWorkspaceIds, localWorkspaceIds };
 }
 
+function getTabsSnapshot(): TabsState {
+	const snapshot = getAppStateSnapshot();
+	return sanitizeSubscriptionProfilesForPersistence({
+		state: snapshot.tabsState,
+		...getSubscriptionProfileWorkspaceClassification(),
+	});
+}
+
 export const createUiStateRouter = () =>
 	router({
 		tabs: router({
-			get: publicProcedure.query((): TabsState => {
-				const snapshot = getAppStateSnapshot();
-				return sanitizeSubscriptionProfilesForPersistence({
-					state: snapshot.tabsState,
-					...getSubscriptionProfileWorkspaceClassification(),
-				});
-			}),
+			get: publicProcedure.query(getTabsSnapshot),
+
+			bootstrap: publicProcedure.query(() => ({
+				state: getTabsSnapshot(),
+				startupPeerPaneIds: takeStartupPeerPaneIds(),
+			})),
 
 			set: publicProcedure
 				.input(tabsStateSchema)
@@ -123,8 +143,8 @@ export const createUiStateRouter = () =>
 						...getSubscriptionProfileWorkspaceClassification(),
 					});
 					await enqueueAppStateMutation("ui-state.tabs.set", async (draft) => {
-						draft.tabsState = persistedState;
 						await stampSyncEnvelopeForTabs(draft, persistedState);
+						draft.tabsState = persistedState;
 					});
 					return { success: true };
 				}),

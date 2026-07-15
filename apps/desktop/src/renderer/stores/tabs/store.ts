@@ -1,7 +1,10 @@
 import type { MosaicNode } from "react-mosaic-component";
 import { getFileOpenMode } from "renderer/hooks/useFileOpenMode";
 import { posthog } from "renderer/lib/posthog";
-import { trpcTabsStorage } from "renderer/lib/trpc-storage";
+import {
+	partializeTabsStoreState,
+	trpcTabsStorage,
+} from "renderer/lib/trpc-storage";
 import { rebindPaneSubscriptionProfile } from "shared/subscription-profile-rebind";
 import { acknowledgedStatus } from "shared/tabs-types";
 import { create } from "zustand";
@@ -1750,6 +1753,7 @@ export const useTabsStore = create<TabsStore>()(
 				name: "tabs-storage",
 				version: 8,
 				storage: trpcTabsStorage,
+				partialize: (state: TabsStore) => partializeTabsStoreState(state),
 				migrate: (persistedState, version) => {
 					const state = persistedState as TabsState;
 					if (version < 2 && state.panes) {

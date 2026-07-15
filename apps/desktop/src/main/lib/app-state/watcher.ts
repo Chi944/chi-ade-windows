@@ -1,51 +1,141 @@
-/**
- * Watches `~/.ade/app-state.json` for peer-originated changes
- * (i.e. writes that Syncthing pulled in from another Mac) and
- * emits parsed snapshots so the tRPC `sync` subscription router
- * can push them to the renderer.
- *
- * NOTE on chokidar vs node:fs.watch:
- *   The plan called for chokidar. chokidar is not a direct dep of
- *   apps/desktop and adding it would require touching the bun lockfile.
- *   For a SINGLE JSON file on macOS APFS, `fs.watch` is reliable and
- *   zero-dep. We replicate chokidar's `awaitWriteFinish` semantics with
- *   a simple debounce + stat-stability check (file must report the
- *   same size + mtime for `stabilityMs` before we emit).
- */
-
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { watch } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
 import { APP_STATE_PATH } from "../app-environment";
-import { getDeviceId } from ".";
+import { getAppStateRevision, getDeviceId } from ".";
 import type { AppState } from "./schemas";
 import { parseAppStateJson } from "./validation";
 
 const DEBOUNCE_MS = 250;
 const STABILITY_MS = 500;
 const STABILITY_POLL_MS = 100;
+const DEFAULT_EVENT_CACHE_CAPACITY = 32;
+const DEFAULT_EVENT_CACHE_TTL_MS = 5 * 60_000;
 
-export interface PeerAppStateUpdate {
+export interface PeerAppStateEventMetadata {
+	eventId: string;
+	baseRevision: number;
+	writerDeviceId: string;
+	lastWrittenAt: number;
+	canonicalWorkspaceIds: string[];
+}
+
+export interface CachedPeerAppStateEvent extends PeerAppStateEventMetadata {
 	state: AppState;
 }
 
-class AppStateWatcher extends EventEmitter {
-	declare emit: (event: "peer-update", payload: PeerAppStateUpdate) => boolean;
-	declare on: (
-		event: "peer-update",
-		listener: (payload: PeerAppStateUpdate) => void,
-	) => this;
-	declare off: (
-		event: "peer-update",
-		listener: (payload: PeerAppStateUpdate) => void,
-	) => this;
+interface CachedEntry {
+	metadata: PeerAppStateEventMetadata;
+	raw: string;
+	expiresAt: number;
 }
 
-export const appStateWatcher = new AppStateWatcher();
+export class ValidatedPeerEventCache {
+	private readonly entries = new Map<string, CachedEntry>();
+	private readonly localDeviceId: string | (() => string);
+	private readonly capacity: number;
+	private readonly ttlMs: number;
+	private readonly now: () => number;
 
-let _started = false;
-let _debounceTimer: NodeJS.Timeout | null = null;
+	constructor(options: {
+		localDeviceId: string | (() => string);
+		capacity?: number;
+		ttlMs?: number;
+		now?: () => number;
+	}) {
+		this.localDeviceId = options.localDeviceId;
+		this.capacity = Math.max(
+			1,
+			options.capacity ?? DEFAULT_EVENT_CACHE_CAPACITY,
+		);
+		this.ttlMs = Math.max(1, options.ttlMs ?? DEFAULT_EVENT_CACHE_TTL_MS);
+		this.now = options.now ?? Date.now;
+	}
+
+	private getLocalDeviceId(): string {
+		return typeof this.localDeviceId === "function"
+			? this.localDeviceId()
+			: this.localDeviceId;
+	}
+
+	private purgeExpired(): void {
+		const now = this.now();
+		for (const [eventId, entry] of this.entries) {
+			if (entry.expiresAt <= now) this.entries.delete(eventId);
+		}
+	}
+
+	put(
+		eventId: string,
+		state: AppState,
+		baseRevision: number,
+	): PeerAppStateEventMetadata {
+		this.purgeExpired();
+		const normalized = parseAppStateJson(JSON.stringify(state), {
+			deviceId: this.getLocalDeviceId(),
+		});
+		const metadata: PeerAppStateEventMetadata = {
+			eventId,
+			baseRevision,
+			writerDeviceId: normalized.sync.deviceId,
+			lastWrittenAt: normalized.sync.lastWrittenAt,
+			canonicalWorkspaceIds: [
+				...new Set([
+					...Object.keys(normalized.sync.perWorkspaceWrittenAt),
+					...Object.keys(normalized.sync.workspaceTombstones),
+					...Object.keys(normalized.sync.workspaceMetadata),
+					...Object.values(normalized.sync.localToCanonical),
+				]),
+			].sort(),
+		};
+		this.entries.delete(eventId);
+		this.entries.set(eventId, {
+			metadata,
+			raw: JSON.stringify(normalized),
+			expiresAt: this.now() + this.ttlMs,
+		});
+		while (this.entries.size > this.capacity) {
+			const oldest = this.entries.keys().next().value;
+			if (typeof oldest !== "string") break;
+			this.entries.delete(oldest);
+		}
+		return { ...metadata };
+	}
+
+	listMetadata(): PeerAppStateEventMetadata[] {
+		this.purgeExpired();
+		return [...this.entries.values()].map(({ metadata }) => ({
+			...metadata,
+			canonicalWorkspaceIds: [...metadata.canonicalWorkspaceIds],
+		}));
+	}
+
+	get(eventId: string): CachedPeerAppStateEvent | null {
+		this.purgeExpired();
+		const entry = this.entries.get(eventId);
+		if (!entry) return null;
+		try {
+			return {
+				...entry.metadata,
+				canonicalWorkspaceIds: [...entry.metadata.canonicalWorkspaceIds],
+				state: parseAppStateJson(entry.raw, {
+					deviceId: this.getLocalDeviceId(),
+				}),
+			};
+		} catch {
+			this.entries.delete(eventId);
+			return null;
+		}
+	}
+
+	get size(): number {
+		this.purgeExpired();
+		return this.entries.size;
+	}
+}
 
 export function parsePeerAppStateJson(
 	raw: string,
@@ -54,106 +144,186 @@ export function parsePeerAppStateJson(
 	return parseAppStateJson(raw, { deviceId: localDeviceId });
 }
 
-async function waitForStability(): Promise<boolean> {
+type DirectoryEventListener = (
+	eventType: string,
+	filename: string | Buffer | null,
+) => void;
+
+export interface AppStateWatcherDependencies {
+	targetPath: string;
+	localDeviceId: () => string | null;
+	getBaseRevision: () => number;
+	readStableFile: () => Promise<string | null>;
+	watchDirectory: (
+		path: string,
+		listener: DirectoryEventListener,
+	) => { close: () => void };
+	eventCache: ValidatedPeerEventCache;
+	eventIdFactory?: () => string;
+	debounceMs?: number;
+}
+
+export class AppStateWatcherController extends EventEmitter {
+	private readonly dependencies: AppStateWatcherDependencies;
+	private started = false;
+	private watcher: { close: () => void } | null = null;
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private pending: Promise<void> = Promise.resolve();
+
+	declare emit: (
+		event: "peer-update",
+		payload: PeerAppStateEventMetadata,
+	) => boolean;
+	declare on: (
+		event: "peer-update",
+		listener: (payload: PeerAppStateEventMetadata) => void,
+	) => this;
+	declare off: (
+		event: "peer-update",
+		listener: (payload: PeerAppStateEventMetadata) => void,
+	) => this;
+
+	constructor(dependencies: AppStateWatcherDependencies) {
+		super();
+		this.dependencies = dependencies;
+	}
+
+	private enqueueIngest(): void {
+		this.pending = this.pending
+			.then(() => this.ingestCurrentFile())
+			.catch(() => {
+				console.warn("[app-state-watcher] Peer snapshot ingestion failed.");
+			});
+	}
+
+	private scheduleIngest(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			this.enqueueIngest();
+		}, this.dependencies.debounceMs ?? DEBOUNCE_MS);
+	}
+
+	private async ingestCurrentFile(): Promise<void> {
+		const localDeviceId = this.dependencies.localDeviceId();
+		if (!localDeviceId) return;
+		const raw = await this.dependencies.readStableFile();
+		if (raw === null) return;
+		let parsed: AppState;
+		try {
+			parsed = parsePeerAppStateJson(raw, localDeviceId);
+		} catch {
+			console.warn(
+				"[app-state-watcher] Ignored an invalid peer app-state snapshot.",
+			);
+			return;
+		}
+		if (!parsed.sync.deviceId || parsed.sync.deviceId === localDeviceId) return;
+		parsed.tabsState = sanitizeSubscriptionProfilesForPersistence({
+			state: parsed.tabsState,
+		});
+		const metadata = this.dependencies.eventCache.put(
+			this.dependencies.eventIdFactory?.() ?? randomUUID(),
+			parsed,
+			this.dependencies.getBaseRevision(),
+		);
+		this.emit("peer-update", metadata);
+	}
+
+	async start(): Promise<void> {
+		if (this.started) return;
+		this.started = true;
+		const targetName = basename(this.dependencies.targetPath);
+		this.watcher = this.dependencies.watchDirectory(
+			dirname(this.dependencies.targetPath),
+			(eventType, filename) => {
+				if (eventType !== "change" && eventType !== "rename") return;
+				const changedName =
+					typeof filename === "string"
+						? filename
+						: Buffer.isBuffer(filename)
+							? filename.toString()
+							: null;
+				if (changedName !== null && basename(changedName) !== targetName)
+					return;
+				this.scheduleIngest();
+			},
+		);
+		await this.ingestCurrentFile();
+	}
+
+	async flush(): Promise<void> {
+		if (this.timer) {
+			clearTimeout(this.timer);
+			this.timer = null;
+			this.enqueueIngest();
+		}
+		await this.pending;
+	}
+
+	stop(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = null;
+		this.watcher?.close();
+		this.watcher = null;
+		this.started = false;
+	}
+}
+
+async function readStableAppStateFile(): Promise<string | null> {
 	let lastSize = -1;
 	let lastMtimeMs = -1;
 	let stableSince = 0;
 	const startedAt = Date.now();
-	const hardTimeoutMs = STABILITY_MS * 10;
-
-	while (Date.now() - startedAt < hardTimeoutMs) {
+	while (Date.now() - startedAt < STABILITY_MS * 10) {
 		try {
-			const s = await stat(APP_STATE_PATH);
-			if (s.size === lastSize && s.mtimeMs === lastMtimeMs) {
+			const value = await stat(APP_STATE_PATH);
+			if (value.size === lastSize && value.mtimeMs === lastMtimeMs) {
 				if (stableSince === 0) stableSince = Date.now();
-				if (Date.now() - stableSince >= STABILITY_MS) return true;
+				if (Date.now() - stableSince >= STABILITY_MS) {
+					return await readFile(APP_STATE_PATH, "utf8");
+				}
 			} else {
-				lastSize = s.size;
-				lastMtimeMs = s.mtimeMs;
+				lastSize = value.size;
+				lastMtimeMs = value.mtimeMs;
 				stableSince = 0;
 			}
 		} catch {
-			// File missing during rename swap — try again.
+			// Atomic replacement may temporarily remove the named file.
 		}
-		await new Promise((r) => setTimeout(r, STABILITY_POLL_MS));
+		await new Promise((resolve) => setTimeout(resolve, STABILITY_POLL_MS));
 	}
-	return false;
+	console.warn("[app-state-watcher] File never stabilized; skipping read.");
+	return null;
 }
 
-async function handleChange(): Promise<void> {
-	const stable = await waitForStability();
-	if (!stable) {
-		console.warn("[app-state-watcher] File never stabilized; skipping read.");
-		return;
-	}
-
-	let raw: string;
+function currentDeviceId(): string | null {
 	try {
-		raw = await readFile(APP_STATE_PATH, "utf8");
-	} catch (err) {
-		console.warn("[app-state-watcher] Failed to read app-state.json:", err);
-		return;
-	}
-
-	const localDeviceId = (() => {
-		try {
-			return getDeviceId();
-		} catch {
-			return null;
-		}
-	})();
-	if (!localDeviceId) return;
-
-	let parsed: AppState;
-	try {
-		parsed = parsePeerAppStateJson(raw, localDeviceId);
+		return getDeviceId();
 	} catch {
-		console.warn(
-			"[app-state-watcher] Ignored an invalid peer app-state snapshot.",
-		);
-		return;
+		return null;
 	}
-
-	const writerDeviceId = parsed.sync?.deviceId ?? null;
-	// Only react to peer writes — ignore our own.
-	if (!writerDeviceId || !localDeviceId || writerDeviceId === localDeviceId) {
-		return;
-	}
-
-	const sanitizedTabsState = sanitizeSubscriptionProfilesForPersistence({
-		state: parsed.tabsState,
-	});
-	appStateWatcher.emit("peer-update", {
-		state:
-			sanitizedTabsState === parsed.tabsState
-				? parsed
-				: { ...parsed, tabsState: sanitizedTabsState },
-	});
 }
 
-function scheduleHandle(): void {
-	if (_debounceTimer) clearTimeout(_debounceTimer);
-	_debounceTimer = setTimeout(() => {
-		_debounceTimer = null;
-		handleChange().catch((err) => {
-			console.error("[app-state-watcher] handleChange failed:", err);
-		});
-	}, DEBOUNCE_MS);
-}
+export const peerAppStateEventCache = new ValidatedPeerEventCache({
+	localDeviceId: () => currentDeviceId() ?? "uninitialized-local-device",
+});
 
-export function startAppStateWatcher(): void {
-	if (_started) return;
-	_started = true;
+export const appStateWatcher = new AppStateWatcherController({
+	targetPath: APP_STATE_PATH,
+	localDeviceId: currentDeviceId,
+	getBaseRevision: getAppStateRevision,
+	readStableFile: readStableAppStateFile,
+	watchDirectory: (path, listener) =>
+		watch(path, { persistent: true }, listener),
+	eventCache: peerAppStateEventCache,
+});
+
+export async function startAppStateWatcher(): Promise<void> {
 	try {
-		watch(APP_STATE_PATH, { persistent: true }, (eventType) => {
-			if (eventType === "change" || eventType === "rename") {
-				scheduleHandle();
-			}
-		});
-		console.log(
-			`[app-state-watcher] Watching ${APP_STATE_PATH} for peer updates.`,
-		);
-	} catch (err) {
-		console.error("[app-state-watcher] Failed to start watcher:", err);
+		await appStateWatcher.start();
+		console.log("[app-state-watcher] Watching app-state parent directory.");
+	} catch {
+		console.error("[app-state-watcher] Failed to start watcher.");
 	}
 }

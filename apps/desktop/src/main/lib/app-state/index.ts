@@ -11,11 +11,17 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
+import type { PeerClaudeSessionHandoff } from "shared/tabs-sync";
 import {
 	SUPERSET_HOME_DIR,
 	SUPERSET_HOME_DIR_MODE,
 	SUPERSET_SENSITIVE_FILE_MODE,
 } from "../app-environment";
+import {
+	type AppStateBindingReconciliationDependencies,
+	type AppStateBindingReconciliationOutcome,
+	prepareAppStateForStartup,
+} from "./reconciliation";
 import { type AppState, createDefaultAppState } from "./schemas";
 import {
 	AppStateValidationError,
@@ -23,6 +29,7 @@ import {
 	parseAppStateJson,
 } from "./validation";
 import {
+	type AppStateConditionalMutationCommit,
 	type AppStateMutationCommit,
 	AppStateMutationCoordinator,
 	type AppStateMutator,
@@ -58,39 +65,14 @@ export interface AppStateLoadResult {
 	state: AppState;
 	quarantineFile?: string;
 	reconciliation?: AppStateBindingReconciliationOutcome;
+	startupWarnings?: string[];
 }
 
-export interface AppStateBindingReconciliationInput {
-	stateTrust: "trusted" | "recovered" | "untrusted";
-	durablePanes: ReadonlyArray<{
-		paneId: string;
-		provider: "claude" | "codex" | null;
-		workspaceId?: string;
-	}>;
-	unresolvedWorkspaceIds?: ReadonlySet<string>;
-}
-
-export interface AppStateBindingReconciliationDependencies {
-	resolveLocalWorkspaceId: (
-		canonical: string,
-		embeddedMeta?: {
-			mainRepoPath: string;
-			branch: string;
-			type: string;
-		},
-		options?: { autoCreate?: boolean },
-	) => string | null;
-	getCanonicalForLocalWorkspaceId: (
-		workspaceId: string,
-	) => { canonical: string } | null;
-	getRemoteWorkspaceIds: () => ReadonlySet<string>;
-	reconcileBindings: (input: AppStateBindingReconciliationInput) => unknown;
-}
-
-export type AppStateBindingReconciliationOutcome =
-	| { status: "completed"; result: unknown }
-	| { status: "deferred"; warning: string }
-	| { status: "failed"; warning: string };
+export type {
+	AppStateBindingReconciliationDependencies,
+	AppStateBindingReconciliationInput,
+	AppStateBindingReconciliationOutcome,
+} from "./reconciliation";
 
 export interface InitAppStateOptions {
 	homeDir?: string;
@@ -99,12 +81,16 @@ export interface InitAppStateOptions {
 	readStateFile?: (path: string) => Promise<string>;
 	onDiagnosticEvent?: (event: AppStateDiagnosticEvent) => void;
 	reconciliation?: AppStateBindingReconciliationDependencies | false;
+	persistStartupPeerHandoff?: (
+		handoff: PeerClaudeSessionHandoff,
+	) => Promise<void>;
 }
 
 let _coordinator: AppStateMutationCoordinator | null = null;
 let _deviceId: string | null = null;
 let _loadResult: AppStateLoadResult | null = null;
 let _initializing: Promise<AppStateLoadResult> | null = null;
+let _startupPeerPaneIds = new Set<string>();
 
 function isErrno(error: unknown, code: string): boolean {
 	return (
@@ -325,193 +311,71 @@ async function defaultReconciliationDependencies(): Promise<AppStateBindingRecon
 	};
 }
 
-interface AppStateWorkspaceClassification {
-	localWriterWorkspaceIds: ReadonlySet<string>;
-	remoteWriterWorkspaceIds: ReadonlySet<string>;
-	localizedWorkspaceIds: ReadonlyMap<string, string>;
-	unresolvedWorkspaceIds: ReadonlySet<string>;
-}
-
 interface PreparedLoadedAppState {
 	state: AppState;
 	reconciliation: AppStateBindingReconciliationOutcome;
+	startupPeerPaneIds: string[];
+	startupPeerClaudeSessionHandoffs: PeerClaudeSessionHandoff[];
 }
 
-function sanitizeLoadedAppState(
-	state: AppState,
-	classification?: Pick<
-		AppStateWorkspaceClassification,
-		"localWriterWorkspaceIds" | "remoteWriterWorkspaceIds"
-	>,
-): AppState {
+function sanitizeLoadedAppState(state: AppState): AppState {
 	return {
 		...state,
 		tabsState: sanitizeSubscriptionProfilesForPersistence({
 			state: state.tabsState,
-			localWorkspaceIds:
-				classification?.localWriterWorkspaceIds ?? new Set<string>(),
-			remoteWorkspaceIds:
-				classification?.remoteWriterWorkspaceIds ?? new Set<string>(),
 		}),
 	};
 }
 
-function classifyWriterWorkspaces(
-	state: AppState,
-	deps: AppStateBindingReconciliationDependencies,
-): AppStateWorkspaceClassification {
-	const knownRemoteWorkspaceIds = deps.getRemoteWorkspaceIds();
-	const localWriterWorkspaceIds = new Set<string>();
-	const remoteWriterWorkspaceIds = new Set<string>();
-	const localizedWorkspaceIds = new Map<string, string>();
-	const unresolvedWorkspaceIds = new Set<string>();
-
-	for (const tab of state.tabsState.tabs) {
-		const writerWorkspaceId = tab.workspaceId;
-		if (
-			localizedWorkspaceIds.has(writerWorkspaceId) ||
-			unresolvedWorkspaceIds.has(writerWorkspaceId)
-		) {
-			continue;
-		}
-		if (knownRemoteWorkspaceIds.has(writerWorkspaceId)) {
-			remoteWriterWorkspaceIds.add(writerWorkspaceId);
-			localizedWorkspaceIds.set(writerWorkspaceId, writerWorkspaceId);
-			continue;
-		}
-
-		const canonical = state.sync.localToCanonical[writerWorkspaceId];
-		if (canonical) {
-			const localWorkspaceId = deps.resolveLocalWorkspaceId(
-				canonical,
-				state.sync.workspaceMetadata[canonical],
-				{ autoCreate: false },
-			);
-			if (localWorkspaceId) {
-				localizedWorkspaceIds.set(writerWorkspaceId, localWorkspaceId);
-				if (knownRemoteWorkspaceIds.has(localWorkspaceId)) {
-					remoteWriterWorkspaceIds.add(writerWorkspaceId);
-				} else {
-					localWriterWorkspaceIds.add(writerWorkspaceId);
-				}
-			} else {
-				unresolvedWorkspaceIds.add(writerWorkspaceId);
-			}
-			continue;
-		}
-
-		if (deps.getCanonicalForLocalWorkspaceId(writerWorkspaceId)) {
-			localWriterWorkspaceIds.add(writerWorkspaceId);
-			localizedWorkspaceIds.set(writerWorkspaceId, writerWorkspaceId);
-		} else {
-			unresolvedWorkspaceIds.add(writerWorkspaceId);
-		}
-	}
-
-	return {
-		localWriterWorkspaceIds,
-		remoteWriterWorkspaceIds,
-		localizedWorkspaceIds,
-		unresolvedWorkspaceIds,
-	};
-}
-
-function reconcileClassifiedAppStateBindings(
-	state: AppState,
-	classification: AppStateWorkspaceClassification,
-	deps: AppStateBindingReconciliationDependencies,
-): unknown {
-	const workspaceIdByTabId = new Map(
-		state.tabsState.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
-	);
-	const durablePanes = Object.values(state.tabsState.panes).map((pane) => {
-		const writerWorkspaceId = workspaceIdByTabId.get(pane.tabId);
-		const workspaceId = writerWorkspaceId
-			? (classification.localizedWorkspaceIds.get(writerWorkspaceId) ??
-				writerWorkspaceId)
-			: undefined;
-		const isRemote = Boolean(
-			writerWorkspaceId &&
-				classification.remoteWriterWorkspaceIds.has(writerWorkspaceId),
-		);
-		const provider =
-			!isRemote &&
-			pane.type === "terminal" &&
-			(pane.agentRuntime === "claude" || pane.agentRuntime === "codex")
-				? pane.agentRuntime
-				: null;
-		return { paneId: pane.id, provider, workspaceId };
-	});
-
-	return deps.reconcileBindings({
-		stateTrust: "trusted",
-		durablePanes,
-		unresolvedWorkspaceIds: classification.unresolvedWorkspaceIds,
-	});
-}
-
 async function prepareLoadedAppStateBindings(
 	loadResult: AppStateLoadResult,
+	localDeviceId: string,
 	dependencies?: AppStateBindingReconciliationDependencies,
 ): Promise<PreparedLoadedAppState> {
-	if (loadResult.trust !== "trusted") {
-		return {
-			state: loadResult.state,
-			reconciliation: {
-				status: "deferred",
-				warning:
-					"Provider account binding cleanup was deferred because app state is not trusted.",
-			},
-		};
-	}
-
-	let deps: AppStateBindingReconciliationDependencies;
-	let classification: AppStateWorkspaceClassification;
+	let deps = dependencies;
 	try {
-		deps = dependencies ?? (await defaultReconciliationDependencies());
-		classification = classifyWriterWorkspaces(loadResult.state, deps);
+		deps ??= await defaultReconciliationDependencies();
 	} catch {
-		return {
-			state: sanitizeLoadedAppState(loadResult.state),
-			reconciliation: {
-				status: "failed",
-				warning:
-					"Provider account binding cleanup failed and was safely deferred.",
+		deps = {
+			resolveLocalWorkspaceId: () => {
+				throw new Error("Workspace identity unavailable");
+			},
+			getCanonicalForLocalWorkspaceId: () => {
+				throw new Error("Workspace identity unavailable");
+			},
+			getRemoteWorkspaceIds: () => {
+				throw new Error("Workspace identity unavailable");
+			},
+			reconcileBindings: () => {
+				throw new Error("Binding metadata unavailable");
 			},
 		};
 	}
-
-	const state = sanitizeLoadedAppState(loadResult.state, classification);
-	try {
-		return {
-			state,
-			reconciliation: {
-				status: "completed",
-				result: reconcileClassifiedAppStateBindings(
-					state,
-					classification,
-					deps,
-				),
-			},
-		};
-	} catch {
-		return {
-			state,
-			reconciliation: {
-				status: "failed",
-				warning:
-					"Provider account binding cleanup failed and was safely deferred.",
-			},
-		};
-	}
+	const prepared = prepareAppStateForStartup({
+		state: loadResult.state,
+		trust: loadResult.trust,
+		localDeviceId,
+		dependencies: deps,
+	});
+	return {
+		state: prepared.state,
+		reconciliation: prepared.outcome,
+		startupPeerPaneIds: prepared.startupPeerPaneIds,
+		startupPeerClaudeSessionHandoffs: prepared.startupPeerClaudeSessionHandoffs,
+	};
 }
 
 export async function reconcileLoadedAppStateBindings(
 	loadResult: AppStateLoadResult,
 	dependencies?: AppStateBindingReconciliationDependencies,
 ): Promise<AppStateBindingReconciliationOutcome> {
-	return (await prepareLoadedAppStateBindings(loadResult, dependencies))
-		.reconciliation;
+	return (
+		await prepareLoadedAppStateBindings(
+			loadResult,
+			_deviceId ?? loadResult.state.sync.deviceId,
+			dependencies,
+		)
+	).reconciliation;
 }
 
 async function initialize(
@@ -548,11 +412,37 @@ async function initialize(
 						status: "deferred" as const,
 						warning: "Disabled by test seam.",
 					},
+					startupPeerPaneIds: [],
+					startupPeerClaudeSessionHandoffs: [],
 				}
 			: await prepareLoadedAppStateBindings(
 					result,
+					deviceId,
 					options.reconciliation || undefined,
 				);
+	const startupWarnings: string[] = [];
+	const persistStartupPeerHandoff =
+		options.persistStartupPeerHandoff ??
+		(async (handoff: PeerClaudeSessionHandoff) => {
+			const { writeClaudeSessionIdToHistory } = await import(
+				"../terminal-history"
+			);
+			await writeClaudeSessionIdToHistory(
+				handoff.workspaceId,
+				handoff.paneId,
+				handoff.claudeSessionId,
+			);
+		});
+	for (const handoff of prepared.startupPeerClaudeSessionHandoffs) {
+		try {
+			await persistStartupPeerHandoff(handoff);
+		} catch {
+			const warning = "A peer Claude session could not be staged for startup.";
+			if (!startupWarnings.includes(warning)) startupWarnings.push(warning);
+			console.warn(`[app-state] ${warning}`);
+		}
+	}
+	_startupPeerPaneIds = new Set(prepared.startupPeerPaneIds);
 	const preparedResult = { ...result, state: prepared.state };
 	const writeCommittedState = async (state: AppState): Promise<void> => {
 		if (!writesEnabled) {
@@ -569,6 +459,7 @@ async function initialize(
 	_loadResult = {
 		...preparedResult,
 		reconciliation: prepared.reconciliation,
+		...(startupWarnings.length > 0 ? { startupWarnings } : {}),
 	};
 	console.log(
 		`App state initialized (source=${result.source}, trust=${result.trust}, deviceId=${deviceId.slice(0, 8)}...).`,
@@ -602,6 +493,23 @@ export function getAppStateSnapshot(): AppState {
 	return _coordinator.getSnapshot();
 }
 
+export function getAppStateRevision(): number {
+	if (!_coordinator) {
+		throw new Error("App state not initialized. Call initAppState() first.");
+	}
+	return _coordinator.getRevision();
+}
+
+/**
+ * Drains one-time peer-origin markers for renderer hydration. The markers are
+ * deliberately kept outside persisted app state so they cannot echo to peers.
+ */
+export function takeStartupPeerPaneIds(): string[] {
+	const paneIds = [..._startupPeerPaneIds].sort();
+	_startupPeerPaneIds.clear();
+	return paneIds;
+}
+
 export async function enqueueAppStateMutation<T>(
 	label: string,
 	mutate: AppStateMutator<T>,
@@ -612,12 +520,24 @@ export async function enqueueAppStateMutation<T>(
 	return _coordinator.enqueue(label, mutate);
 }
 
+export async function enqueueAppStateMutationAtRevision<T>(
+	label: string,
+	expectedRevision: number,
+	mutate: AppStateMutator<T>,
+): Promise<AppStateConditionalMutationCommit<T>> {
+	if (!_coordinator) {
+		throw new Error("App state not initialized. Call initAppState() first.");
+	}
+	return _coordinator.enqueueAtRevision(label, expectedRevision, mutate);
+}
+
 /** @internal Test seam. */
 export function resetAppStateForTests(): void {
 	_coordinator = null;
 	_deviceId = null;
 	_loadResult = null;
 	_initializing = null;
+	_startupPeerPaneIds.clear();
 }
 
 export const appState = new Proxy({} as AppStateDB, {

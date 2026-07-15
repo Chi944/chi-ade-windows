@@ -735,6 +735,14 @@ export class ServiceTerminalManager extends EventEmitter {
 		const historyReader = new HistoryReader(workspaceId, paneId);
 		const metadata = await historyReader.readMetadata();
 		const wasUncleanShutdown = !!metadata && !metadata.endedAt;
+		const metadataRuntime =
+			metadata?.agentRuntime ??
+			(metadata?.claudeSessionId ? "claude" : undefined);
+		const agentRuntime = runtime ?? metadataRuntime;
+		const storedSessionId =
+			metadataRuntime !== undefined && metadataRuntime === agentRuntime
+				? (metadata?.agentSessionId ?? metadata?.claudeSessionId)
+				: undefined;
 
 		if (!wasUncleanShutdown) {
 			return null;
@@ -742,6 +750,9 @@ export class ServiceTerminalManager extends EventEmitter {
 
 		const rawScrollback = await historyReader.readScrollback();
 		if (rawScrollback === null) {
+			// Peer sync handoffs intentionally contain only resumable session metadata.
+			// Leave those intact for the normal create path to expose resumeAvailable.
+			if (isValidAgentSessionId(agentRuntime, storedSessionId)) return null;
 			await historyReader.cleanup();
 			return null;
 		}
@@ -753,14 +764,6 @@ export class ServiceTerminalManager extends EventEmitter {
 				: rawScrollback;
 		const scrollbackBytes = Buffer.byteLength(scrollback, "utf8");
 
-		const metadataRuntime =
-			metadata.agentRuntime ??
-			(metadata.claudeSessionId ? "claude" : undefined);
-		const agentRuntime = runtime ?? metadataRuntime;
-		const storedSessionId =
-			metadataRuntime !== undefined && metadataRuntime === agentRuntime
-				? (metadata.agentSessionId ?? metadata.claudeSessionId)
-				: undefined;
 		const agentSessionId =
 			storedSessionId ??
 			(agentRuntime

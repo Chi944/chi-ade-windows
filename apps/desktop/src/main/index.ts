@@ -333,7 +333,7 @@ if (!gotTheLock) {
 		// so log entry/exit to make a boot hang localizable from the log alone.
 		console.log("[main] boot: initAppState…");
 		await initAppState();
-		startAppStateWatcher();
+		await startAppStateWatcher();
 
 		console.log("[main] boot: loadWebviewBrowserExtension…");
 		await loadWebviewBrowserExtension();

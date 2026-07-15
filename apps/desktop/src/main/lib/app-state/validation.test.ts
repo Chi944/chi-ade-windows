@@ -135,7 +135,7 @@ function createValidState(): AppState {
 			},
 			workspaceMetadata: {
 				"canonical-workspace": {
-					mainRepoPath: "C:\\repo",
+					repository: "github.com/Chi944/chi-ade-windows",
 					branch: "main",
 					type: "worktree",
 				},
@@ -144,6 +144,7 @@ function createValidState(): AppState {
 				"workspace-1": "canonical-workspace",
 			},
 			paneClaudeSessions: { "terminal-pane": "session-1" },
+			workspaceTombstones: {},
 		},
 	};
 }
@@ -196,8 +197,30 @@ describe("app-state runtime validation", () => {
 				workspaceMetadata: {},
 				localToCanonical: {},
 				paneClaudeSessions: {},
+				workspaceTombstones: {},
 			},
 		});
+	});
+
+	test("drops legacy path metadata instead of carrying raw paths forward", () => {
+		const input = createValidState() as unknown as {
+			tabsState: AppState["tabsState"];
+			sync: Omit<AppState["sync"], "workspaceMetadata"> & {
+				workspaceMetadata: Record<string, unknown>;
+			};
+		};
+		input.sync.workspaceMetadata = {
+			legacy: {
+				mainRepoPath: String.raw`C:\Users\Alice\credential-bearing-repo`,
+				branch: "main",
+				type: "branch",
+			},
+		};
+
+		const result = normalize(input);
+
+		expect(result.sync.workspaceMetadata).toEqual({});
+		expect(JSON.stringify(result.sync)).not.toContain("Alice");
 	});
 
 	test.each([

@@ -28,17 +28,28 @@ const enqueueAppStateMutation = mock(
 		return { label, revision, result, state: structuredClone(currentState) };
 	},
 );
-const getCanonicalForLocalWorkspaceId = mock(() => ({
-	canonical: "path-derived-canonical",
-	meta: { mainRepoPath: "C:\\secret", branch: "main", type: "worktree" },
+const getCanonicalForLocalWorkspaceId = mock((workspaceId: string) => ({
+	canonical: `canonical-${workspaceId}`,
+	meta: {
+		repository: `example.com/acme/${workspaceId}`,
+		branch: "main",
+		type: "worktree" as const,
+	},
 }));
 const readMetadata = mock(async () => ({ claudeSessionId: "session-1" }));
+let startupPeerPaneIds: string[] = [];
+const takeStartupPeerPaneIds = mock(() => {
+	const paneIds = startupPeerPaneIds;
+	startupPeerPaneIds = [];
+	return paneIds;
+});
 
 mock.module("main/lib/app-state", () => ({
 	appState,
 	enqueueAppStateMutation,
 	getAppStateSnapshot: () => structuredClone(currentState),
 	getDeviceId: () => "local-device",
+	takeStartupPeerPaneIds,
 }));
 mock.module("main/lib/local-db", () => ({
 	localDb: {
@@ -68,7 +79,7 @@ const { createUiStateRouter } = await import(".");
 beforeEach(() => {
 	currentState = createDefaultAppState("local-device");
 	currentState.sync.workspaceMetadata.legacy = {
-		mainRepoPath: "C:\\legacy",
+		repository: "example.com/acme/legacy",
 		branch: "main",
 		type: "worktree",
 	};
@@ -79,9 +90,26 @@ beforeEach(() => {
 	enqueueAppStateMutation.mockClear();
 	getCanonicalForLocalWorkspaceId.mockClear();
 	readMetadata.mockClear();
+	startupPeerPaneIds = [];
+	takeStartupPeerPaneIds.mockClear();
 });
 
 describe("UI-state mutation coordination", () => {
+	test("serves one-time startup peer markers with a cloned tabs bootstrap", async () => {
+		startupPeerPaneIds = ["peer-pane"];
+		const caller = createUiStateRouter().createCaller({});
+
+		const first = await caller.tabs.bootstrap();
+		const second = await caller.tabs.bootstrap();
+
+		expect(first).toEqual({
+			state: currentState.tabsState,
+			startupPeerPaneIds: ["peer-pane"],
+		});
+		expect(second.startupPeerPaneIds).toEqual([]);
+		expect(first.state).not.toBe(currentState.tabsState);
+	});
+
 	test("routes tabs through one queued state-and-sync commit", async () => {
 		const caller = createUiStateRouter().createCaller({});
 
@@ -126,12 +154,26 @@ describe("UI-state mutation coordination", () => {
 		});
 		expect(currentState.sync.workspaceMetadata).toEqual({
 			legacy: {
-				mainRepoPath: "C:\\legacy",
+				repository: "example.com/acme/legacy",
+				branch: "main",
+				type: "worktree",
+			},
+			"canonical-workspace-1": {
+				repository: "example.com/acme/workspace-1",
 				branch: "main",
 				type: "worktree",
 			},
 		});
-		expect(getCanonicalForLocalWorkspaceId).not.toHaveBeenCalled();
+		expect(currentState.sync.localToCanonical).toEqual({
+			"workspace-1": "canonical-workspace-1",
+		});
+		expect(currentState.sync.perWorkspaceWrittenAt).toEqual({
+			"canonical-workspace-1": {
+				deviceId: "local-device",
+				at: currentState.sync.lastWrittenAt,
+			},
+		});
+		expect(getCanonicalForLocalWorkspaceId).toHaveBeenCalledWith("workspace-1");
 	});
 
 	test("routes theme and hotkeys through the same coordinator", async () => {

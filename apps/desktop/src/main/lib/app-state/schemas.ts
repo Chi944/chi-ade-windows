@@ -334,13 +334,27 @@ const workspaceClockSchema = z.strictObject({
 	at: finiteTimestampSchema,
 });
 
-const workspaceMetadataSchema = z.strictObject({
-	// Task 3 migrates this legacy path-based identity to a normalized origin.
-	// Task 2 validates but continues to accept the existing path contract.
+export const workspaceMetadataSchema = z.strictObject({
+	repository: requiredStringSchema,
+	branch: requiredStringSchema,
+	type: z.enum(["worktree", "branch"]),
+});
+
+const legacyPathWorkspaceMetadataSchema = z.strictObject({
 	mainRepoPath: requiredStringSchema,
 	branch: requiredStringSchema,
 	type: z.enum(["worktree", "branch"]),
 });
+
+const legacyWorkspaceMetadataRecordSchema = boundedRecord(
+	z.union([workspaceMetadataSchema, legacyPathWorkspaceMetadataSchema]),
+).transform((record) =>
+	Object.fromEntries(
+		Object.entries(record).flatMap(([canonical, metadata]) =>
+			"repository" in metadata ? [[canonical, metadata] as const] : [],
+		),
+	),
+);
 
 export const syncEnvelopeSchema = z.strictObject({
 	deviceId: requiredStringSchema,
@@ -349,15 +363,17 @@ export const syncEnvelopeSchema = z.strictObject({
 	workspaceMetadata: boundedRecord(workspaceMetadataSchema),
 	localToCanonical: boundedRecord(requiredStringSchema),
 	paneClaudeSessions: boundedRecord(requiredStringSchema),
+	workspaceTombstones: boundedRecord(workspaceClockSchema),
 });
 
 export const legacySyncEnvelopeSchema = z.strictObject({
 	deviceId: requiredStringSchema.optional(),
 	lastWrittenAt: finiteTimestampSchema.optional(),
 	perWorkspaceWrittenAt: boundedRecord(workspaceClockSchema).optional(),
-	workspaceMetadata: boundedRecord(workspaceMetadataSchema).optional(),
+	workspaceMetadata: legacyWorkspaceMetadataRecordSchema.optional(),
 	localToCanonical: boundedRecord(requiredStringSchema).optional(),
 	paneClaudeSessions: boundedRecord(requiredStringSchema).optional(),
+	workspaceTombstones: boundedRecord(workspaceClockSchema).optional(),
 });
 
 export interface ThemeState {
@@ -371,10 +387,11 @@ export interface AppStateSyncEnvelope {
 	perWorkspaceWrittenAt: Record<string, { deviceId: string; at: number }>;
 	workspaceMetadata: Record<
 		string,
-		{ mainRepoPath: string; branch: string; type: "worktree" | "branch" }
+		{ repository: string; branch: string; type: "worktree" | "branch" }
 	>;
 	localToCanonical: Record<string, string>;
 	paneClaudeSessions: Record<string, string>;
+	workspaceTombstones: Record<string, { deviceId: string; at: number }>;
 }
 
 export interface AppState {
@@ -405,6 +422,7 @@ export function createDefaultAppState(deviceId = ""): AppState {
 			workspaceMetadata: {},
 			localToCanonical: {},
 			paneClaudeSessions: {},
+			workspaceTombstones: {},
 		},
 	};
 }
