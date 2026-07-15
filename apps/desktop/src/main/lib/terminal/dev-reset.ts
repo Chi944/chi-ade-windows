@@ -1,8 +1,8 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { SUPERSET_HOME_DIR } from "main/lib/app-environment";
-import { appState } from "main/lib/app-state";
-import { defaultAppState } from "main/lib/app-state/schemas";
+import { enqueueAppStateMutation, getDeviceId } from "main/lib/app-state";
+import { createDefaultAppState } from "main/lib/app-state/schemas";
 import {
 	disposeTerminalHostClient,
 	getTerminalHostClient,
@@ -45,9 +45,15 @@ export async function resetTerminalStateDev(): Promise<void> {
 	}
 
 	// Clear tabs/panes so we don't immediately try to restore a large terminal set.
-	appState.data.tabsState = defaultAppState.tabsState;
 	try {
-		await appState.write();
+		await enqueueAppStateMutation(
+			"recovery.dev-reset-terminal-state",
+			(draft) => {
+				draft.tabsState = createDefaultAppState().tabsState;
+				draft.sync.deviceId = getDeviceId();
+				draft.sync.lastWrittenAt = Date.now();
+			},
+		);
 	} catch (error) {
 		console.warn(
 			"[dev/reset-terminal-state] Failed to persist app state reset:",

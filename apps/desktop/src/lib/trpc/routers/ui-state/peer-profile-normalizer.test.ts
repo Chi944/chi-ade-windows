@@ -12,12 +12,30 @@ function createTabsState(): TabsState {
 				name: "Local",
 				workspaceId: "local-workspace",
 				createdAt: 1,
+				layout: {
+					direction: "row",
+					first: "named-pane",
+					second: {
+						direction: "row",
+						first: "system-pane",
+						second: {
+							direction: "row",
+							first: "default-claude-pane",
+							second: {
+								direction: "row",
+								first: "default-codex-pane",
+								second: "shell-pane",
+							},
+						},
+					},
+				},
 			},
 			{
 				id: "remote-tab",
 				name: "Remote",
 				workspaceId: "remote-workspace",
 				createdAt: 2,
+				layout: "remote-pane",
 			},
 		],
 		panes: {

@@ -20,6 +20,7 @@ import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-
 import { APP_STATE_PATH } from "../app-environment";
 import { getDeviceId } from ".";
 import type { AppState } from "./schemas";
+import { parseAppStateJson } from "./validation";
 
 const DEBOUNCE_MS = 250;
 const STABILITY_MS = 500;
@@ -45,6 +46,13 @@ export const appStateWatcher = new AppStateWatcher();
 
 let _started = false;
 let _debounceTimer: NodeJS.Timeout | null = null;
+
+export function parsePeerAppStateJson(
+	raw: string,
+	localDeviceId: string,
+): AppState {
+	return parseAppStateJson(raw, { deviceId: localDeviceId });
+}
 
 async function waitForStability(): Promise<boolean> {
 	let lastSize = -1;
@@ -87,14 +95,6 @@ async function handleChange(): Promise<void> {
 		return;
 	}
 
-	let parsed: AppState;
-	try {
-		parsed = JSON.parse(raw) as AppState;
-	} catch (err) {
-		console.warn("[app-state-watcher] Failed to parse app-state.json:", err);
-		return;
-	}
-
 	const localDeviceId = (() => {
 		try {
 			return getDeviceId();
@@ -102,6 +102,17 @@ async function handleChange(): Promise<void> {
 			return null;
 		}
 	})();
+	if (!localDeviceId) return;
+
+	let parsed: AppState;
+	try {
+		parsed = parsePeerAppStateJson(raw, localDeviceId);
+	} catch {
+		console.warn(
+			"[app-state-watcher] Ignored an invalid peer app-state snapshot.",
+		);
+		return;
+	}
 
 	const writerDeviceId = parsed.sync?.deviceId ?? null;
 	// Only react to peer writes — ignore our own.

@@ -1,23 +1,25 @@
 import type { AgentRuntime } from "@superset/local-db";
 import type { BaseTabsState, Pane } from "shared/tabs-types";
 
-interface SanitizeSubscriptionProfilesForPersistenceInput {
-	state: TabsState;
+interface SanitizeSubscriptionProfilesForPersistenceInput<
+	T extends BaseTabsState,
+> {
+	state: T;
 	remoteWorkspaceIds?: ReadonlySet<string>;
 	localWorkspaceIds?: ReadonlySet<string>;
 }
 
-type TabsState = BaseTabsState;
-
-export function sanitizeSubscriptionProfilesForPersistence({
+export function sanitizeSubscriptionProfilesForPersistence<
+	T extends BaseTabsState,
+>({
 	state,
 	remoteWorkspaceIds,
 	localWorkspaceIds,
-}: SanitizeSubscriptionProfilesForPersistenceInput): TabsState {
+}: SanitizeSubscriptionProfilesForPersistenceInput<T>): T {
 	const workspaceIdsByTabId = new Map(
 		state.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
 	);
-	let nextPanes: TabsState["panes"] | undefined;
+	let nextPanes: BaseTabsState["panes"] | undefined;
 
 	for (const [paneId, pane] of Object.entries(state.panes)) {
 		const workspaceId = workspaceIdsByTabId.get(pane.tabId);
@@ -67,7 +69,7 @@ export function sanitizeSubscriptionProfilesForPersistence({
 		};
 	}
 
-	return nextPanes ? { ...state, panes: nextPanes } : state;
+	return nextPanes ? ({ ...state, panes: nextPanes } as T) : state;
 }
 
 interface LocalSubscriptionBinding {
