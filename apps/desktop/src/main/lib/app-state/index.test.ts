@@ -276,6 +276,125 @@ describe("validated app-state initialization", () => {
 		expect(stored.sync.lastWrittenAt).toBe(0);
 		expect(stored.themeState.activeThemeId).toBe("system");
 	});
+
+	test("classifies trusted writer workspaces before a theme mutation persists provider markers", async () => {
+		const home = await createTemporaryHome();
+		const profileId = "11111111-1111-4111-8111-111111111111";
+		const state = createDefaultAppState("peer-device");
+		state.tabsState = {
+			tabs: [
+				{
+					id: "local-tab",
+					name: "Local",
+					workspaceId: "writer-local-workspace",
+					createdAt: 1,
+					layout: "local-pane",
+				},
+				{
+					id: "remote-tab",
+					name: "Remote",
+					workspaceId: "writer-remote-workspace",
+					createdAt: 2,
+					layout: "remote-pane",
+				},
+				{
+					id: "unresolved-pinned-tab",
+					name: "Unresolved pinned",
+					workspaceId: "writer-unresolved-pinned",
+					createdAt: 3,
+					layout: "unresolved-pinned-pane",
+				},
+				{
+					id: "unresolved-unpinned-tab",
+					name: "Unresolved unpinned",
+					workspaceId: "writer-unresolved-unpinned",
+					createdAt: 4,
+					layout: "unresolved-unpinned-pane",
+				},
+			],
+			panes: {
+				"local-pane": {
+					id: "local-pane",
+					tabId: "local-tab",
+					type: "terminal",
+					name: "Local Claude",
+					agentRuntime: "claude",
+				},
+				"remote-pane": {
+					id: "remote-pane",
+					tabId: "remote-tab",
+					type: "terminal",
+					name: "Remote Codex",
+					agentRuntime: "codex",
+					subscriptionProfileId: profileId,
+					subscriptionProfilePinned: true,
+				},
+				"unresolved-pinned-pane": {
+					id: "unresolved-pinned-pane",
+					tabId: "unresolved-pinned-tab",
+					type: "terminal",
+					name: "Unresolved pinned Claude",
+					agentRuntime: "claude",
+					subscriptionProfileId: profileId,
+					subscriptionProfilePinned: true,
+				},
+				"unresolved-unpinned-pane": {
+					id: "unresolved-unpinned-pane",
+					tabId: "unresolved-unpinned-tab",
+					type: "terminal",
+					name: "Unresolved unpinned Codex",
+					agentRuntime: "codex",
+					subscriptionProfileId: profileId,
+				},
+			},
+			activeTabIds: {},
+			focusedPaneIds: {},
+			tabHistoryStacks: {},
+		};
+		state.sync.localToCanonical = {
+			"writer-local-workspace": "canonical-local",
+			"writer-remote-workspace": "canonical-remote",
+			"writer-unresolved-pinned": "canonical-unresolved",
+		};
+		await writeExistingState(home, state);
+
+		await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "local-device",
+			reconciliation: {
+				resolveLocalWorkspaceId: (canonical) => {
+					if (canonical === "canonical-local") return "local-workspace";
+					if (canonical === "canonical-remote") return "remote-workspace";
+					return null;
+				},
+				getCanonicalForLocalWorkspaceId: () => null,
+				getRemoteWorkspaceIds: () => new Set(["remote-workspace"]),
+				reconcileBindings: () => ({ removedBindings: 0 }),
+			},
+		});
+		await enqueueAppStateMutation("test.theme", (draft) => {
+			draft.themeState.activeThemeId = "system";
+		});
+
+		const stored = JSON.parse(
+			await readFile(join(home, "app-state.json"), "utf8"),
+		) as AppState;
+		expect(stored.tabsState.panes["local-pane"].subscriptionProfilePinned).toBe(
+			true,
+		);
+		expect(
+			stored.tabsState.panes["remote-pane"].subscriptionProfilePinned,
+		).toBeUndefined();
+		expect(
+			stored.tabsState.panes["unresolved-pinned-pane"]
+				.subscriptionProfilePinned,
+		).toBe(true);
+		expect(
+			stored.tabsState.panes["unresolved-unpinned-pane"]
+				.subscriptionProfilePinned,
+		).toBeUndefined();
+		expect(JSON.stringify(stored)).not.toContain(profileId);
+	});
 });
 
 describe("subscription binding reconciliation gate", () => {

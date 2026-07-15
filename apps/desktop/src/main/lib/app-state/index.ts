@@ -256,14 +256,8 @@ async function loadAppState(
 	}
 
 	if (state) {
-		const sanitizedState: AppState = {
-			...state,
-			tabsState: sanitizeSubscriptionProfilesForPersistence({
-				state: state.tabsState,
-			}),
-		};
 		return {
-			result: { source: "loaded", trust: "trusted", state: sanitizedState },
+			result: { source: "loaded", trust: "trusted", state },
 			writesEnabled: true,
 		};
 	}
@@ -331,93 +325,193 @@ async function defaultReconciliationDependencies(): Promise<AppStateBindingRecon
 	};
 }
 
+interface AppStateWorkspaceClassification {
+	localWriterWorkspaceIds: ReadonlySet<string>;
+	remoteWriterWorkspaceIds: ReadonlySet<string>;
+	localizedWorkspaceIds: ReadonlyMap<string, string>;
+	unresolvedWorkspaceIds: ReadonlySet<string>;
+}
+
+interface PreparedLoadedAppState {
+	state: AppState;
+	reconciliation: AppStateBindingReconciliationOutcome;
+}
+
+function sanitizeLoadedAppState(
+	state: AppState,
+	classification?: Pick<
+		AppStateWorkspaceClassification,
+		"localWriterWorkspaceIds" | "remoteWriterWorkspaceIds"
+	>,
+): AppState {
+	return {
+		...state,
+		tabsState: sanitizeSubscriptionProfilesForPersistence({
+			state: state.tabsState,
+			localWorkspaceIds:
+				classification?.localWriterWorkspaceIds ?? new Set<string>(),
+			remoteWorkspaceIds:
+				classification?.remoteWriterWorkspaceIds ?? new Set<string>(),
+		}),
+	};
+}
+
+function classifyWriterWorkspaces(
+	state: AppState,
+	deps: AppStateBindingReconciliationDependencies,
+): AppStateWorkspaceClassification {
+	const knownRemoteWorkspaceIds = deps.getRemoteWorkspaceIds();
+	const localWriterWorkspaceIds = new Set<string>();
+	const remoteWriterWorkspaceIds = new Set<string>();
+	const localizedWorkspaceIds = new Map<string, string>();
+	const unresolvedWorkspaceIds = new Set<string>();
+
+	for (const tab of state.tabsState.tabs) {
+		const writerWorkspaceId = tab.workspaceId;
+		if (
+			localizedWorkspaceIds.has(writerWorkspaceId) ||
+			unresolvedWorkspaceIds.has(writerWorkspaceId)
+		) {
+			continue;
+		}
+		if (knownRemoteWorkspaceIds.has(writerWorkspaceId)) {
+			remoteWriterWorkspaceIds.add(writerWorkspaceId);
+			localizedWorkspaceIds.set(writerWorkspaceId, writerWorkspaceId);
+			continue;
+		}
+
+		const canonical = state.sync.localToCanonical[writerWorkspaceId];
+		if (canonical) {
+			const localWorkspaceId = deps.resolveLocalWorkspaceId(
+				canonical,
+				state.sync.workspaceMetadata[canonical],
+				{ autoCreate: false },
+			);
+			if (localWorkspaceId) {
+				localizedWorkspaceIds.set(writerWorkspaceId, localWorkspaceId);
+				if (knownRemoteWorkspaceIds.has(localWorkspaceId)) {
+					remoteWriterWorkspaceIds.add(writerWorkspaceId);
+				} else {
+					localWriterWorkspaceIds.add(writerWorkspaceId);
+				}
+			} else {
+				unresolvedWorkspaceIds.add(writerWorkspaceId);
+			}
+			continue;
+		}
+
+		if (deps.getCanonicalForLocalWorkspaceId(writerWorkspaceId)) {
+			localWriterWorkspaceIds.add(writerWorkspaceId);
+			localizedWorkspaceIds.set(writerWorkspaceId, writerWorkspaceId);
+		} else {
+			unresolvedWorkspaceIds.add(writerWorkspaceId);
+		}
+	}
+
+	return {
+		localWriterWorkspaceIds,
+		remoteWriterWorkspaceIds,
+		localizedWorkspaceIds,
+		unresolvedWorkspaceIds,
+	};
+}
+
+function reconcileClassifiedAppStateBindings(
+	state: AppState,
+	classification: AppStateWorkspaceClassification,
+	deps: AppStateBindingReconciliationDependencies,
+): unknown {
+	const workspaceIdByTabId = new Map(
+		state.tabsState.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
+	);
+	const durablePanes = Object.values(state.tabsState.panes).map((pane) => {
+		const writerWorkspaceId = workspaceIdByTabId.get(pane.tabId);
+		const workspaceId = writerWorkspaceId
+			? (classification.localizedWorkspaceIds.get(writerWorkspaceId) ??
+				writerWorkspaceId)
+			: undefined;
+		const isRemote = Boolean(
+			writerWorkspaceId &&
+				classification.remoteWriterWorkspaceIds.has(writerWorkspaceId),
+		);
+		const provider =
+			!isRemote &&
+			pane.type === "terminal" &&
+			(pane.agentRuntime === "claude" || pane.agentRuntime === "codex")
+				? pane.agentRuntime
+				: null;
+		return { paneId: pane.id, provider, workspaceId };
+	});
+
+	return deps.reconcileBindings({
+		stateTrust: "trusted",
+		durablePanes,
+		unresolvedWorkspaceIds: classification.unresolvedWorkspaceIds,
+	});
+}
+
+async function prepareLoadedAppStateBindings(
+	loadResult: AppStateLoadResult,
+	dependencies?: AppStateBindingReconciliationDependencies,
+): Promise<PreparedLoadedAppState> {
+	if (loadResult.trust !== "trusted") {
+		return {
+			state: loadResult.state,
+			reconciliation: {
+				status: "deferred",
+				warning:
+					"Provider account binding cleanup was deferred because app state is not trusted.",
+			},
+		};
+	}
+
+	let deps: AppStateBindingReconciliationDependencies;
+	let classification: AppStateWorkspaceClassification;
+	try {
+		deps = dependencies ?? (await defaultReconciliationDependencies());
+		classification = classifyWriterWorkspaces(loadResult.state, deps);
+	} catch {
+		return {
+			state: sanitizeLoadedAppState(loadResult.state),
+			reconciliation: {
+				status: "failed",
+				warning:
+					"Provider account binding cleanup failed and was safely deferred.",
+			},
+		};
+	}
+
+	const state = sanitizeLoadedAppState(loadResult.state, classification);
+	try {
+		return {
+			state,
+			reconciliation: {
+				status: "completed",
+				result: reconcileClassifiedAppStateBindings(
+					state,
+					classification,
+					deps,
+				),
+			},
+		};
+	} catch {
+		return {
+			state,
+			reconciliation: {
+				status: "failed",
+				warning:
+					"Provider account binding cleanup failed and was safely deferred.",
+			},
+		};
+	}
+}
+
 export async function reconcileLoadedAppStateBindings(
 	loadResult: AppStateLoadResult,
 	dependencies?: AppStateBindingReconciliationDependencies,
 ): Promise<AppStateBindingReconciliationOutcome> {
-	if (loadResult.trust !== "trusted") {
-		return {
-			status: "deferred",
-			warning:
-				"Provider account binding cleanup was deferred because app state is not trusted.",
-		};
-	}
-
-	try {
-		const deps = dependencies ?? (await defaultReconciliationDependencies());
-		const state = loadResult.state;
-		const remoteWorkspaceIds = deps.getRemoteWorkspaceIds();
-		const localizedWorkspaceIds = new Map<string, string>();
-		const unresolvedWorkspaceIds = new Set<string>();
-
-		for (const tab of state.tabsState.tabs) {
-			const workspaceId = tab.workspaceId;
-			if (
-				localizedWorkspaceIds.has(workspaceId) ||
-				unresolvedWorkspaceIds.has(workspaceId)
-			) {
-				continue;
-			}
-			if (remoteWorkspaceIds.has(workspaceId)) {
-				localizedWorkspaceIds.set(workspaceId, workspaceId);
-				continue;
-			}
-
-			const canonical = state.sync.localToCanonical[workspaceId];
-			if (canonical) {
-				const localWorkspaceId = deps.resolveLocalWorkspaceId(
-					canonical,
-					state.sync.workspaceMetadata[canonical],
-					{ autoCreate: false },
-				);
-				if (localWorkspaceId) {
-					localizedWorkspaceIds.set(workspaceId, localWorkspaceId);
-				} else {
-					unresolvedWorkspaceIds.add(workspaceId);
-				}
-				continue;
-			}
-
-			if (deps.getCanonicalForLocalWorkspaceId(workspaceId)) {
-				localizedWorkspaceIds.set(workspaceId, workspaceId);
-			} else {
-				unresolvedWorkspaceIds.add(workspaceId);
-			}
-		}
-
-		const workspaceIdByTabId = new Map(
-			state.tabsState.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
-		);
-		const durablePanes = Object.values(state.tabsState.panes).map((pane) => {
-			const writerWorkspaceId = workspaceIdByTabId.get(pane.tabId);
-			const workspaceId = writerWorkspaceId
-				? (localizedWorkspaceIds.get(writerWorkspaceId) ?? writerWorkspaceId)
-				: undefined;
-			const isRemote = Boolean(
-				workspaceId && remoteWorkspaceIds.has(workspaceId),
-			);
-			const provider =
-				!isRemote &&
-				pane.type === "terminal" &&
-				(pane.agentRuntime === "claude" || pane.agentRuntime === "codex")
-					? pane.agentRuntime
-					: null;
-			return { paneId: pane.id, provider, workspaceId };
-		});
-
-		const result = deps.reconcileBindings({
-			stateTrust: "trusted",
-			durablePanes,
-			unresolvedWorkspaceIds,
-		});
-		return { status: "completed", result };
-	} catch {
-		return {
-			status: "failed",
-			warning:
-				"Provider account binding cleanup failed and was safely deferred.",
-		};
-	}
+	return (await prepareLoadedAppStateBindings(loadResult, dependencies))
+		.reconciliation;
 }
 
 async function initialize(
@@ -443,6 +537,23 @@ async function initialize(
 		deviceId,
 	);
 
+	const prepared =
+		options.reconciliation === false
+			? {
+					state:
+						result.trust === "trusted"
+							? sanitizeLoadedAppState(result.state)
+							: result.state,
+					reconciliation: {
+						status: "deferred" as const,
+						warning: "Disabled by test seam.",
+					},
+				}
+			: await prepareLoadedAppStateBindings(
+					result,
+					options.reconciliation || undefined,
+				);
+	const preparedResult = { ...result, state: prepared.state };
 	const writeCommittedState = async (state: AppState): Promise<void> => {
 		if (!writesEnabled) {
 			throw new Error(
@@ -451,18 +562,14 @@ async function initialize(
 		}
 		await writeAppStateAtomically(appStatePath, state);
 	};
-	_coordinator = new AppStateMutationCoordinator(result.state, {
+	_coordinator = new AppStateMutationCoordinator(preparedResult.state, {
 		validate: (state) => normalizeAppState(state, { deviceId }),
 		write: writeCommittedState,
 	});
-	const reconciliation =
-		options.reconciliation === false
-			? { status: "deferred" as const, warning: "Disabled by test seam." }
-			: await reconcileLoadedAppStateBindings(
-					result,
-					options.reconciliation || undefined,
-				);
-	_loadResult = { ...result, reconciliation };
+	_loadResult = {
+		...preparedResult,
+		reconciliation: prepared.reconciliation,
+	};
 	console.log(
 		`App state initialized (source=${result.source}, trust=${result.trust}, deviceId=${deviceId.slice(0, 8)}...).`,
 	);

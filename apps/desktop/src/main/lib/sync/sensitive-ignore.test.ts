@@ -45,6 +45,8 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(contents).toContain("*.part");
 		expect(contents).toContain("/terminal-host.*");
 		expect(contents).toContain("/service.log");
+		expect(contents).toContain("/app-state.quarantine.*.json");
+		expect(contents).toContain("/.app-state.json.*.tmp");
 	});
 
 	test("preserves every existing byte while prepending the block", () => {
@@ -107,6 +109,43 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(contents.indexOf("\n/provider-accounts/**\n")).toBeLessThan(
 			contents.indexOf("!/provider-accounts/**"),
 		);
+	});
+
+	test("anchors app-state recovery artifacts while leaving the durable state syncable", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		writeFileSync(
+			IGNORE_PATH,
+			"!/app-state.quarantine.*.json\n!/.app-state.json.*.tmp\n",
+			"utf8",
+		);
+
+		ensureSensitiveSyncIgnore(TEST_ROOT);
+		const contents = readFileSync(IGNORE_PATH, "utf8");
+		const managedContents = contents.slice(
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_END),
+		);
+		const managedPatterns = managedContents
+			.split(/\r?\n/)
+			.filter((line) => line.startsWith("/"));
+		const isManagedIgnored = (path: string) =>
+			managedPatterns.some((pattern) => new Bun.Glob(pattern).match(path));
+
+		expect(contents.indexOf("/app-state.quarantine.*.json")).toBeLessThan(
+			contents.indexOf("!/app-state.quarantine.*.json"),
+		);
+		expect(contents.indexOf("/.app-state.json.*.tmp")).toBeLessThan(
+			contents.indexOf("!/.app-state.json.*.tmp"),
+		);
+		expect(
+			isManagedIgnored("/app-state.quarantine.1700000000000.id.json"),
+		).toBe(true);
+		expect(isManagedIgnored("/.app-state.json.123.id.tmp")).toBe(true);
+		expect(
+			isManagedIgnored("/nested/app-state.quarantine.1700000000000.id.json"),
+		).toBe(false);
+		expect(isManagedIgnored("/nested/.app-state.json.123.id.tmp")).toBe(false);
+		expect(isManagedIgnored("/app-state.json")).toBe(false);
 	});
 
 	test("keeps an LF escape directive and its leading preamble before managed patterns", () => {
