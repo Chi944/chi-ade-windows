@@ -1125,8 +1125,9 @@ export function reconcileSubscriptionProfilePaneBindings({
 			continue;
 		}
 		if (
-			!binding.workspaceId ||
-			unresolvedWorkspaceIds.has(binding.workspaceId)
+			binding.workspaceId
+				? unresolvedWorkspaceIds.has(binding.workspaceId)
+				: unresolvedWorkspaceIds.size > 0
 		) {
 			preservedUnresolvedBindings += 1;
 			continue;

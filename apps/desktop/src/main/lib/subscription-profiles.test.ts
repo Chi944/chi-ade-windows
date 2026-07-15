@@ -1218,6 +1218,63 @@ describe("subscription profile binding reconciliation", () => {
 		);
 	});
 
+	it("removes a proven-stale legacy binding with no workspace identity", () => {
+		const profile = createSubscriptionProfile("claude", "Stale legacy binding");
+		bindSubscriptionProfileToPane(
+			"claude",
+			"stale-legacy-pane",
+			profile.id,
+			"resolved-workspace",
+		);
+		const metadataPath = join(RECONCILE_TEST_ROOT, "profiles.json");
+		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+		delete metadata.bindings["stale-legacy-pane"].workspaceId;
+		writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [],
+			unresolvedWorkspaceIds: new Set(),
+		});
+
+		expect(result).toMatchObject({
+			removedBindings: 1,
+			preservedUnresolvedBindings: 0,
+		});
+		expect(() => removeSubscriptionProfile("claude", profile.id)).not.toThrow();
+	});
+
+	it("preserves a workspace-less legacy binding while any workspace is unresolved", () => {
+		const profile = createSubscriptionProfile(
+			"claude",
+			"Unresolved legacy binding",
+		);
+		bindSubscriptionProfileToPane(
+			"claude",
+			"unresolved-legacy-pane",
+			profile.id,
+			"previous-workspace",
+		);
+		const metadataPath = join(RECONCILE_TEST_ROOT, "profiles.json");
+		const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+		delete metadata.bindings["unresolved-legacy-pane"].workspaceId;
+		writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+
+		const result = reconcileSubscriptionProfilePaneBindings({
+			stateTrust: "trusted",
+			durablePanes: [],
+			unresolvedWorkspaceIds: new Set(["unresolved-workspace"]),
+		});
+
+		expect(result).toMatchObject({
+			removedBindings: 0,
+			preservedUnresolvedBindings: 1,
+		});
+		expect(() => removeSubscriptionProfile("claude", profile.id)).toThrow(
+			"pinned to a saved terminal pane",
+		);
+	});
+
 	it("prunes a profileless pane home with its stale binding", () => {
 		getSubscriptionProfileEnvironmentForPane(
 			"codex",
