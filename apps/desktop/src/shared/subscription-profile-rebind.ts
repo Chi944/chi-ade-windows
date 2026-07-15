@@ -38,9 +38,12 @@ export function sanitizeSubscriptionProfilesForPersistence({
 			pane.subscriptionProfilePinned === true ||
 			hasTransientSelection ||
 			pane.subscriptionProfileNeedsRebind === true;
-		const nextPinned =
-			isRemote || isUnresolved
-				? undefined
+		const nextPinned = isRemote
+			? undefined
+			: isUnresolved
+				? isProviderTerminal && pane.subscriptionProfilePinned === true
+					? true
+					: undefined
 				: isLocal
 					? isProviderTerminal
 						? true

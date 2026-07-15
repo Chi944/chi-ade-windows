@@ -244,7 +244,7 @@ describe("sanitizeSubscriptionProfilesForPersistence", () => {
 		).toBeUndefined();
 	});
 
-	test("does not mark a pane whose peer workspace classification is unresolved", () => {
+	test("preserves an existing marker when peer workspace classification is unresolved", () => {
 		const source = createTabsState();
 		source.panes["default-claude-pane"] = {
 			...source.panes["default-claude-pane"],
@@ -256,10 +256,27 @@ describe("sanitizeSubscriptionProfilesForPersistence", () => {
 			remoteWorkspaceIds: new Set(["known-peer-remote-workspace"]),
 		});
 
-		expect(result.panes["default-claude-pane"]).toMatchObject({
-			subscriptionProfileId: undefined,
-			subscriptionProfilePinned: undefined,
-			subscriptionProfileNeedsRebind: undefined,
+		expect(
+			result.panes["default-claude-pane"].subscriptionProfilePinned,
+		).toBeTrue();
+	});
+
+	test("does not infer a marker when peer workspace classification is unresolved", () => {
+		const source = createTabsState();
+		delete source.panes["named-pane"];
+		delete source.panes["system-pane"];
+		delete source.panes["remote-pane"];
+
+		const result = sanitizeSubscriptionProfilesForPersistence({
+			state: source,
+			remoteWorkspaceIds: new Set(["known-peer-remote-workspace"]),
 		});
+
+		expect(
+			result.panes["default-claude-pane"].subscriptionProfilePinned,
+		).toBeUndefined();
+		expect(
+			result.panes["default-codex-pane"].subscriptionProfilePinned,
+		).toBeUndefined();
 	});
 });

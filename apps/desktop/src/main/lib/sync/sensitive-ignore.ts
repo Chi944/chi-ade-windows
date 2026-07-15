@@ -40,6 +40,7 @@ const MANAGED_BLOCK = Buffer.from(
 );
 const BEGIN_BYTES = Buffer.from(SENSITIVE_SYNC_IGNORE_BEGIN, "utf8");
 const END_BYTES = Buffer.from(SENSITIVE_SYNC_IGNORE_END, "utf8");
+const ESCAPE_DIRECTIVE_PREFIX = Buffer.from("#escape=", "utf8");
 
 export interface SensitiveSyncIgnoreResult {
 	path: string;
@@ -125,10 +126,56 @@ function withManagedBlock(original: Buffer): Buffer {
 }
 
 function prependManagedBlock(outside: Buffer): Buffer {
+	const directiveEnd = findLeadingEscapeDirectiveEnd(outside);
+	if (directiveEnd !== -1) {
+		const prefix = outside.subarray(0, directiveEnd);
+		const suffix = outside.subarray(directiveEnd);
+		const prefixEndsWithNewline =
+			prefix[prefix.length - 1] === 0x0a || prefix[prefix.length - 1] === 0x0d;
+		const suffixBeginsWithNewline = suffix[0] === 0x0a || suffix[0] === 0x0d;
+		return Buffer.concat([
+			prefix,
+			prefixEndsWithNewline ? Buffer.alloc(0) : Buffer.from("\n"),
+			MANAGED_BLOCK,
+			suffixBeginsWithNewline ? Buffer.alloc(0) : Buffer.from("\n"),
+			suffix,
+		]);
+	}
+
 	const beginsWithNewline = outside[0] === 0x0a || outside[0] === 0x0d;
 	return Buffer.concat([
 		MANAGED_BLOCK,
 		beginsWithNewline ? Buffer.alloc(0) : Buffer.from("\n"),
 		outside,
 	]);
+}
+
+function findLeadingEscapeDirectiveEnd(contents: Buffer): number {
+	let lineStart = 0;
+	while (lineStart < contents.length) {
+		const newline = contents.indexOf(0x0a, lineStart);
+		const lineEnd = newline === -1 ? contents.length : newline;
+		const contentEnd =
+			lineEnd > lineStart && contents[lineEnd - 1] === 0x0d
+				? lineEnd - 1
+				: lineEnd;
+		const line = contents.subarray(lineStart, contentEnd);
+		const nextLineStart = newline === -1 ? lineEnd : newline + 1;
+
+		if (
+			line.length === ESCAPE_DIRECTIVE_PREFIX.length + 1 &&
+			line
+				.subarray(0, ESCAPE_DIRECTIVE_PREFIX.length)
+				.equals(ESCAPE_DIRECTIVE_PREFIX)
+		) {
+			return nextLineStart;
+		}
+		if (line.length !== 0 && !line.subarray(0, 2).equals(Buffer.from("//"))) {
+			return -1;
+		}
+
+		lineStart = nextLineStart;
+	}
+
+	return -1;
 }

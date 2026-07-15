@@ -109,6 +109,66 @@ describe("ensureSensitiveSyncIgnore", () => {
 		);
 	});
 
+	test("keeps an LF escape directive and its leading preamble before managed patterns", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		const prefix = Buffer.from(
+			"// keep this leading comment\n\n#escape=\\\n",
+			"utf8",
+		);
+		const suffix = Buffer.from(
+			"!/provider-accounts/**\n/custom/\\{literal\\}\n",
+			"utf8",
+		);
+		writeFileSync(IGNORE_PATH, Buffer.concat([prefix, suffix]));
+
+		ensureSensitiveSyncIgnore(TEST_ROOT);
+		const first = readFileSync(IGNORE_PATH);
+		const contents = first.toString("utf8");
+
+		expect(first.subarray(0, prefix.length).equals(prefix)).toBe(true);
+		expect(first.subarray(first.length - suffix.length).equals(suffix)).toBe(
+			true,
+		);
+		expect(contents.indexOf("#escape=\\")).toBeLessThan(
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
+		);
+		expect(contents.indexOf("\n/provider-accounts/**\n")).toBeLessThan(
+			contents.indexOf("!/provider-accounts/**"),
+		);
+		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(false);
+		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
+	});
+
+	test("keeps a CRLF pipe escape directive before managed and user patterns", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		const prefix = Buffer.from(
+			"\r\n// keep this Windows preamble\r\n#escape=|\r\n",
+			"utf8",
+		);
+		const suffix = Buffer.from(
+			"|{literal|}\r\n!/provider-accounts/**\r\n",
+			"utf8",
+		);
+		writeFileSync(IGNORE_PATH, Buffer.concat([prefix, suffix]));
+
+		ensureSensitiveSyncIgnore(TEST_ROOT);
+		const first = readFileSync(IGNORE_PATH);
+		const contents = first.toString("utf8");
+
+		expect(first.subarray(0, prefix.length).equals(prefix)).toBe(true);
+		expect(first.subarray(first.length - suffix.length).equals(suffix)).toBe(
+			true,
+		);
+		expect(contents.indexOf("#escape=|")).toBeLessThan(
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
+		);
+		expect(contents.indexOf(SENSITIVE_SYNC_IGNORE_END)).toBeLessThan(
+			contents.indexOf("|{literal|}"),
+		);
+		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(false);
+		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
+	});
+
 	test("is byte-for-byte idempotent", () => {
 		mkdirSync(TEST_ROOT, { recursive: true });
 		writeFileSync(IGNORE_PATH, "// user rule\n/custom/**\n", "utf8");
