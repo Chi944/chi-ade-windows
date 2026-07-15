@@ -310,6 +310,47 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
 	});
 
+	test("repairs a legacy managed block placed before a raw escape preamble", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		ensureSensitiveSyncIgnore(TEST_ROOT);
+		const generated = readFileSync(IGNORE_PATH);
+		const managedEnd =
+			generated.indexOf(Buffer.from(SENSITIVE_SYNC_IGNORE_END, "utf8")) +
+			Buffer.byteLength(SENSITIVE_SYNC_IGNORE_END, "utf8");
+		const legacyManagedBlock = generated.subarray(0, managedEnd);
+		const rawPreamble = Buffer.from(
+			"\r\n \t\r\n  // preserve this Windows preamble\r\n\t#escape = 界 \t\r\n  // preserve after directive\r\n",
+			"utf8",
+		);
+		const userPatterns = Buffer.from(
+			"界{literal界}\r\n!/app-state.quarantine.*.json\r\n/custom/**\r\n",
+			"utf8",
+		);
+		writeFileSync(
+			IGNORE_PATH,
+			Buffer.concat([legacyManagedBlock, rawPreamble, userPatterns]),
+		);
+
+		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(true);
+		const repaired = readFileSync(IGNORE_PATH);
+		const contents = repaired.toString("utf8");
+
+		expect(repaired.subarray(0, rawPreamble.length).equals(rawPreamble)).toBe(
+			true,
+		);
+		expect(
+			repaired
+				.subarray(repaired.length - userPatterns.length)
+				.equals(userPatterns),
+		).toBe(true);
+		expect(contents.indexOf("#escape = 界")).toBeLessThan(
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
+		);
+		expectManagedRecoverySemantics(contents);
+		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(false);
+		expect(readFileSync(IGNORE_PATH).equals(repaired)).toBe(true);
+	});
+
 	test("fails closed when the escape rune collides with managed wildcards", () => {
 		mkdirSync(TEST_ROOT, { recursive: true });
 		const original = Buffer.from(

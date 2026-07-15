@@ -6,7 +6,7 @@ Implemented one validated, atomic, FIFO-serialized main-process persistence boun
 
 Tabs, theme, hotkeys, and the development recovery reset now commit through the shared coordinator. Watcher reads and renderer mutations use the same runtime contracts, provider-profile UUIDs are stripped before durable use, and callers receive cloned snapshots instead of references to committed state.
 
-The independent Task 2 reviews found and fixed four additional persistent-state boundary issues: trusted startup now classifies writer workspace IDs before installing the coordinator snapshot; Syncthing excludes bounded quarantine and atomic-write temporary files without excluding durable `app-state.json`; incomplete snapshots cannot become reconciliation-trusted merely by normalizing missing tabs data to defaults; and Syncthing escape directives retain their raw preamble position without disabling managed wildcard semantics.
+The independent Task 2 reviews found and fixed five additional persistent-state boundary issues: trusted startup now classifies writer workspace IDs before installing the coordinator snapshot; Syncthing excludes bounded quarantine and atomic-write temporary files without excluding durable `app-state.json`; incomplete snapshots cannot become reconciliation-trusted merely by normalizing missing tabs data to defaults; Syncthing escape directives retain their raw preamble position without disabling managed wildcard semantics; and files already written with the managed block before a valid escape preamble self-repair on the next launch.
 
 ## Implementation summary
 
@@ -22,7 +22,7 @@ The independent Task 2 reviews found and fixed four additional persistent-state 
 - Wired Task 1 binding reconciliation after trusted validation. Peer-local workspace IDs are translated through the existing sync envelope without auto-creation; remote panes are excluded from local provider binding; unresolved identities and recovered/untrusted state defer destructive cleanup; reconciliation failures do not block startup.
 - Before a trusted snapshot is installed in the coordinator, classify each writer workspace ID as proven local, proven remote, or unresolved through the existing canonical/local and remote-binding contracts. Persistence sanitization then marks local provider panes, clears remote provider markers, preserves only an existing marker for unresolved panes, and strips every device-local profile UUID. If classification fails, startup installs the conservative all-unresolved sanitized form.
 - Added anchored managed Syncthing exclusions for `/app-state.quarantine.*.json` and `/.app-state.json.*.tmp`. They remain ahead of user rules and negations, match only root-level recovery artifacts, and leave `/app-state.json` syncable.
-- Parsed Syncthing's actual trimmed `#escape = X` preamble grammar, including indentation, whitespace around `=`, CRLF, and exactly one Unicode rune, while retaining the original directive and surrounding bytes. Escape runes that collide with the managed block (including `*` or `/`) fail closed before any rewrite; non-colliding runes preserve the managed root anchors and wildcards.
+- Parsed Syncthing's actual trimmed `#escape = X` preamble grammar, including indentation, whitespace around `=`, CRLF, and exactly one Unicode rune, while retaining the original directive and surrounding bytes. Escape runes that collide with the managed block (including `*` or `/`) fail closed before any rewrite; non-colliding runes preserve the managed root anchors and wildcards. Existing managed blocks are removed from directive discovery first, allowing a previously displaced valid preamble to be relocated ahead of all managed patterns without changing user bytes.
 
 ## TDD evidence
 
@@ -43,19 +43,21 @@ The final review follow-up added two further RED groups:
 - `{}` and `{"tabsState":{}}` were normalized into empty defaults and marked trusted, so startup invoked the reconciliation spy and deleted simulated existing bindings and profile homes. The integration RED now proves both sources are quarantined as incomplete, reconciliation is deferred, and the binding/home sentinels survive; a core-present legacy snapshot remains trusted.
 - Valid indented/whitespace-flexible CRLF `#escape = |` and Unicode-rune preambles were moved behind managed patterns, while `#escape=*` reported successful installation even though it converted managed wildcards into literals. The conformance RED applies Syncthing's directive preprocessing before matching and proves byte preservation, idempotence, root-only quarantine/temp exclusions, nested non-matches, durable state synchronization, and collision failure without changing the original file.
 
+The final release review added one last ordering RED: a file already shaped as `MANAGED_BLOCK + raw CRLF/Unicode escape preamble + user patterns` treated the managed patterns as preceding the directive and threw before it could repair the legacy ordering. Directive discovery now runs against the managed-block-free bytes, then either retains an already-correct block position or reinserts the block after the preserved preamble. The regression proves byte-exact preamble and user-pattern preservation, effective managed quarantine/temp matching, successful first-call relocation, and a byte-for-byte idempotent second call.
+
 All RED cases were turned GREEN before the frozen verification run.
 
 ## Final verification on the frozen snapshot
 
 ```text
 bun test --isolate apps/desktop/src/main/lib/app-state/validation.test.ts apps/desktop/src/main/lib/app-state/index.test.ts apps/desktop/src/main/lib/sync/sensitive-ignore.test.ts
-47 tests, 171 assertions, 0 failures across 3 files
+48 tests, 182 assertions, 0 failures across 3 files
 
 bun test --isolate apps/desktop/src/main/lib/app-state/validation.test.ts apps/desktop/src/main/lib/app-state/write-queue.test.ts apps/desktop/src/main/lib/app-state/index.test.ts apps/desktop/src/main/lib/app-state/watcher.test.ts apps/desktop/src/lib/trpc/routers/ui-state apps/desktop/src/main/lib/terminal/dev-reset.test.ts
 58 tests, 174 assertions, 0 failures across 7 files
 
 bun test --isolate apps/desktop/src/main/lib/subscription-profile-storage.test.ts apps/desktop/src/main/lib/subscription-profiles.test.ts apps/desktop/src/main/lib/sync/sensitive-ignore.test.ts apps/desktop/src/lib/trpc/routers/ui-state/peer-profile-normalizer.test.ts apps/desktop/src/lib/trpc/routers/sync/index.test.ts apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/subscription-profile-rebind.test.ts
-82 tests, 297 assertions, 0 failures across 6 files
+83 tests, 308 assertions, 0 failures across 6 files
 
 bun run --cwd apps/desktop typecheck
 route generation and tsc --noEmit completed successfully
@@ -67,7 +69,7 @@ git diff --check
 clean (only informational CRLF conversion warnings on Windows)
 ```
 
-Both final P1 findings were reproduced RED and turned GREEN. This report does not claim independent approval; root owns the final narrow re-review of the frozen follow-up.
+All final review P1 findings were reproduced RED and turned GREEN. This report does not claim independent approval; root owns the final narrow re-review of the frozen follow-up.
 
 ## Files changed
 

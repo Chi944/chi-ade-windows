@@ -125,19 +125,18 @@ function withManagedBlock(original: Buffer): Buffer {
 		) {
 			throw new Error("Sync-ignore contains a malformed managed block");
 		}
-		const directive = findLeadingEscapeDirective(original);
-		const expectedBegin = directive?.preambleEnd ?? 0;
-		if (begin === expectedBegin) {
+		const prefix = original.subarray(0, begin);
+		const outside = Buffer.concat([prefix, original.subarray(end)]);
+		const directive = findLeadingEscapeDirective(outside);
+		const prefixDirective = findLeadingEscapeDirective(prefix);
+		const blockIsAlreadyPlaced = directive
+			? prefixDirective?.preambleEnd === prefix.length
+			: begin === 0;
+		if (blockIsAlreadyPlaced) {
 			assertManagedBlockSupportsEscapeRune(directive?.escapeRune);
-			return Buffer.concat([
-				original.subarray(0, begin),
-				MANAGED_BLOCK,
-				original.subarray(end),
-			]);
+			return Buffer.concat([prefix, MANAGED_BLOCK, original.subarray(end)]);
 		}
-		return prependManagedBlock(
-			Buffer.concat([original.subarray(0, begin), original.subarray(end)]),
-		);
+		return prependManagedBlock(outside);
 	}
 
 	return prependManagedBlock(original);
