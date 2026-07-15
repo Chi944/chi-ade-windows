@@ -3,8 +3,10 @@ import { remoteWorkspaceBindings, workspaces } from "@superset/local-db";
 import {
 	type AppState,
 	createDefaultAppState,
+	type TabsState,
 } from "main/lib/app-state/schemas";
 import { normalizeAppState } from "main/lib/app-state/validation";
+import type { LocalWorkspaceIdentityResolution } from "shared/tabs-sync";
 
 let currentState: AppState = createDefaultAppState("local-device");
 const directWrite = mock(async () => undefined);
@@ -36,6 +38,23 @@ const getCanonicalForLocalWorkspaceId = mock((workspaceId: string) => ({
 		type: "worktree" as const,
 	},
 }));
+const getLocalWorkspaceIdentityResolutions = mock(
+	(workspaceIds: string[]): Record<string, LocalWorkspaceIdentityResolution> =>
+		Object.fromEntries(
+			workspaceIds.map((workspaceId) => [
+				workspaceId,
+				{
+					status: "verified" as const,
+					canonical: `canonical-${workspaceId}`,
+					metadata: {
+						repository: `example.com/acme/${workspaceId}`,
+						branch: "main",
+						type: "worktree" as const,
+					},
+				},
+			]),
+		),
+);
 const readMetadata = mock(async () => ({ claudeSessionId: "session-1" }));
 let startupPeerPaneIds: string[] = [];
 const takeStartupPeerPaneIds = mock(() => {
@@ -67,6 +86,7 @@ mock.module("main/lib/local-db", () => ({
 }));
 mock.module("main/lib/sync/workspace-identity", () => ({
 	getCanonicalForLocalWorkspaceId,
+	getLocalWorkspaceIdentityResolutions,
 }));
 mock.module("main/lib/terminal-history", () => ({
 	HistoryReader: class {
@@ -75,6 +95,50 @@ mock.module("main/lib/terminal-history", () => ({
 }));
 
 const { createUiStateRouter } = await import(".");
+
+function tabsState(workspaceId: string, label: string): TabsState {
+	return {
+		tabs: [
+			{
+				id: `${label}-tab`,
+				name: label,
+				workspaceId,
+				createdAt: 1,
+				layout: `${label}-pane`,
+			},
+		],
+		panes: {
+			[`${label}-pane`]: {
+				id: `${label}-pane`,
+				tabId: `${label}-tab`,
+				type: "terminal",
+				name: label,
+			},
+		},
+		activeTabIds: { [workspaceId]: `${label}-tab` },
+		focusedPaneIds: { [`${label}-tab`]: `${label}-pane` },
+		tabHistoryStacks: { [workspaceId]: [] },
+	};
+}
+
+function combineTabs(...states: TabsState[]): TabsState {
+	return {
+		tabs: states.flatMap((state) => state.tabs),
+		panes: Object.assign({}, ...states.map((state) => state.panes)),
+		activeTabIds: Object.assign(
+			{},
+			...states.map((state) => state.activeTabIds),
+		),
+		focusedPaneIds: Object.assign(
+			{},
+			...states.map((state) => state.focusedPaneIds),
+		),
+		tabHistoryStacks: Object.assign(
+			{},
+			...states.map((state) => state.tabHistoryStacks),
+		),
+	};
+}
 
 beforeEach(() => {
 	currentState = createDefaultAppState("local-device");
@@ -89,6 +153,7 @@ beforeEach(() => {
 	directWrite.mockClear();
 	enqueueAppStateMutation.mockClear();
 	getCanonicalForLocalWorkspaceId.mockClear();
+	getLocalWorkspaceIdentityResolutions.mockClear();
 	readMetadata.mockClear();
 	startupPeerPaneIds = [];
 	takeStartupPeerPaneIds.mockClear();
@@ -173,7 +238,108 @@ describe("UI-state mutation coordination", () => {
 				at: currentState.sync.lastWrittenAt,
 			},
 		});
-		expect(getCanonicalForLocalWorkspaceId).toHaveBeenCalledWith("workspace-1");
+		expect(getLocalWorkspaceIdentityResolutions).toHaveBeenCalledWith([
+			"workspace-1",
+		]);
+	});
+
+	test("invalidates a persisted mapping when batch identity becomes ambiguous", async () => {
+		currentState.tabsState = {
+			tabs: [
+				{
+					id: "tab-1",
+					name: "Before",
+					workspaceId: "workspace-1",
+					createdAt: 1,
+					layout: "pane-1",
+				},
+			],
+			panes: {
+				"pane-1": {
+					id: "pane-1",
+					tabId: "tab-1",
+					type: "terminal",
+					name: "Shell",
+				},
+			},
+			activeTabIds: { "workspace-1": "tab-1" },
+			focusedPaneIds: { "tab-1": "pane-1" },
+			tabHistoryStacks: { "workspace-1": [] },
+		};
+		currentState.sync.localToCanonical = {
+			"workspace-1": "persisted-canonical",
+		};
+		currentState.sync.perWorkspaceWrittenAt = {
+			"persisted-canonical": { deviceId: "local-device", at: 1 },
+		};
+		getLocalWorkspaceIdentityResolutions.mockReturnValueOnce({
+			"workspace-1": { status: "ambiguous" },
+		});
+		const caller = createUiStateRouter().createCaller({});
+
+		await caller.tabs.set({
+			...currentState.tabsState,
+			tabs: [{ ...currentState.tabsState.tabs[0], name: "After" }],
+		});
+
+		expect(currentState.sync.localToCanonical["workspace-1"]).toBeUndefined();
+		expect(
+			currentState.sync.perWorkspaceWrittenAt["persisted-canonical"],
+		).toBeUndefined();
+	});
+
+	test("overlays a queued local workspace delta onto a peer-committed snapshot", async () => {
+		const peerBefore = tabsState("peer-workspace", "peer-before");
+		const peerAfter = tabsState("peer-workspace", "peer-after");
+		const localBefore = tabsState("local-workspace", "local-before");
+		const localAfter = tabsState("local-workspace", "local-after");
+		currentState.tabsState = combineTabs(peerAfter, localBefore);
+		currentState.sync.lastWrittenAt = 100;
+		currentState.sync.perWorkspaceWrittenAt = {
+			"canonical-peer-workspace": { deviceId: "peer-device", at: 100 },
+			"canonical-local-workspace": { deviceId: "local-device", at: 10 },
+		};
+		currentState.sync.workspaceMetadata = {
+			"canonical-peer-workspace": {
+				repository: "example.com/acme/peer-workspace",
+				branch: "main",
+				type: "worktree",
+			},
+			"canonical-local-workspace": {
+				repository: "example.com/acme/local-workspace",
+				branch: "main",
+				type: "worktree",
+			},
+		};
+		currentState.sync.localToCanonical = {
+			"peer-workspace": "canonical-peer-workspace",
+			"local-workspace": "canonical-local-workspace",
+		};
+		currentState.sync.paneClaudeSessions = {
+			"peer-after-pane": "session-1",
+			"local-before-pane": "session-1",
+		};
+		const staleRendererNext = combineTabs(peerBefore, localAfter);
+		const caller = createUiStateRouter().createCaller({});
+
+		await caller.tabs.set({
+			state: staleRendererNext,
+			changedWorkspaceIds: ["local-workspace"],
+		});
+
+		expect(currentState.tabsState.tabs.map(({ name }) => name).sort()).toEqual([
+			"local-after",
+			"peer-after",
+		]);
+		expect(
+			currentState.sync.perWorkspaceWrittenAt["canonical-peer-workspace"],
+		).toEqual({ deviceId: "peer-device", at: 100 });
+		expect(
+			currentState.sync.perWorkspaceWrittenAt["canonical-local-workspace"],
+		).toEqual({
+			deviceId: "local-device",
+			at: currentState.sync.lastWrittenAt,
+		});
 	});
 
 	test("routes theme and hotkeys through the same coordinator", async () => {

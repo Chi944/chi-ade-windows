@@ -129,12 +129,7 @@ function mappingFingerprint(input: RebasePeerUpdateInput): string {
 }
 
 function peerCanonicalIds(event: CachedPeerAppStateEvent): Set<string> {
-	return new Set([
-		...Object.keys(event.state.sync.perWorkspaceWrittenAt),
-		...Object.keys(event.state.sync.workspaceTombstones),
-		...Object.keys(event.state.sync.workspaceMetadata),
-		...Object.values(event.state.sync.localToCanonical),
-	]);
+	return new Set(event.canonicalWorkspaceIds);
 }
 
 export function createPeerSyncService(

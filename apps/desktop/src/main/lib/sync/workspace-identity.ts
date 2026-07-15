@@ -1,12 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-	projects,
-	type SelectProject,
-	type SelectWorkspace,
-	type WorkspaceType,
-	workspaces,
-} from "@superset/local-db";
+import { projects, type WorkspaceType, workspaces } from "@superset/local-db";
 import { eq } from "drizzle-orm";
 import { localDb } from "main/lib/local-db";
 
@@ -15,6 +9,14 @@ export interface PortableWorkspaceMetadata {
 	branch: string;
 	type: WorkspaceType;
 }
+
+export type LocalWorkspaceIdentityResolution =
+	| {
+			status: "verified";
+			canonical: string;
+			metadata: PortableWorkspaceMetadata;
+	  }
+	| { status: "missing" | "ambiguous" | "deleted" | "unresolved" };
 
 export interface WorkspaceIdentityInput extends PortableWorkspaceMetadata {}
 
@@ -109,6 +111,9 @@ export function normalizeGitOrigin(origin: string): string | null {
 			return null;
 		}
 	}
+	// Do not reinterpret an unsupported URL as SCP syntax. In particular, its
+	// authority may contain credentials that must never enter portable metadata.
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return null;
 
 	const scp = value.match(/^(?:[^@\s/:]+@)?([^\s/:]+):(.+)$/);
 	if (!scp) return null;
@@ -284,8 +289,8 @@ export function getLocalWorkspaceMappingsForCanonicalIds(
 }
 
 function identityForWorkspace(
-	workspace: SelectWorkspace,
-	project: SelectProject,
+	workspace: RequestedIdentityWorkspace,
+	project: RequestedIdentityProject,
 	dependencies: WorkspaceIdentityDependencies,
 ): PortableWorkspaceIdentityResult {
 	return createPortableWorkspaceIdentity({
@@ -307,6 +312,88 @@ function memoizeOriginReads(
 			return origins.get(mainRepoPath) ?? null;
 		},
 	};
+}
+
+export function resolveRequestedLocalWorkspaceIdentities(input: {
+	workspaceIds: readonly string[];
+	projects: readonly RequestedIdentityProject[];
+	workspaces: readonly RequestedIdentityWorkspace[];
+	readOrigin: WorkspaceIdentityDependencies["readOrigin"];
+}): Record<string, LocalWorkspaceIdentityResolution> {
+	const workspaceIds = [...new Set(input.workspaceIds)];
+	const projectsById = new Map(
+		input.projects.map((project) => [project.id, project] as const),
+	);
+	const workspacesById = new Map(
+		input.workspaces.map((workspace) => [workspace.id, workspace] as const),
+	);
+	const dependencies = memoizeOriginReads({ readOrigin: input.readOrigin });
+	const resolutions: Record<string, LocalWorkspaceIdentityResolution> = {};
+	const tentative = new Map<
+		string,
+		{ canonical: string; metadata: PortableWorkspaceMetadata }
+	>();
+
+	for (const workspaceId of workspaceIds) {
+		const workspace = workspacesById.get(workspaceId);
+		if (!workspace) {
+			resolutions[workspaceId] = { status: "missing" };
+			continue;
+		}
+		if (workspace.deletingAt != null) {
+			resolutions[workspaceId] = { status: "deleted" };
+			continue;
+		}
+		const project = projectsById.get(workspace.projectId);
+		if (!project) {
+			resolutions[workspaceId] = { status: "missing" };
+			continue;
+		}
+		const identity = identityForWorkspace(workspace, project, dependencies);
+		if (identity.status === "unresolved") {
+			resolutions[workspaceId] = { status: "unresolved" };
+			continue;
+		}
+		tentative.set(workspaceId, {
+			canonical: identity.canonical,
+			metadata: identity.metadata,
+		});
+	}
+
+	const workspaceMetadataByCanonical = Object.fromEntries(
+		[...tentative.values()].map(({ canonical, metadata }) => [
+			canonical,
+			metadata,
+		]),
+	);
+	const matches = collectRequestedCanonicalWorkspaceIds({
+		canonicalWorkspaceIds: [
+			...new Set([...tentative.values()].map(({ canonical }) => canonical)),
+		],
+		projects: input.projects,
+		workspaces: input.workspaces,
+		readOrigin: dependencies.readOrigin,
+		workspaceMetadataByCanonical,
+	});
+	for (const [workspaceId, identity] of tentative) {
+		resolutions[workspaceId] =
+			matches.get(identity.canonical) === workspaceId
+				? { status: "verified", ...identity }
+				: { status: "ambiguous" };
+	}
+	return resolutions;
+}
+
+export function getLocalWorkspaceIdentityResolutions(
+	workspaceIds: readonly string[],
+	dependencies: WorkspaceIdentityDependencies = defaultDependencies,
+): Record<string, LocalWorkspaceIdentityResolution> {
+	return resolveRequestedLocalWorkspaceIdentities({
+		workspaceIds,
+		projects: localDb.select().from(projects).all(),
+		workspaces: localDb.select().from(workspaces).all(),
+		readOrigin: dependencies.readOrigin,
+	});
 }
 
 function collectLocalWorkspaceMatches(
@@ -387,32 +474,11 @@ export function getCanonicalForLocalWorkspaceId(
 	localWorkspaceId: string,
 	dependencies: WorkspaceIdentityDependencies = defaultDependencies,
 ): { canonical: string; meta: EmbeddedWorkspaceMeta } | null {
-	const workspace = localDb
-		.select()
-		.from(workspaces)
-		.where(eq(workspaces.id, localWorkspaceId))
-		.get();
-	if (!workspace || workspace.deletingAt != null) return null;
-	const project = localDb
-		.select()
-		.from(projects)
-		.where(eq(projects.id, workspace.projectId))
-		.get();
-	if (!project) return null;
-	const memoizedDependencies = memoizeOriginReads(dependencies);
-	const identity = identityForWorkspace(
-		workspace,
-		project,
-		memoizedDependencies,
-	);
-	if (identity.status !== "resolved") return null;
-	const matches = collectLocalWorkspaceMatches([identity.canonical], {
-		dependencies: memoizedDependencies,
-		workspaceMetadataByCanonical: {
-			[identity.canonical]: identity.metadata,
-		},
-	});
-	return matches.get(identity.canonical) === localWorkspaceId
-		? { canonical: identity.canonical, meta: identity.metadata }
+	const resolution = getLocalWorkspaceIdentityResolutions(
+		[localWorkspaceId],
+		dependencies,
+	)[localWorkspaceId];
+	return resolution?.status === "verified"
+		? { canonical: resolution.canonical, meta: resolution.metadata }
 		: null;
 }

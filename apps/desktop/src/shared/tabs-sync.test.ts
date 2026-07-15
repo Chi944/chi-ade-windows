@@ -255,6 +255,7 @@ describe("deterministic workspace clocks", () => {
 			}),
 			identities: {
 				local: {
+					status: "verified",
 					canonical: "canonical",
 					metadata: metadata("example.com/acme/repo"),
 				},
@@ -288,10 +289,12 @@ describe("deterministic workspace clocks", () => {
 			}),
 			identities: {
 				"workspace-a": {
+					status: "verified",
 					canonical: "a",
 					metadata: metadata("example.com/acme/a"),
 				},
 				"workspace-b": {
+					status: "verified",
 					canonical: "b",
 					metadata: metadata("example.com/acme/b"),
 				},
@@ -320,6 +323,7 @@ describe("deterministic workspace clocks", () => {
 			}),
 			identities: {
 				"local-workspace": {
+					status: "verified",
 					canonical: "canonical",
 					metadata: metadata("example.com/acme/repo"),
 				},
@@ -334,6 +338,129 @@ describe("deterministic workspace clocks", () => {
 		expect(result.envelope.paneClaudeSessions).toEqual({
 			"local-pane": "session-after",
 		});
+	});
+
+	test("invalidates a persisted mapping when an active identity becomes ambiguous", () => {
+		const result = stampLocalTabsMutation({
+			previousTabs: tabsState("local-workspace", "before"),
+			nextTabs: tabsState("local-workspace", "after"),
+			envelope: envelope("local", {
+				perWorkspaceWrittenAt: {
+					canonical: { deviceId: "local", at: 10 },
+				},
+				workspaceMetadata: {
+					canonical: metadata("example.com/acme/repo"),
+				},
+				localToCanonical: { "local-workspace": "canonical" },
+			}),
+			identities: {
+				"local-workspace": { status: "ambiguous" },
+			},
+			deviceId: "local",
+			now: 20,
+			paneClaudeSessions: {},
+		});
+
+		expect(result.changedCanonicalIds).toEqual([]);
+		expect(result.envelope.localToCanonical["local-workspace"]).toBeUndefined();
+		expect(result.envelope.perWorkspaceWrittenAt.canonical).toBeUndefined();
+		expect(result.warnings).toContain(
+			"A local workspace was not synchronized because its identity is ambiguous.",
+		);
+	});
+
+	test("preserves an unchanged mapping across a transient origin read failure", () => {
+		const workspaceA = tabsState("workspace-a", "a");
+		const previous = combineTabs(
+			workspaceA,
+			tabsState("workspace-b", "b-before"),
+		);
+		const next = combineTabs(
+			structuredClone(workspaceA),
+			tabsState("workspace-b", "b-after"),
+		);
+		const result = stampLocalTabsMutation({
+			previousTabs: previous,
+			nextTabs: next,
+			envelope: envelope("local", {
+				perWorkspaceWrittenAt: {
+					a: { deviceId: "local", at: 10 },
+					b: { deviceId: "local", at: 10 },
+				},
+				workspaceMetadata: {
+					a: metadata("example.com/acme/a"),
+					b: metadata("example.com/acme/b"),
+				},
+				localToCanonical: { "workspace-a": "a", "workspace-b": "b" },
+			}),
+			identities: {
+				"workspace-a": { status: "unresolved" },
+				"workspace-b": {
+					status: "verified",
+					canonical: "b",
+					metadata: metadata("example.com/acme/b"),
+				},
+			},
+			deviceId: "local",
+			now: 20,
+			paneClaudeSessions: {},
+		});
+
+		expect(result.changedCanonicalIds).toEqual(["b"]);
+		expect(result.envelope.localToCanonical["workspace-a"]).toBe("a");
+		expect(result.envelope.perWorkspaceWrittenAt.a).toEqual({
+			deviceId: "local",
+			at: 10,
+		});
+	});
+
+	test("invalidates an unchanged verified mapping when its canonical changes", () => {
+		const workspaceA = tabsState("workspace-a", "a");
+		const previous = combineTabs(
+			workspaceA,
+			tabsState("workspace-b", "b-before"),
+		);
+		const next = combineTabs(
+			structuredClone(workspaceA),
+			tabsState("workspace-b", "b-after"),
+		);
+		const result = stampLocalTabsMutation({
+			previousTabs: previous,
+			nextTabs: next,
+			envelope: envelope("local", {
+				perWorkspaceWrittenAt: {
+					"a-old": { deviceId: "local", at: 10 },
+					b: { deviceId: "local", at: 10 },
+				},
+				workspaceMetadata: {
+					"a-old": metadata("example.com/acme/a-old"),
+					b: metadata("example.com/acme/b"),
+				},
+				localToCanonical: {
+					"workspace-a": "a-old",
+					"workspace-b": "b",
+				},
+			}),
+			identities: {
+				"workspace-a": {
+					status: "verified",
+					canonical: "a-new",
+					metadata: metadata("example.com/acme/a-new"),
+				},
+				"workspace-b": {
+					status: "verified",
+					canonical: "b",
+					metadata: metadata("example.com/acme/b"),
+				},
+			},
+			deviceId: "local",
+			now: 20,
+			paneClaudeSessions: {},
+		});
+
+		expect(result.changedCanonicalIds).toEqual(["b"]);
+		expect(result.envelope.localToCanonical["workspace-a"]).toBeUndefined();
+		expect(result.envelope.perWorkspaceWrittenAt["a-old"]).toBeUndefined();
 	});
 
 	test("rejects canonical-to-local collisions", () => {
@@ -379,7 +506,9 @@ describe("deterministic workspace clocks", () => {
 					canonical: metadata("example.com/acme/repo"),
 				},
 			}),
-			identities: {},
+			identities: {
+				"local-workspace": { status: "deleted" },
+			},
 			deviceId: "local",
 			now: 20,
 			paneClaudeSessions: {},
@@ -407,6 +536,34 @@ describe("deterministic workspace clocks", () => {
 
 		expect(stalePeer.tabsState.tabs).toEqual([]);
 		expect(stalePeer.winningCanonicalIds).toEqual([]);
+	});
+
+	test("does not use a tombstone fallback for an unproven deletion", () => {
+		const stamped = stampLocalTabsMutation({
+			previousTabs: tabsState("local-workspace", "local"),
+			nextTabs: emptyTabs(),
+			envelope: envelope("local", {
+				perWorkspaceWrittenAt: {
+					canonical: { deviceId: "local", at: 10 },
+				},
+				localToCanonical: { "local-workspace": "canonical" },
+				workspaceMetadata: {
+					canonical: metadata("example.com/acme/repo"),
+				},
+			}),
+			identities: {
+				"local-workspace": { status: "missing" },
+			},
+			deviceId: "local",
+			now: 20,
+			paneClaudeSessions: {},
+		});
+
+		expect(stamped.changedCanonicalIds).toEqual([]);
+		expect(stamped.envelope.workspaceTombstones.canonical).toBeUndefined();
+		expect(
+			stamped.envelope.localToCanonical["local-workspace"],
+		).toBeUndefined();
 	});
 
 	test("applies a newer peer deletion tombstone", () => {

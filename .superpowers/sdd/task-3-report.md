@@ -10,13 +10,13 @@ Startup and reconnect handling are covered end to end. The parent directory watc
 
 ## Implementation summary
 
-- Replaced path-derived workspace identity with credential-free normalization for HTTPS, SCP-style SSH, and `ssh://` origins. Local/file remotes remain unresolved, missing projects are never fabricated, requested renderer mappings are filtered to the event's canonical IDs, project origins are read at most once per batch, deleting workspaces are skipped, and ambiguous canonical mappings are omitted.
+- Replaced path-derived workspace identity with credential-free normalization for HTTPS, SCP-style SSH, and `ssh://` origins. Unsupported `scheme://` remotes are rejected before SCP parsing, so credentials cannot enter portable metadata. Reverse identity resolution is batched and explicit about verified, missing, ambiguous, deleted, and unreadable workspaces; unsafe persisted mappings and clocks are invalidated, while tombstone fallback is limited to proven deletions.
 - Added pure tabs synchronization logic for clock comparison, restart seeding, monotonic local stamps, exact workspace change detection, canonical collision rejection, peer/local translation, deletion tombstones, deterministic snapshot hashing, and peer Claude session handoff extraction.
 - Extended the durable sync envelope with portable metadata and workspace tombstones while dropping legacy path metadata during normalization.
 - Made the app-state watcher observe the containing directory, debounce rename/change events, wait for the named file to stabilize, ingest the file at startup, and store validated defensive snapshots in a bounded expiring cache. Subscriptions expose only opaque metadata and attach before cache enumeration, so startup and reconnect replay cannot lose an event or duplicate an attach race.
 - Added a queued `sync.rebasePeerUpdate` service. It re-fetches cached peer state, verifies renderer mappings before and inside the coordinator transaction, plans against the queued current snapshot, persists session handoffs and app state before acknowledging, returns `stale` for revision movement, and maps failed commits to a closed rejection contract.
-- Added bounded idempotency for processed events and a true in-flight join keyed by event ID plus mapping fingerprint. Simultaneous identical requests share one promise, token, and durable write; conflicting duplicates are rejected. A later replay returns the coordinator's current snapshot and revision with a fresh exact-snapshot suppression token.
-- Refactored the renderer consumer into one sequential queue. Stale events replan at the returned revision, rejected acknowledgements remain visibly retryable, and Zustand changes only after main reports a durable commit.
+- Added bounded idempotency for processed events and a true in-flight join keyed by event ID plus mapping fingerprint. Simultaneous identical requests share one promise, token, and durable write; conflicting duplicates are rejected. A later replay returns the coordinator's current snapshot and revision with a fresh exact-snapshot suppression token. Peer metadata now carries only merge-relevant clock/tombstone IDs, with a shared 10,000-ID schema/router bound derived from the two independently bounded records.
+- Refactored the renderer consumer into one sequential queue. Stale events replan at the returned revision, rejected acknowledgements remain visibly retryable, and Zustand changes only after main reports a durable commit. A local persistence epoch and pending-write drain detect mutations begun during the peer round trip; the consumer replays the processed event and acknowledges/applies only an epoch-stable current snapshot. Renderer persistence sends workspace deltas, so main overlays a queued local change onto its latest peer commit instead of replacing unrelated peer work.
 - Replaced the tabs boolean skip flag with a bounded expiring token registry keyed by exact deterministic tabs hash and committed revision. Tokens are acknowledged immediately before applying the committed snapshot and consumed exactly once by persistence; an ordinary local write cannot consume a mismatched token.
 - Added an explicit Zustand tabs `partialize` boundary so only durable tabs fields persist and the closed-tab undo stack remains local and transient.
 - Added trusted startup localization and binding reconciliation before terminal restoration. Closed-stack-only bindings are removed only for trusted state; recovered, untrusted, or unresolved workspace cases preserve bindings conservatively and warn.
@@ -35,17 +35,24 @@ The final audit follow-ups added three explicit RED regressions before their fix
 
 Additional RED cases prove startup cache replay with attach-race deduplication, reconnect replay, opaque subscription payloads, requested-canonical-only renderer queries, fresh tokens after expiry, stale replanning, no-winner rebases without clock bumps, startup handoff persistence ordering, and failed staged-resume marker restoration.
 
+The final reliability review added four more RED groups before this follow-up was frozen:
+
+- Credential-bearing `http://`, `git://`, and `ftp://` origins were misread as SCP syntax. They now remain unresolved and their secrets never appear in serialized identity results.
+- A persisted local-to-canonical mapping could outlive a newly ambiguous or unreadable identity. Active writes now use one fresh batch resolution, invalidate changed unreadable mappings, retain fallback only for a proven deletion, and clear an unchanged checkout's mapping when a new duplicate or verified canonical change makes the old identity stale. An unchanged transient origin-read failure preserves its existing clock until verification can recover.
+- A schema-valid event with 1,001 clock/tombstone IDs could be emitted but was rejected by the 1,000-ID router cap, producing a futile retry loop. Watcher, router, renderer, and service regressions now prove the event reaches a committed no-winner result in one pass.
+- A local Zustand write queued behind a peer commit could make renderer and main diverge or replace the peer change. Epoch/pending tracking now drains and replays the processed event; the workspace-delta route regression proves both unrelated changes survive, the peer clock remains intact, only the final token/snapshot is applied, and the suppressed apply does not echo.
+
 ## Final verification on the frozen snapshot
 
 ```text
 bun test --isolate <Task 3 workspace identity, tabs sync, watcher, sync service,
 reconciliation, sync router, renderer consumer/storage/registry, UI-state,
 app-state initialization/validation/write-queue suites>
-124 tests, 378 assertions, 0 failures across 13 files
+139 tests, 439 assertions, 0 failures across 13 files
 
 bun test --isolate <Task 2 validation, write queue, initialization, watcher,
-UI-state, development reset, and sensitive-ignore regression suites>
-82 tests, 283 assertions, 0 failures across 8 files
+UI-state, and development reset suites>
+71 tests, 212 assertions, 0 failures across 7 files
 
 bun test --isolate apps/desktop/src/main/lib/subscription-profile-storage.test.ts
 apps/desktop/src/main/lib/subscription-profiles.test.ts
@@ -53,7 +60,7 @@ apps/desktop/src/main/lib/sync/sensitive-ignore.test.ts
 apps/desktop/src/lib/trpc/routers/ui-state/peer-profile-normalizer.test.ts
 apps/desktop/src/lib/trpc/routers/sync/index.test.ts
 apps/desktop/src/renderer/screens/main/components/WorkspaceView/ContentView/TabsContent/Terminal/subscription-profile-rebind.test.ts
-87 tests, 318 assertions, 0 failures across 6 files
+88 tests, 322 assertions, 0 failures across 6 files
 
 bun test --isolate apps/desktop/src/main/lib/terminal/service/service-manager.test.ts -t "session-only metadata"
 2 tests, 8 assertions, 0 failures (15 unrelated tests filtered out)
@@ -61,7 +68,7 @@ bun test --isolate apps/desktop/src/main/lib/terminal/service/service-manager.te
 bun run --cwd apps/desktop typecheck
 route generation and tsc --noEmit completed successfully
 
-node_modules/.bin/biome check <33 changed TypeScript/TSX files>
+node_modules/.bin/biome check <17 changed TypeScript/TSX files>
 clean, no fixes required
 
 git diff --check

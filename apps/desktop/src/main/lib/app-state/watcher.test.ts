@@ -190,6 +190,31 @@ describe("rename-safe app-state watcher", () => {
 });
 
 describe("validated peer event cache", () => {
+	test("advertises only canonical ids that can participate in a merge", () => {
+		const state = createDefaultAppState("peer-device");
+		state.sync.perWorkspaceWrittenAt.clock = {
+			deviceId: "peer-device",
+			at: 10,
+		};
+		state.sync.workspaceTombstones.deleted = {
+			deviceId: "peer-device",
+			at: 11,
+		};
+		state.sync.workspaceMetadata.metadata = {
+			repository: "github.com/acme/metadata-only",
+			branch: "main",
+			type: "branch",
+		};
+		state.sync.localToCanonical.local = "mapping-only";
+		const cache = new ValidatedPeerEventCache({
+			localDeviceId: "local-device",
+		});
+
+		const metadata = cache.put("event", state, 1);
+
+		expect(metadata.canonicalWorkspaceIds).toEqual(["clock", "deleted"]);
+	});
+
 	test("replays unexpired metadata in insertion order as defensive clones", () => {
 		let now = 1_000;
 		const cache = new ValidatedPeerEventCache({

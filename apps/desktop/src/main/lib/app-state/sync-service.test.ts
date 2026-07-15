@@ -412,6 +412,30 @@ describe("peer app-state sync service", () => {
 		expect(coordinator.getSnapshot().tabsState.tabs[0]?.name).toBe("local");
 	});
 
+	test("commits a valid 1,001-tombstone event without a retry loop", async () => {
+		const { cache, coordinator, service } = createHarness();
+		const peer = createDefaultAppState("peer-device");
+		for (let index = 0; index < 1_001; index += 1) {
+			peer.sync.workspaceTombstones[`canonical-${index}`] = {
+				deviceId: "peer-device",
+				at: 10,
+			};
+		}
+		cache.put("large-event", peer, coordinator.getRevision());
+
+		const result = await service.rebasePeerUpdate({
+			eventId: "large-event",
+			baseRevision: 0,
+			canonicalToLocal: {},
+		});
+
+		expect(result.status).toBe("committed");
+		if (result.status !== "committed") return;
+		expect(result.winningWorkspaces).toEqual([]);
+		expect(result.revision).toBe(1);
+		expect(coordinator.getRevision()).toBe(1);
+	});
+
 	test("rejects missing events and unverified renderer mappings", async () => {
 		const { coordinator, service } = createHarness();
 		expect(

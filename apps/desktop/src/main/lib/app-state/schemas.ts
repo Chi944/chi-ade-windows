@@ -10,6 +10,8 @@ import type { Theme } from "shared/themes";
 import { z } from "zod";
 
 export const MAX_APP_STATE_RECORD_ENTRIES = 5_000;
+export const MAX_PEER_MERGE_CANONICAL_IDS = MAX_APP_STATE_RECORD_ENTRIES * 2;
+export const MAX_CANONICAL_WORKSPACE_ID_LENGTH = 128;
 export const MAX_APP_STATE_TABS = 1_000;
 export const MAX_APP_STATE_PANES = 5_000;
 export const MAX_APP_STATE_HISTORY_ENTRIES = 1_000;
@@ -18,12 +20,29 @@ export const MAX_APP_STATE_STRING_LENGTH = 32_768;
 
 const shortStringSchema = z.string().max(4_096);
 const requiredStringSchema = z.string().min(1).max(MAX_APP_STATE_STRING_LENGTH);
+export const canonicalWorkspaceIdSchema = z
+	.string()
+	.min(1)
+	.max(MAX_CANONICAL_WORKSPACE_ID_LENGTH);
 const optionalStringSchema = z.string().max(MAX_APP_STATE_STRING_LENGTH);
 const finiteTimestampSchema = z.number().finite().nonnegative();
 
 function boundedRecord<T extends z.ZodType>(valueSchema: T) {
 	return z
 		.record(requiredStringSchema, valueSchema)
+		.superRefine((record, context) => {
+			if (Object.keys(record).length > MAX_APP_STATE_RECORD_ENTRIES) {
+				context.addIssue({
+					code: "custom",
+					message: `Record exceeds ${MAX_APP_STATE_RECORD_ENTRIES} entries`,
+				});
+			}
+		});
+}
+
+function boundedCanonicalRecord<T extends z.ZodType>(valueSchema: T) {
+	return z
+		.record(canonicalWorkspaceIdSchema, valueSchema)
 		.superRefine((record, context) => {
 			if (Object.keys(record).length > MAX_APP_STATE_RECORD_ENTRIES) {
 				context.addIssue({
@@ -346,7 +365,7 @@ const legacyPathWorkspaceMetadataSchema = z.strictObject({
 	type: z.enum(["worktree", "branch"]),
 });
 
-const legacyWorkspaceMetadataRecordSchema = boundedRecord(
+const legacyWorkspaceMetadataRecordSchema = boundedCanonicalRecord(
 	z.union([workspaceMetadataSchema, legacyPathWorkspaceMetadataSchema]),
 ).transform((record) =>
 	Object.fromEntries(
@@ -359,21 +378,22 @@ const legacyWorkspaceMetadataRecordSchema = boundedRecord(
 export const syncEnvelopeSchema = z.strictObject({
 	deviceId: requiredStringSchema,
 	lastWrittenAt: finiteTimestampSchema,
-	perWorkspaceWrittenAt: boundedRecord(workspaceClockSchema),
-	workspaceMetadata: boundedRecord(workspaceMetadataSchema),
-	localToCanonical: boundedRecord(requiredStringSchema),
+	perWorkspaceWrittenAt: boundedCanonicalRecord(workspaceClockSchema),
+	workspaceMetadata: boundedCanonicalRecord(workspaceMetadataSchema),
+	localToCanonical: boundedRecord(canonicalWorkspaceIdSchema),
 	paneClaudeSessions: boundedRecord(requiredStringSchema),
-	workspaceTombstones: boundedRecord(workspaceClockSchema),
+	workspaceTombstones: boundedCanonicalRecord(workspaceClockSchema),
 });
 
 export const legacySyncEnvelopeSchema = z.strictObject({
 	deviceId: requiredStringSchema.optional(),
 	lastWrittenAt: finiteTimestampSchema.optional(),
-	perWorkspaceWrittenAt: boundedRecord(workspaceClockSchema).optional(),
+	perWorkspaceWrittenAt:
+		boundedCanonicalRecord(workspaceClockSchema).optional(),
 	workspaceMetadata: legacyWorkspaceMetadataRecordSchema.optional(),
-	localToCanonical: boundedRecord(requiredStringSchema).optional(),
+	localToCanonical: boundedRecord(canonicalWorkspaceIdSchema).optional(),
 	paneClaudeSessions: boundedRecord(requiredStringSchema).optional(),
-	workspaceTombstones: boundedRecord(workspaceClockSchema).optional(),
+	workspaceTombstones: boundedCanonicalRecord(workspaceClockSchema).optional(),
 });
 
 export interface ThemeState {

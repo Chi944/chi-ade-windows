@@ -1,4 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
+import { createDefaultAppState } from "main/lib/app-state/schemas";
+import { stampLocalTabsMutation } from "shared/tabs-sync";
 
 mock.module("main/lib/local-db", () => ({
 	localDb: {},
@@ -9,6 +11,7 @@ const {
 	createPortableWorkspaceIdentity,
 	matchRequestedCanonicalWorkspaceIds,
 	normalizeGitOrigin,
+	resolveRequestedLocalWorkspaceIdentities,
 } = await import("./workspace-identity");
 
 describe("portable workspace identity", () => {
@@ -47,6 +50,21 @@ describe("portable workspace identity", () => {
 				"ssh://git@GitHub.COM:22/Chi944/chi-ade-windows.GIT///",
 			),
 		).toBe("github.com/Chi944/chi-ade-windows");
+	});
+
+	test("rejects unsupported URL schemes without serializing credentials", () => {
+		const secret = "scheme-secret-token";
+		for (const scheme of ["http", "git", "ftp"]) {
+			const origin = `${scheme}://oauth2:${secret}@github.com/acme/repo.git`;
+			expect(normalizeGitOrigin(origin)).toBeNull();
+			const identity = createPortableWorkspaceIdentity({
+				origin,
+				branch: "main",
+				type: "branch",
+			});
+			expect(identity.status).toBe("unresolved");
+			expect(JSON.stringify(identity)).not.toContain(secret);
+		}
 	});
 
 	test("keeps repository, branch, and workspace type in the canonical identity", () => {
@@ -203,6 +221,144 @@ describe("portable workspace identity", () => {
 			readOrigin,
 		});
 		expect(collision).toEqual({});
+	});
+
+	test("batches reverse identities and invalidates an unchanged owner on a new duplicate", () => {
+		const readOrigin = mock((path: string) => {
+			if (path === "C:\\unique") return "git@github.com:acme/unique.git";
+			if (path === "C:\\unreadable") return "C:\\local-only";
+			return "git@github.com:acme/duplicate.git";
+		});
+		const resolutions = resolveRequestedLocalWorkspaceIdentities({
+			workspaceIds: [
+				"unique",
+				"duplicate-a",
+				"duplicate-b",
+				"missing",
+				"deleted",
+				"unreadable",
+			],
+			projects: [
+				{ id: "unique-project", mainRepoPath: "C:\\unique" },
+				{ id: "duplicate-project-a", mainRepoPath: "C:\\clone-a" },
+				{ id: "duplicate-project-b", mainRepoPath: "C:\\clone-b" },
+				{ id: "deleted-project", mainRepoPath: "C:\\deleted" },
+				{ id: "unreadable-project", mainRepoPath: "C:\\unreadable" },
+			],
+			workspaces: [
+				{
+					id: "unique",
+					projectId: "unique-project",
+					branch: "main",
+					type: "branch",
+					deletingAt: null,
+				},
+				{
+					id: "duplicate-a",
+					projectId: "duplicate-project-a",
+					branch: "main",
+					type: "branch",
+					deletingAt: null,
+				},
+				{
+					id: "duplicate-b",
+					projectId: "duplicate-project-b",
+					branch: "main",
+					type: "branch",
+					deletingAt: null,
+				},
+				{
+					id: "deleted",
+					projectId: "deleted-project",
+					branch: "main",
+					type: "branch",
+					deletingAt: 1,
+				},
+				{
+					id: "unreadable",
+					projectId: "unreadable-project",
+					branch: "main",
+					type: "branch",
+					deletingAt: null,
+				},
+			],
+			readOrigin,
+		});
+
+		expect(resolutions.unique?.status).toBe("verified");
+		expect(resolutions["duplicate-a"]).toEqual({ status: "ambiguous" });
+		expect(resolutions["duplicate-b"]).toEqual({ status: "ambiguous" });
+		expect(resolutions.missing).toEqual({ status: "missing" });
+		expect(resolutions.deleted).toEqual({ status: "deleted" });
+		expect(resolutions.unreadable).toEqual({ status: "unresolved" });
+		expect(readOrigin).toHaveBeenCalledTimes(4);
+
+		const duplicateCanonical = canonicalizeWorkspace({
+			repository: "github.com/acme/duplicate",
+			branch: "main",
+			type: "branch",
+		});
+		const state = createDefaultAppState("local-device");
+		state.tabsState = {
+			tabs: [
+				{
+					id: "tab",
+					name: "Before",
+					workspaceId: "duplicate-a",
+					createdAt: 1,
+					layout: "pane",
+				},
+			],
+			panes: {
+				pane: {
+					id: "pane",
+					tabId: "tab",
+					type: "terminal",
+					name: "Shell",
+				},
+			},
+			activeTabIds: { "duplicate-a": "tab" },
+			focusedPaneIds: { tab: "pane" },
+			tabHistoryStacks: { "duplicate-a": [] },
+		};
+		state.sync.localToCanonical["duplicate-a"] = duplicateCanonical;
+		state.sync.perWorkspaceWrittenAt[duplicateCanonical] = {
+			deviceId: "local-device",
+			at: 10,
+		};
+		const nextTabs = structuredClone(state.tabsState);
+		nextTabs.tabs.push({
+			id: "duplicate-tab",
+			name: "Duplicate",
+			workspaceId: "duplicate-b",
+			createdAt: 2,
+			layout: "duplicate-pane",
+		});
+		nextTabs.panes["duplicate-pane"] = {
+			id: "duplicate-pane",
+			tabId: "duplicate-tab",
+			type: "terminal",
+			name: "Duplicate shell",
+		};
+		nextTabs.activeTabIds["duplicate-b"] = "duplicate-tab";
+		nextTabs.focusedPaneIds["duplicate-tab"] = "duplicate-pane";
+		nextTabs.tabHistoryStacks["duplicate-b"] = [];
+
+		const stamp = stampLocalTabsMutation({
+			previousTabs: state.tabsState,
+			nextTabs,
+			envelope: state.sync,
+			identities: resolutions,
+			deviceId: "local-device",
+			now: 20,
+			paneClaudeSessions: {},
+		});
+
+		expect(stamp.changedCanonicalIds).toEqual([]);
+		expect(stamp.envelope.localToCanonical["duplicate-a"]).toBeUndefined();
+		expect(
+			stamp.envelope.perWorkspaceWrittenAt[duplicateCanonical],
+		).toBeUndefined();
 	});
 
 	test("does not include local checkout paths or credentials in portable metadata", () => {

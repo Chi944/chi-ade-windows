@@ -38,21 +38,24 @@ mock.module("renderer/lib/trpc-client", () => ({
 const {
 	acknowledgeTabsSuppressionToken,
 	createTabsSuppressionTokenRegistry,
+	getTabsPersistenceStatus,
 	partializeTabsStoreState,
+	resetTabsPersistenceForTests,
 	resetTabsSuppressionTokensForTests,
 	trpcTabsStorage,
+	waitForTabsPersistenceIdle,
 } = await import("./trpc-storage");
 const { consumeSyncedPane, resetSyncedPaneRegistryForTests } = await import(
 	"../stores/tabs/syncedPaneRegistry"
 );
 
-function tabs(label: string) {
+function tabs(label: string, workspaceId = "workspace") {
 	const state = createDefaultAppState("device").tabsState;
 	state.tabs = [
 		{
 			id: `${label}-tab`,
 			name: label,
-			workspaceId: "workspace",
+			workspaceId,
 			createdAt: 1,
 			layout: `${label}-pane`,
 		},
@@ -65,10 +68,29 @@ function tabs(label: string) {
 			name: label,
 		},
 	};
-	state.activeTabIds = { workspace: `${label}-tab` };
+	state.activeTabIds = { [workspaceId]: `${label}-tab` };
 	state.focusedPaneIds = { [`${label}-tab`]: `${label}-pane` };
-	state.tabHistoryStacks = { workspace: [] };
+	state.tabHistoryStacks = { [workspaceId]: [] };
 	return state;
+}
+
+function combineTabs(...states: ReturnType<typeof tabs>[]) {
+	return {
+		tabs: states.flatMap((state) => state.tabs),
+		panes: Object.assign({}, ...states.map((state) => state.panes)),
+		activeTabIds: Object.assign(
+			{},
+			...states.map((state) => state.activeTabIds),
+		),
+		focusedPaneIds: Object.assign(
+			{},
+			...states.map((state) => state.focusedPaneIds),
+		),
+		tabHistoryStacks: Object.assign(
+			{},
+			...states.map((state) => state.tabHistoryStacks),
+		),
+	};
 }
 
 function tokenFor(
@@ -90,6 +112,7 @@ beforeEach(() => {
 	tabsSetError = null;
 	tabsBootstrap = null;
 	resetTabsSuppressionTokensForTests();
+	resetTabsPersistenceForTests();
 	resetSyncedPaneRegistryForTests();
 	const sidecars = new Map<string, string>();
 	Object.defineProperty(globalThis, "localStorage", {
@@ -170,18 +193,23 @@ describe("tabs suppression tokens", () => {
 			peer,
 		);
 
+		const beforeSuppression = getTabsPersistenceStatus();
 		await trpcTabsStorage?.setItem("tabs-storage", {
 			state: peer,
 			version: 8,
 		});
 		expect(tabsSet).not.toHaveBeenCalled();
+		expect(getTabsPersistenceStatus()).toEqual(beforeSuppression);
 
 		await trpcTabsStorage?.setItem("tabs-storage", {
 			state: local,
 			version: 8,
 		});
 		expect(tabsSet).toHaveBeenCalledTimes(1);
-		expect(tabsSet).toHaveBeenCalledWith(local);
+		expect(tabsSet).toHaveBeenCalledWith({
+			state: local,
+			changedWorkspaceIds: ["workspace"],
+		});
 	});
 
 	test("does not advance the persisted version when the main write rejects", async () => {
@@ -194,6 +222,62 @@ describe("tabs suppression tokens", () => {
 			}),
 		).rejects.toThrow("main write failed");
 		expect(localStorage.getItem("tabs-storage:version")).toBeNull();
+	});
+
+	test("tracks the epoch and drains an in-flight main tabs write", async () => {
+		let releaseWrite: (() => void) | undefined;
+		const writeGate = new Promise<void>((resolve) => {
+			releaseWrite = resolve;
+		});
+		tabsSet.mockImplementationOnce(async () => {
+			await writeGate;
+			return { success: true };
+		});
+		const before = getTabsPersistenceStatus();
+
+		const write = trpcTabsStorage?.setItem("tabs-storage", {
+			state: tabs("local"),
+			version: 8,
+		});
+		await Promise.resolve();
+
+		expect(getTabsPersistenceStatus()).toEqual({
+			epoch: before.epoch + 1,
+			pendingWrites: 1,
+		});
+		let drained = false;
+		const drain = waitForTabsPersistenceIdle().then(() => {
+			drained = true;
+		});
+		await Promise.resolve();
+		expect(drained).toBe(false);
+
+		releaseWrite?.();
+		await Promise.all([write, drain]);
+		expect(getTabsPersistenceStatus()).toEqual({
+			epoch: before.epoch + 1,
+			pendingWrites: 0,
+		});
+	});
+
+	test("persists only the workspace delta from the last renderer snapshot", async () => {
+		const peerBefore = tabs("peer-before", "peer-workspace");
+		const localBefore = tabs("local-before", "local-workspace");
+		const localAfter = tabs("local-after", "local-workspace");
+		const baseline = combineTabs(peerBefore, localBefore);
+		const next = combineTabs(peerBefore, localAfter);
+		tabsBootstrap = { state: baseline, startupPeerPaneIds: [] };
+		await trpcTabsStorage?.getItem("tabs-storage");
+
+		await trpcTabsStorage?.setItem("tabs-storage", {
+			state: next,
+			version: 8,
+		});
+
+		expect(tabsSet).toHaveBeenCalledWith({
+			state: next,
+			changedWorkspaceIds: ["local-workspace"],
+		});
 	});
 });
 

@@ -1,6 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createDefaultAppState } from "main/lib/app-state/schemas";
-import type { RebasePeerUpdateResult } from "main/lib/app-state/sync-service";
+import type {
+	RebasePeerUpdateInput,
+	RebasePeerUpdateResult,
+} from "main/lib/app-state/sync-service";
 import type { PeerAppStateEventMetadata } from "main/lib/app-state/watcher";
 
 mock.module("renderer/lib/electron-trpc", () => ({
@@ -11,7 +14,9 @@ mock.module("renderer/lib/electron-trpc", () => ({
 mock.module("renderer/lib/trpc-client", () => ({ electronTrpcClient: {} }));
 mock.module("renderer/lib/trpc-storage", () => ({
 	acknowledgeTabsSuppressionToken: () => undefined,
+	getTabsPersistenceStatus: () => ({ epoch: 0, pendingWrites: 0 }),
 	setSkipNextTabsPersist: () => undefined,
+	waitForTabsPersistenceIdle: async () => undefined,
 }));
 mock.module("./store", () => ({
 	useTabsStore: { setState: () => undefined, getState: () => ({}) },
@@ -35,7 +40,10 @@ function event(eventId: string, baseRevision = 0): PeerAppStateEventMetadata {
 	};
 }
 
-function committed(label: string, revision: number): RebasePeerUpdateResult {
+function committed(
+	label: string,
+	revision: number,
+): Extract<RebasePeerUpdateResult, { status: "committed" }> {
 	const state = createDefaultAppState("peer-device");
 	state.tabsState.tabs = [];
 	return {
@@ -79,6 +87,37 @@ describe("sequential peer update consumer", () => {
 
 		expect(getLocalWorkspaceMappings).toHaveBeenCalledWith(["canonical"]);
 		expect(inputs).toEqual([{ canonical: "local" }]);
+	});
+
+	test("applies a 1,001-id event once without exposing a futile retry", async () => {
+		const canonicalWorkspaceIds = Array.from(
+			{ length: 1_001 },
+			(_, index) => `canonical-${index}`,
+		);
+		const rebase = mock(async () => committed("large", 1));
+		const applied = mock(async () => undefined);
+		const retryableError = mock(() => undefined);
+		const consumer = createPeerUpdateConsumer({
+			getLocalWorkspaceMappings: async () => ({}),
+			rebasePeerUpdate: rebase,
+			acknowledgeSuppressionToken: () => undefined,
+			applyCommitted: applied,
+			onRetryableError: retryableError,
+		});
+
+		await consumer.enqueue({
+			...event("large-event"),
+			canonicalWorkspaceIds,
+		});
+
+		expect(rebase).toHaveBeenCalledTimes(1);
+		expect(rebase).toHaveBeenCalledWith({
+			eventId: "large-event",
+			baseRevision: 0,
+			canonicalToLocal: {},
+		});
+		expect(applied).toHaveBeenCalledTimes(1);
+		expect(retryableError).not.toHaveBeenCalled();
 	});
 
 	test("never overlaps updates, so a slow older event lands before a newer event", async () => {
@@ -146,6 +185,76 @@ describe("sequential peer update consumer", () => {
 
 		expect(revisions).toEqual([2, 7]);
 		expect(applied).toHaveBeenCalledTimes(1);
+	});
+
+	test("drains a local write started during peer commit and replays before applying", async () => {
+		let epoch = 0;
+		let pendingWrites = 0;
+		let releasePeer: (() => void) | undefined;
+		let markPeerStarted: (() => void) | undefined;
+		let releaseLocal: (() => void) | undefined;
+		const peerGate = new Promise<void>((resolve) => {
+			releasePeer = resolve;
+		});
+		const peerStarted = new Promise<void>((resolve) => {
+			markPeerStarted = resolve;
+		});
+		const localGate = new Promise<void>((resolve) => {
+			releaseLocal = resolve;
+		});
+		const peerOnly = committed("peer", 1);
+		peerOnly.tabsState.activeTabIds = { peer: "peer-tab" };
+		const currentMain = committed("current", 2);
+		currentMain.tabsState.activeTabIds = {
+			peer: "peer-tab",
+			local: "local-tab",
+		};
+		const rebase = mock(async (_input: RebasePeerUpdateInput) => {
+			if (rebase.mock.calls.length === 1) {
+				markPeerStarted?.();
+				await peerGate;
+				return peerOnly;
+			}
+			return currentMain;
+		});
+		const acknowledged: string[] = [];
+		const applied: RebasePeerUpdateResult[] = [];
+		const retryableError = mock(() => undefined);
+		const consumer = createPeerUpdateConsumer({
+			getLocalWorkspaceMappings: async () => ({ canonical: "local" }),
+			rebasePeerUpdate: rebase,
+			getPersistenceStatus: () => ({ epoch, pendingWrites }),
+			waitForPersistenceIdle: async () => {
+				while (pendingWrites > 0) await localGate;
+			},
+			acknowledgeSuppressionToken: (token) => {
+				acknowledged.push(token.token);
+			},
+			applyCommitted: (result) => {
+				applied.push(result);
+			},
+			onRetryableError: retryableError,
+		} as Parameters<typeof createPeerUpdateConsumer>[0]);
+
+		const operation = consumer.enqueue(event("event-race"));
+		await peerStarted;
+		epoch += 1;
+		pendingWrites = 1;
+		releasePeer?.();
+		await Promise.resolve();
+		pendingWrites = 0;
+		releaseLocal?.();
+		await operation;
+
+		expect(rebase).toHaveBeenCalledTimes(2);
+		expect(rebase.mock.calls[1]?.[0]).toMatchObject({
+			eventId: "event-race",
+			baseRevision: 1,
+		});
+		expect(acknowledged).toEqual(["token-current"]);
+		expect(applied).toHaveLength(1);
+		expect(applied[0]).toMatchObject(currentMain);
+		expect(retryableError).not.toHaveBeenCalled();
 	});
 
 	test("does not apply or echo when acknowledgement fails and exposes a retry", async () => {

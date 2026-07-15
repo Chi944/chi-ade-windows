@@ -7,7 +7,12 @@ import type {
 import type { PeerAppStateEventMetadata } from "main/lib/app-state/watcher";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { electronTrpcClient } from "renderer/lib/trpc-client";
-import { acknowledgeTabsSuppressionToken } from "renderer/lib/trpc-storage";
+import {
+	acknowledgeTabsSuppressionToken,
+	getTabsPersistenceStatus,
+	type TabsPersistenceStatus,
+	waitForTabsPersistenceIdle,
+} from "renderer/lib/trpc-storage";
 import { useTabsStore } from "./store";
 import { markSyncedPane } from "./syncedPaneRegistry";
 
@@ -27,6 +32,8 @@ export interface PeerUpdateConsumerDependencies {
 	rebasePeerUpdate: (
 		input: RebasePeerUpdateInput,
 	) => Promise<RebasePeerUpdateResult>;
+	getPersistenceStatus?: () => TabsPersistenceStatus;
+	waitForPersistenceIdle?: () => Promise<void>;
 	acknowledgeSuppressionToken: (
 		token: TabsSuppressionToken,
 		tabsState: CommittedPeerUpdate["tabsState"],
@@ -53,21 +60,31 @@ export function createPeerUpdateConsumer(
 		1,
 		dependencies.maxStaleAttempts ?? MAX_STALE_REBASE_ATTEMPTS,
 	);
+	const getPersistenceStatus =
+		dependencies.getPersistenceStatus ??
+		(() => ({ epoch: 0, pendingWrites: 0 }));
+	const waitForPersistenceIdle =
+		dependencies.waitForPersistenceIdle ?? (async () => undefined);
 
 	const process = async (event: PeerAppStateEventMetadata): Promise<void> => {
 		let baseRevision = event.baseRevision;
+		let committedMappings: Record<string, string> | undefined;
 		for (let attempt = 0; attempt < maxStaleAttempts; attempt += 1) {
-			const availableMappings = await dependencies.getLocalWorkspaceMappings(
-				event.canonicalWorkspaceIds,
-			);
-			const canonicalToLocal = Object.fromEntries(
-				event.canonicalWorkspaceIds.flatMap((canonical) => {
-					const localWorkspaceId = availableMappings[canonical];
-					return localWorkspaceId
-						? [[canonical, localWorkspaceId] as const]
-						: [];
-				}),
-			);
+			const persistenceBefore = getPersistenceStatus();
+			let canonicalToLocal = committedMappings;
+			if (!canonicalToLocal) {
+				const availableMappings = await dependencies.getLocalWorkspaceMappings(
+					event.canonicalWorkspaceIds,
+				);
+				canonicalToLocal = Object.fromEntries(
+					event.canonicalWorkspaceIds.flatMap((canonical) => {
+						const localWorkspaceId = availableMappings[canonical];
+						return localWorkspaceId
+							? [[canonical, localWorkspaceId] as const]
+							: [];
+					}),
+				);
+			}
 			const result = await dependencies.rebasePeerUpdate({
 				eventId: event.eventId,
 				baseRevision,
@@ -75,10 +92,24 @@ export function createPeerUpdateConsumer(
 			});
 			if (result.status === "stale") {
 				baseRevision = result.revision;
+				committedMappings = undefined;
 				continue;
 			}
 			if (result.status === "rejected") {
 				throw new Error(`Peer update rejected: ${result.reason}`);
+			}
+			const persistenceOnReply = getPersistenceStatus();
+			await waitForPersistenceIdle();
+			const persistenceAfterDrain = getPersistenceStatus();
+			if (
+				persistenceBefore.pendingWrites > 0 ||
+				persistenceOnReply.pendingWrites > 0 ||
+				persistenceAfterDrain.pendingWrites > 0 ||
+				persistenceAfterDrain.epoch !== persistenceBefore.epoch
+			) {
+				baseRevision = result.revision;
+				committedMappings = canonicalToLocal;
+				continue;
 			}
 			dependencies.acknowledgeSuppressionToken(
 				result.suppressionToken,
@@ -144,6 +175,8 @@ const peerUpdateConsumer = createPeerUpdateConsumer({
 		}),
 	rebasePeerUpdate: (input) =>
 		electronTrpcClient.sync.rebasePeerUpdate.mutate(input),
+	getPersistenceStatus: getTabsPersistenceStatus,
+	waitForPersistenceIdle: waitForTabsPersistenceIdle,
 	acknowledgeSuppressionToken: acknowledgeTabsSuppressionToken,
 	applyCommitted: applyCommittedPeerUpdate,
 	onRetryableError: (message, retry) => {

@@ -1,5 +1,9 @@
 import { observable } from "@trpc/server/observable";
 import { getAppStateSnapshot } from "main/lib/app-state";
+import {
+	canonicalWorkspaceIdSchema,
+	MAX_PEER_MERGE_CANONICAL_IDS,
+} from "main/lib/app-state/schemas";
 import { peerSyncService } from "main/lib/app-state/sync-service";
 import {
 	appStateWatcher,
@@ -17,14 +21,19 @@ const rebasePeerUpdateInputSchema = z.strictObject({
 	eventId: z.string().min(1).max(256),
 	baseRevision: z.number().int().nonnegative(),
 	canonicalToLocal: z
-		.record(z.string().min(1).max(128), z.string().min(1).max(256))
-		.refine((value) => Object.keys(value).length <= 1_000, {
-			message: "Too many workspace mappings",
-		}),
+		.record(canonicalWorkspaceIdSchema, z.string().min(1).max(256))
+		.refine(
+			(value) => Object.keys(value).length <= MAX_PEER_MERGE_CANONICAL_IDS,
+			{
+				message: "Too many workspace mappings",
+			},
+		),
 });
 
 const localWorkspaceMappingsInputSchema = z.strictObject({
-	canonicalWorkspaceIds: z.array(z.string().min(1).max(128)).max(1_000),
+	canonicalWorkspaceIds: z
+		.array(canonicalWorkspaceIdSchema)
+		.max(MAX_PEER_MERGE_CANONICAL_IDS),
 });
 
 function localWorkspaceResolutionHints(

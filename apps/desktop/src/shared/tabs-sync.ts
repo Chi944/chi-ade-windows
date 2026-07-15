@@ -13,6 +13,10 @@ export interface PortableWorkspaceIdentity {
 	metadata: AppStateSyncEnvelope["workspaceMetadata"][string];
 }
 
+export type LocalWorkspaceIdentityResolution =
+	| ({ status: "verified" } & PortableWorkspaceIdentity)
+	| { status: "missing" | "ambiguous" | "deleted" | "unresolved" };
+
 export interface SeededWorkspaceClocks {
 	clocks: Record<string, WorkspaceClock>;
 	warnings: string[];
@@ -155,6 +159,84 @@ function workspaceSlice(tabsState: TabsState, workspaceId: string): TabsState {
 	};
 }
 
+export function changedTabsWorkspaceIds(
+	previousTabs: TabsState,
+	nextTabs: TabsState,
+): string[] {
+	const ids = new Set([
+		...workspaceIds(previousTabs),
+		...workspaceIds(nextTabs),
+	]);
+	return [...ids]
+		.filter(
+			(workspaceId) =>
+				hashTabsState(workspaceSlice(previousTabs, workspaceId)) !==
+				hashTabsState(workspaceSlice(nextTabs, workspaceId)),
+		)
+		.sort();
+}
+
+/** Overlay renderer-local workspace changes onto the latest main snapshot. */
+export function overlayTabsWorkspaceChanges(input: {
+	currentTabs: TabsState;
+	incomingTabs: TabsState;
+	changedWorkspaceIds: readonly string[];
+}): TabsState {
+	const changedWorkspaceIds = new Set(input.changedWorkspaceIds);
+	const retainedTabs = input.currentTabs.tabs.filter(
+		(tab) => !changedWorkspaceIds.has(tab.workspaceId),
+	);
+	const incomingTabs = input.incomingTabs.tabs.filter((tab) =>
+		changedWorkspaceIds.has(tab.workspaceId),
+	);
+	const retainedTabIds = new Set(retainedTabs.map((tab) => tab.id));
+	const incomingTabIds = new Set(incomingTabs.map((tab) => tab.id));
+	const panes = Object.fromEntries(
+		Object.entries(input.currentTabs.panes).filter(([, pane]) =>
+			retainedTabIds.has(pane.tabId),
+		),
+	);
+	for (const [paneId, pane] of Object.entries(input.incomingTabs.panes)) {
+		if (incomingTabIds.has(pane.tabId)) panes[paneId] = pane;
+	}
+	const activeTabIds = Object.fromEntries(
+		Object.entries(input.currentTabs.activeTabIds).filter(
+			([workspaceId]) => !changedWorkspaceIds.has(workspaceId),
+		),
+	);
+	const tabHistoryStacks = Object.fromEntries(
+		Object.entries(input.currentTabs.tabHistoryStacks).filter(
+			([workspaceId]) => !changedWorkspaceIds.has(workspaceId),
+		),
+	);
+	for (const workspaceId of changedWorkspaceIds) {
+		if (Object.hasOwn(input.incomingTabs.activeTabIds, workspaceId)) {
+			activeTabIds[workspaceId] = input.incomingTabs.activeTabIds[workspaceId];
+		}
+		if (Object.hasOwn(input.incomingTabs.tabHistoryStacks, workspaceId)) {
+			tabHistoryStacks[workspaceId] =
+				input.incomingTabs.tabHistoryStacks[workspaceId];
+		}
+	}
+	const focusedPaneIds = Object.fromEntries(
+		Object.entries(input.currentTabs.focusedPaneIds).filter(([tabId]) =>
+			retainedTabIds.has(tabId),
+		),
+	);
+	for (const [tabId, paneId] of Object.entries(
+		input.incomingTabs.focusedPaneIds,
+	)) {
+		if (incomingTabIds.has(tabId)) focusedPaneIds[tabId] = paneId;
+	}
+	return {
+		tabs: [...retainedTabs, ...incomingTabs],
+		panes,
+		activeTabIds,
+		focusedPaneIds,
+		tabHistoryStacks,
+	};
+}
+
 function workspaceSessionSlice(
 	tabsState: TabsState,
 	paneClaudeSessions: Record<string, string>,
@@ -187,7 +269,7 @@ export function stampLocalTabsMutation(input: {
 	previousTabs: TabsState;
 	nextTabs: TabsState;
 	envelope: AppStateSyncEnvelope;
-	identities: Record<string, PortableWorkspaceIdentity | undefined>;
+	identities: Record<string, LocalWorkspaceIdentityResolution | undefined>;
 	deviceId: string;
 	now: number;
 	paneClaudeSessions: Record<string, string>;
@@ -224,21 +306,79 @@ export function stampLocalTabsMutation(input: {
 
 	const timestamp = Math.max(input.now, maxKnownTimestamp(input.envelope) + 1);
 	const changedCanonicalIds: string[] = [];
+	const changedWorkspaceIdSet = new Set(changedWorkspaceIds);
 	const claimedCanonicalIds = new Map<string, string>();
+	const invalidatePersistedIdentity = (workspaceId: string): void => {
+		const staleCanonical = nextEnvelope.localToCanonical[workspaceId];
+		delete nextEnvelope.localToCanonical[workspaceId];
+		if (
+			!staleCanonical ||
+			Object.values(nextEnvelope.localToCanonical).includes(staleCanonical)
+		) {
+			return;
+		}
+		delete nextEnvelope.perWorkspaceWrittenAt[staleCanonical];
+		if (!nextEnvelope.workspaceTombstones[staleCanonical]) {
+			delete nextEnvelope.workspaceMetadata[staleCanonical];
+		}
+	};
+	// Proven ambiguity or a verified canonical change can be discovered during a
+	// different workspace mutation, so clear stale mappings globally. A transient
+	// read failure is destructive only for the workspace actually being changed.
+	for (const workspaceId of ids) {
+		const resolution = input.identities[workspaceId];
+		const persistedCanonical = input.envelope.localToCanonical[workspaceId];
+		const hasTabs = input.nextTabs.tabs.some(
+			(tab) => tab.workspaceId === workspaceId,
+		);
+		const shouldInvalidate =
+			(resolution?.status === "verified" &&
+				Boolean(persistedCanonical) &&
+				persistedCanonical !== resolution.canonical) ||
+			resolution?.status === "ambiguous" ||
+			resolution?.status === "missing" ||
+			(resolution?.status === "deleted" && hasTabs) ||
+			((resolution === undefined || resolution.status === "unresolved") &&
+				changedWorkspaceIdSet.has(workspaceId));
+		if (shouldInvalidate) {
+			invalidatePersistedIdentity(workspaceId);
+		}
+	}
 
 	for (const workspaceId of changedWorkspaceIds.sort()) {
-		const identity = input.identities[workspaceId];
+		const resolution = input.identities[workspaceId];
+		const persistedCanonical = input.envelope.localToCanonical[workspaceId];
+		const hasTabs = input.nextTabs.tabs.some(
+			(tab) => tab.workspaceId === workspaceId,
+		);
+		const canUseDeletionFallback =
+			!hasTabs && resolution?.status === "deleted" && persistedCanonical;
 		const canonical =
-			identity?.canonical ?? input.envelope.localToCanonical[workspaceId];
+			resolution?.status === "verified"
+				? resolution.canonical
+				: canUseDeletionFallback || undefined;
 		if (!canonical) {
+			invalidatePersistedIdentity(workspaceId);
 			addWarning(
 				warnings,
-				"A local workspace was not synchronized because its identity is unresolved.",
+				resolution?.status === "ambiguous"
+					? "A local workspace was not synchronized because its identity is ambiguous."
+					: resolution?.status === "unresolved"
+						? "A local workspace was not synchronized because its identity could not be read."
+						: resolution?.status === "missing"
+							? "A local workspace was not synchronized because it is missing."
+							: resolution?.status === "deleted"
+								? "A local workspace was not synchronized because a deleted identity remained active."
+								: "A local workspace was not synchronized because its identity is unresolved.",
 			);
 			continue;
 		}
+		if (persistedCanonical && persistedCanonical !== canonical) {
+			invalidatePersistedIdentity(workspaceId);
+		}
 		const claimedBy = claimedCanonicalIds.get(canonical);
 		if (claimedBy && claimedBy !== workspaceId) {
+			invalidatePersistedIdentity(workspaceId);
 			addWarning(
 				warnings,
 				"A local workspace identity collision was rejected.",
@@ -246,15 +386,12 @@ export function stampLocalTabsMutation(input: {
 			continue;
 		}
 		claimedCanonicalIds.set(canonical, workspaceId);
-		if (identity) {
-			nextEnvelope.workspaceMetadata[canonical] = identity.metadata;
+		if (resolution?.status === "verified") {
+			nextEnvelope.workspaceMetadata[canonical] = resolution.metadata;
 			nextEnvelope.localToCanonical[workspaceId] = canonical;
 		}
 		const clock = { deviceId: input.deviceId, at: timestamp };
 		nextEnvelope.perWorkspaceWrittenAt[canonical] = clock;
-		const hasTabs = input.nextTabs.tabs.some(
-			(tab) => tab.workspaceId === workspaceId,
-		);
 		if (hasTabs) {
 			delete nextEnvelope.workspaceTombstones[canonical];
 		} else {

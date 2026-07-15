@@ -86,8 +86,6 @@ export class ValidatedPeerEventCache {
 				...new Set([
 					...Object.keys(normalized.sync.perWorkspaceWrittenAt),
 					...Object.keys(normalized.sync.workspaceTombstones),
-					...Object.keys(normalized.sync.workspaceMetadata),
-					...Object.values(normalized.sync.localToCanonical),
 				]),
 			].sort(),
 		};

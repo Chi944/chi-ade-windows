@@ -9,6 +9,8 @@ import {
 import {
 	type AppState,
 	hotkeysStateSchema,
+	MAX_APP_STATE_RECORD_ENTRIES,
+	MAX_APP_STATE_STRING_LENGTH,
 	type TabsState,
 	type ThemeState,
 	tabsStateSchema,
@@ -16,7 +18,7 @@ import {
 } from "main/lib/app-state/schemas";
 import { hotkeysEmitter } from "main/lib/hotkeys-events";
 import { localDb } from "main/lib/local-db";
-import { getCanonicalForLocalWorkspaceId } from "main/lib/sync/workspace-identity";
+import { getLocalWorkspaceIdentityResolutions } from "main/lib/sync/workspace-identity";
 import { HistoryReader } from "main/lib/terminal-history";
 import {
 	buildOverridesFromBindings,
@@ -25,10 +27,25 @@ import {
 } from "shared/hotkeys";
 import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
 import {
-	type PortableWorkspaceIdentity,
+	overlayTabsWorkspaceChanges,
 	stampLocalTabsMutation,
 } from "shared/tabs-sync";
+import { z } from "zod";
 import { publicProcedure, router } from "../..";
+
+const tabsSetInputSchema = z.union([
+	z.strictObject({
+		state: tabsStateSchema,
+		changedWorkspaceIds: z
+			.array(z.string().min(1).max(MAX_APP_STATE_STRING_LENGTH))
+			.max(MAX_APP_STATE_RECORD_ENTRIES)
+			.transform((workspaceIds) => [...new Set(workspaceIds)].sort()),
+	}),
+	tabsStateSchema.transform((state) => ({
+		state,
+		changedWorkspaceIds: null,
+	})),
+]);
 
 function stampSyncEnvelopeBare(draft: AppState): void {
 	draft.sync.deviceId = getDeviceId();
@@ -56,13 +73,9 @@ async function stampSyncEnvelopeForTabs(
 	for (const workspaceId of Object.keys(input.tabHistoryStacks)) {
 		workspaceIds.add(workspaceId);
 	}
-	const identities: Record<string, PortableWorkspaceIdentity | undefined> = {};
-	for (const workspaceId of workspaceIds) {
-		const identity = getCanonicalForLocalWorkspaceId(workspaceId);
-		identities[workspaceId] = identity
-			? { canonical: identity.canonical, metadata: identity.meta }
-			: undefined;
-	}
+	const identities = getLocalWorkspaceIdentityResolutions(
+		[...workspaceIds].sort(),
+	);
 
 	const workspaceIdByTabId = new Map(
 		input.tabs.map((tab) => [tab.id, tab.workspaceId] as const),
@@ -136,15 +149,22 @@ export const createUiStateRouter = () =>
 			})),
 
 			set: publicProcedure
-				.input(tabsStateSchema)
+				.input(tabsSetInputSchema)
 				.mutation(async ({ input }) => {
 					const persistedState = sanitizeSubscriptionProfilesForPersistence({
-						state: input,
+						state: input.state,
 						...getSubscriptionProfileWorkspaceClassification(),
 					});
 					await enqueueAppStateMutation("ui-state.tabs.set", async (draft) => {
-						await stampSyncEnvelopeForTabs(draft, persistedState);
-						draft.tabsState = persistedState;
+						const nextState = input.changedWorkspaceIds
+							? overlayTabsWorkspaceChanges({
+									currentTabs: draft.tabsState,
+									incomingTabs: persistedState,
+									changedWorkspaceIds: input.changedWorkspaceIds,
+								})
+							: persistedState;
+						await stampSyncEnvelopeForTabs(draft, nextState);
+						draft.tabsState = nextState;
 					});
 					return { success: true };
 				}),

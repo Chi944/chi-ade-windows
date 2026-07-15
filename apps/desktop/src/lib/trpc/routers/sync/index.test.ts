@@ -191,6 +191,41 @@ describe("sync router coordinated peer adoption", () => {
 		expect(getCanonicalForLocalWorkspaceId).not.toHaveBeenCalled();
 	});
 
+	test("accepts every canonical id from a valid large tombstone event", async () => {
+		const caller = createSyncRouter().createCaller({});
+		const canonicalWorkspaceIds = Array.from(
+			{ length: 1_001 },
+			(_, index) => `canonical-${index}`,
+		);
+
+		await expect(
+			caller.localWorkspaceMappings({ canonicalWorkspaceIds }),
+		).resolves.toEqual({});
+		expect(getLocalWorkspaceMappingsForCanonicalIds).toHaveBeenCalledWith(
+			canonicalWorkspaceIds,
+			expect.any(Object),
+		);
+		const canonicalToLocal = Object.fromEntries(
+			canonicalWorkspaceIds.map((canonical, index) => [
+				canonical,
+				`local-${index}`,
+			]),
+		);
+
+		await expect(
+			caller.rebasePeerUpdate({
+				eventId: "large-event",
+				baseRevision: 0,
+				canonicalToLocal,
+			}),
+		).resolves.toEqual({ status: "stale", revision: 9 });
+		expect(rebasePeerUpdate).toHaveBeenCalledWith({
+			eventId: "large-event",
+			baseRevision: 0,
+			canonicalToLocal,
+		});
+	});
+
 	test("validates and forwards a rebase request to the main sync service", async () => {
 		const caller = createSyncRouter().createCaller({});
 		const input = {

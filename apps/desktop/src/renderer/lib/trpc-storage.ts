@@ -1,7 +1,7 @@
 import type { TabsState } from "main/lib/app-state/schemas";
 import type { TabsSuppressionToken } from "main/lib/app-state/sync-service";
 import type { HotkeysState } from "shared/hotkeys";
-import { hashTabsState } from "shared/tabs-sync";
+import { changedTabsWorkspaceIds, hashTabsState } from "shared/tabs-sync";
 import { createJSONStorage, type StateStorage } from "zustand/middleware";
 import { markSyncedPane } from "../stores/tabs/syncedPaneRegistry";
 import { electronTrpcClient } from "./trpc-client";
@@ -94,6 +94,53 @@ export function createTabsSuppressionTokenRegistry(
 
 let tabsSuppressionTokens = createTabsSuppressionTokenRegistry();
 
+export interface TabsPersistenceStatus {
+	epoch: number;
+	pendingWrites: number;
+}
+
+let tabsPersistenceEpoch = 0;
+const pendingTabsPersistenceWrites = new Set<Promise<unknown>>();
+let tabsPersistenceTail: Promise<void> = Promise.resolve();
+let lastRendererTabsState: TabsState | null = null;
+
+function trackTabsPersistenceWrite(
+	operation: () => Promise<unknown>,
+): Promise<unknown> {
+	tabsPersistenceEpoch += 1;
+	let write: Promise<unknown>;
+	try {
+		write = operation();
+	} catch (error) {
+		return Promise.reject(error);
+	}
+	pendingTabsPersistenceWrites.add(write);
+	const clear = () => pendingTabsPersistenceWrites.delete(write);
+	void write.then(clear, clear);
+	return write;
+}
+
+export function getTabsPersistenceStatus(): TabsPersistenceStatus {
+	return {
+		epoch: tabsPersistenceEpoch,
+		pendingWrites: pendingTabsPersistenceWrites.size,
+	};
+}
+
+export async function waitForTabsPersistenceIdle(): Promise<void> {
+	while (pendingTabsPersistenceWrites.size > 0) {
+		await Promise.allSettled([...pendingTabsPersistenceWrites]);
+	}
+}
+
+/** @internal Test seam. */
+export function resetTabsPersistenceForTests(): void {
+	tabsPersistenceEpoch = 0;
+	pendingTabsPersistenceWrites.clear();
+	tabsPersistenceTail = Promise.resolve();
+	lastRendererTabsState = null;
+}
+
 export function acknowledgeTabsSuppressionToken(
 	token: TabsSuppressionToken,
 	tabsState: TabsState,
@@ -181,6 +228,7 @@ export const trpcTabsStorage = createJSONStorage(() =>
 			for (const paneId of bootstrap.startupPeerPaneIds) {
 				markSyncedPane(paneId);
 			}
+			lastRendererTabsState = structuredClone(bootstrap.state);
 			return bootstrap.state;
 		},
 		set: (input) => {
@@ -188,10 +236,30 @@ export const trpcTabsStorage = createJSONStorage(() =>
 				input as Parameters<typeof partializeTabsStoreState>[0],
 			);
 			if (tabsSuppressionTokens.consume(persisted)) {
+				lastRendererTabsState = structuredClone(persisted);
 				return Promise.resolve();
 			}
-			// biome-ignore lint/suspicious/noExplicitAny: Zustand persist passes unknown, tRPC expects typed input
-			return electronTrpcClient.uiState.tabs.set.mutate(persisted as any);
+			return trackTabsPersistenceWrite(() => {
+				const operation = tabsPersistenceTail.then(async () => {
+					const previous = lastRendererTabsState;
+					const payload = previous
+						? {
+								state: persisted,
+								changedWorkspaceIds: changedTabsWorkspaceIds(
+									previous,
+									persisted,
+								),
+							}
+						: persisted;
+					// biome-ignore lint/suspicious/noExplicitAny: Zustand persist passes unknown, tRPC expects typed input
+					await electronTrpcClient.uiState.tabs.set.mutate(payload as any);
+					lastRendererTabsState = structuredClone(persisted);
+				});
+				tabsPersistenceTail = operation
+					.then(() => undefined)
+					.catch(() => undefined);
+				return operation;
+			});
 		},
 	}),
 );
