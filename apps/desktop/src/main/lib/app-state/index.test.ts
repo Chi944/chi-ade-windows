@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
 import {
 	chmod,
 	mkdir,
@@ -103,6 +104,88 @@ describe("validated app-state initialization", () => {
 		expect(result).toMatchObject({ source: "loaded", trust: "trusted" });
 		expect(getAppStateSnapshot()).toEqual(state);
 		expect(after.mtimeMs).toBe(before.mtimeMs);
+	});
+
+	test.each([
+		["missing tabs state", {}],
+		["missing tabs and panes", { tabsState: {} }],
+	])("quarantines %s without reconciling away existing bindings or homes", async (_name, incompleteState) => {
+		const home = await createTemporaryHome();
+		const raw = JSON.stringify(incompleteState);
+		await writeFile(join(home, "app-state.json"), raw, "utf8");
+		const bindingPath = join(home, "existing-pane-binding.json");
+		const profileHome = join(home, "existing-profile-home");
+		await writeFile(bindingPath, "binding-must-survive", "utf8");
+		await mkdir(profileHome);
+		await writeFile(
+			join(profileHome, "credentials.json"),
+			"home-must-survive",
+			"utf8",
+		);
+		const reconcileBindings = mock(() => {
+			rmSync(bindingPath, { force: true });
+			rmSync(profileHome, { recursive: true, force: true });
+			return { removedBindings: 1, prunedHomes: 1 };
+		});
+
+		const result = await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "local-device",
+			reconciliation: {
+				resolveLocalWorkspaceId: () => null,
+				getCanonicalForLocalWorkspaceId: () => null,
+				getRemoteWorkspaceIds: () => new Set<string>(),
+				reconcileBindings,
+			},
+		});
+
+		expect(result).toMatchObject({
+			source: "invalid-shape",
+			trust: "recovered",
+			reconciliation: { status: "deferred" },
+		});
+		expect(reconcileBindings).not.toHaveBeenCalled();
+		expect(existsSync(bindingPath)).toBe(true);
+		expect(await readFile(join(profileHome, "credentials.json"), "utf8")).toBe(
+			"home-must-survive",
+		);
+		expect(
+			await readFile(join(home, requireQuarantineFile(result)), "utf8"),
+		).toBe(raw);
+	});
+
+	test("keeps a supported legacy snapshot trusted when tabs and panes are present", async () => {
+		const home = await createTemporaryHome();
+		await writeFile(
+			join(home, "app-state.json"),
+			JSON.stringify({
+				tabsState: { tabs: [], panes: {} },
+				themeState: { activeThemeId: "system" },
+			}),
+			"utf8",
+		);
+		const reconcileBindings = mock(() => ({
+			removedBindings: 0,
+			prunedHomes: 0,
+		}));
+
+		const result = await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "local-device",
+			reconciliation: {
+				resolveLocalWorkspaceId: () => null,
+				getCanonicalForLocalWorkspaceId: () => null,
+				getRemoteWorkspaceIds: () => new Set<string>(),
+				reconcileBindings,
+			},
+		});
+
+		expect(result).toMatchObject({
+			source: "loaded",
+			trust: "trusted",
+			reconciliation: { status: "completed" },
+		});
+		expect(reconcileBindings).toHaveBeenCalledTimes(1);
 	});
 
 	test.each([

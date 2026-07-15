@@ -200,6 +200,17 @@ describe("app-state runtime validation", () => {
 		});
 	});
 
+	test.each([
+		{},
+		{ tabsState: {} },
+	])("rejects a persisted snapshot without the durable tabs core: %p", (input) => {
+		expect(() =>
+			parseAppStateJson(JSON.stringify(input), {
+				deviceId: LOCAL_DEVICE_ID,
+			}),
+		).toThrow(/tabs|panes|core|shape/i);
+	});
+
 	test("returns deep clones and never shares mutable defaults", () => {
 		const first = normalize({});
 		const second = normalize({});

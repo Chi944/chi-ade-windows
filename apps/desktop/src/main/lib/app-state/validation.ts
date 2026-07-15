@@ -70,6 +70,25 @@ function validationMessage(error: z.ZodError): string {
 		.join("; ");
 }
 
+function assertDurableTabsCore(input: unknown): void {
+	if (typeof input !== "object" || input === null || Array.isArray(input)) {
+		return;
+	}
+	const tabsState = (input as Record<string, unknown>).tabsState;
+	if (
+		typeof tabsState !== "object" ||
+		tabsState === null ||
+		Array.isArray(tabsState) ||
+		!Object.hasOwn(tabsState, "tabs") ||
+		!Object.hasOwn(tabsState, "panes")
+	) {
+		throw new AppStateValidationError(
+			"invalid-shape",
+			"Persisted app state is missing the durable tabs and panes core",
+		);
+	}
+}
+
 function collectLayoutPaneIds(
 	layout: PersistedMosaicNode,
 	ids: string[],
@@ -261,5 +280,6 @@ export function parseAppStateJson(
 			"App-state JSON could not be parsed",
 		);
 	}
+	assertDurableTabsCore(parsed);
 	return normalizeAppState(parsed, options);
 }

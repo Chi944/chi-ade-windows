@@ -21,6 +21,96 @@ const TEST_ROOT = join(
 );
 const IGNORE_PATH = join(TEST_ROOT, ".stignore");
 
+function parseSyncthingEscapeRune(lines: string[]): string {
+	let escapeRune = "\\";
+	let sawDirective = false;
+	let sawPattern = false;
+	for (const rawLine of lines) {
+		const line = rawLine.trim();
+		if (line.startsWith("#escape")) {
+			if (sawDirective || sawPattern) {
+				throw new Error("invalid #escape placement");
+			}
+			const directive = line.slice("#escape".length).trim();
+			if (!directive.startsWith("=")) {
+				throw new Error("invalid #escape directive");
+			}
+			const runes = [...directive.slice(1).trim()];
+			if (runes.length !== 1) {
+				throw new Error("invalid #escape rune");
+			}
+			[escapeRune] = runes;
+			sawDirective = true;
+			continue;
+		}
+		if (line === "" || line.startsWith("//")) continue;
+		sawPattern = true;
+	}
+	return escapeRune;
+}
+
+function applySyncthingEscapeRune(pattern: string, escapeRune: string): string {
+	if (escapeRune === "\\") return pattern;
+	const runes = [...pattern];
+	let escaped = "";
+	for (let index = 0; index < runes.length; index += 1) {
+		if (runes[index] !== escapeRune) {
+			escaped += runes[index];
+			continue;
+		}
+		if (runes[index + 1] === escapeRune) {
+			escaped += `\\${escapeRune}`;
+			index += 1;
+		} else {
+			escaped += "\\";
+		}
+	}
+	return escaped;
+}
+
+function managedPatternMatches(contents: string, path: string): boolean {
+	const lines = contents.split(/\r?\n/);
+	const escapeRune = parseSyncthingEscapeRune(lines);
+	const begin = lines.findIndex(
+		(line) => line.trim() === SENSITIVE_SYNC_IGNORE_BEGIN,
+	);
+	const end = lines.findIndex(
+		(line) => line.trim() === SENSITIVE_SYNC_IGNORE_END,
+	);
+	if (begin === -1 || end <= begin) {
+		throw new Error("managed block missing");
+	}
+	const candidate = path.startsWith("/") ? path.slice(1) : path;
+	return lines.slice(begin + 1, end).some((rawPattern) => {
+		const pattern = rawPattern.trim();
+		if (!pattern.startsWith("/")) return false;
+		const compiled = applySyncthingEscapeRune(pattern.slice(1), escapeRune);
+		return new Bun.Glob(compiled).match(candidate);
+	});
+}
+
+function expectManagedRecoverySemantics(contents: string): void {
+	expect(
+		managedPatternMatches(
+			contents,
+			"/app-state.quarantine.1700000000000.id.json",
+		),
+	).toBe(true);
+	expect(managedPatternMatches(contents, "/.app-state.json.123.id.tmp")).toBe(
+		true,
+	);
+	expect(
+		managedPatternMatches(
+			contents,
+			"/nested/app-state.quarantine.1700000000000.id.json",
+		),
+	).toBe(false);
+	expect(
+		managedPatternMatches(contents, "/nested/.app-state.json.123.id.tmp"),
+	).toBe(false);
+	expect(managedPatternMatches(contents, "/app-state.json")).toBe(false);
+}
+
 afterEach(() => {
 	rmSync(TEST_ROOT, { recursive: true, force: true });
 });
@@ -121,15 +211,6 @@ describe("ensureSensitiveSyncIgnore", () => {
 
 		ensureSensitiveSyncIgnore(TEST_ROOT);
 		const contents = readFileSync(IGNORE_PATH, "utf8");
-		const managedContents = contents.slice(
-			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
-			contents.indexOf(SENSITIVE_SYNC_IGNORE_END),
-		);
-		const managedPatterns = managedContents
-			.split(/\r?\n/)
-			.filter((line) => line.startsWith("/"));
-		const isManagedIgnored = (path: string) =>
-			managedPatterns.some((pattern) => new Bun.Glob(pattern).match(path));
 
 		expect(contents.indexOf("/app-state.quarantine.*.json")).toBeLessThan(
 			contents.indexOf("!/app-state.quarantine.*.json"),
@@ -137,15 +218,7 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(contents.indexOf("/.app-state.json.*.tmp")).toBeLessThan(
 			contents.indexOf("!/.app-state.json.*.tmp"),
 		);
-		expect(
-			isManagedIgnored("/app-state.quarantine.1700000000000.id.json"),
-		).toBe(true);
-		expect(isManagedIgnored("/.app-state.json.123.id.tmp")).toBe(true);
-		expect(
-			isManagedIgnored("/nested/app-state.quarantine.1700000000000.id.json"),
-		).toBe(false);
-		expect(isManagedIgnored("/nested/.app-state.json.123.id.tmp")).toBe(false);
-		expect(isManagedIgnored("/app-state.json")).toBe(false);
+		expectManagedRecoverySemantics(contents);
 	});
 
 	test("keeps an LF escape directive and its leading preamble before managed patterns", () => {
@@ -178,10 +251,10 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
 	});
 
-	test("keeps a CRLF pipe escape directive before managed and user patterns", () => {
+	test("keeps an indented CRLF pipe escape preamble before managed and user patterns", () => {
 		mkdirSync(TEST_ROOT, { recursive: true });
 		const prefix = Buffer.from(
-			"\r\n// keep this Windows preamble\r\n#escape=|\r\n",
+			" \t\r\n  // keep this Windows preamble\r\n\t#escape \t= \t| \t\r\n  // keep after directive\r\n",
 			"utf8",
 		);
 		const suffix = Buffer.from(
@@ -198,14 +271,57 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(first.subarray(first.length - suffix.length).equals(suffix)).toBe(
 			true,
 		);
-		expect(contents.indexOf("#escape=|")).toBeLessThan(
+		expect(contents.indexOf("#escape \t= \t| ")).toBeLessThan(
 			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
 		);
 		expect(contents.indexOf(SENSITIVE_SYNC_IGNORE_END)).toBeLessThan(
 			contents.indexOf("|{literal|}"),
 		);
+		expectManagedRecoverySemantics(contents);
 		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(false);
 		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
+	});
+
+	test("keeps a one-rune Unicode escape directive without changing managed wildcard semantics", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		const prefix = Buffer.from(
+			"\t// Unicode escape preamble\n \t\n  #escape = 界  \n",
+			"utf8",
+		);
+		const suffix = Buffer.from(
+			"界{literal界}\n!/app-state.quarantine.*.json\n",
+			"utf8",
+		);
+		writeFileSync(IGNORE_PATH, Buffer.concat([prefix, suffix]));
+
+		ensureSensitiveSyncIgnore(TEST_ROOT);
+		const first = readFileSync(IGNORE_PATH);
+		const contents = first.toString("utf8");
+
+		expect(first.subarray(0, prefix.length).equals(prefix)).toBe(true);
+		expect(first.subarray(first.length - suffix.length).equals(suffix)).toBe(
+			true,
+		);
+		expect(contents.indexOf("#escape = 界")).toBeLessThan(
+			contents.indexOf(SENSITIVE_SYNC_IGNORE_BEGIN),
+		);
+		expectManagedRecoverySemantics(contents);
+		expect(ensureSensitiveSyncIgnore(TEST_ROOT).changed).toBe(false);
+		expect(readFileSync(IGNORE_PATH).equals(first)).toBe(true);
+	});
+
+	test("fails closed when the escape rune collides with managed wildcards", () => {
+		mkdirSync(TEST_ROOT, { recursive: true });
+		const original = Buffer.from(
+			"  // valid preamble\r\n#escape = *\r\n/custom/**\r\n",
+			"utf8",
+		);
+		writeFileSync(IGNORE_PATH, original);
+
+		expect(() => ensureSensitiveSyncIgnore(TEST_ROOT)).toThrow(
+			/escape|wildcard|managed/i,
+		);
+		expect(readFileSync(IGNORE_PATH).equals(original)).toBe(true);
 	});
 
 	test("is byte-for-byte idempotent", () => {

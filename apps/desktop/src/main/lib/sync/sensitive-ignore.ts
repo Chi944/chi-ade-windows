@@ -43,7 +43,12 @@ const MANAGED_BLOCK = Buffer.from(
 );
 const BEGIN_BYTES = Buffer.from(SENSITIVE_SYNC_IGNORE_BEGIN, "utf8");
 const END_BYTES = Buffer.from(SENSITIVE_SYNC_IGNORE_END, "utf8");
-const ESCAPE_DIRECTIVE_PREFIX = Buffer.from("#escape=", "utf8");
+const ESCAPE_DIRECTIVE_PREFIX = "#escape";
+
+interface LeadingEscapeDirective {
+	escapeRune: string;
+	preambleEnd: number;
+}
 
 export interface SensitiveSyncIgnoreResult {
 	path: string;
@@ -120,6 +125,16 @@ function withManagedBlock(original: Buffer): Buffer {
 		) {
 			throw new Error("Sync-ignore contains a malformed managed block");
 		}
+		const directive = findLeadingEscapeDirective(original);
+		const expectedBegin = directive?.preambleEnd ?? 0;
+		if (begin === expectedBegin) {
+			assertManagedBlockSupportsEscapeRune(directive?.escapeRune);
+			return Buffer.concat([
+				original.subarray(0, begin),
+				MANAGED_BLOCK,
+				original.subarray(end),
+			]);
+		}
 		return prependManagedBlock(
 			Buffer.concat([original.subarray(0, begin), original.subarray(end)]),
 		);
@@ -129,10 +144,11 @@ function withManagedBlock(original: Buffer): Buffer {
 }
 
 function prependManagedBlock(outside: Buffer): Buffer {
-	const directiveEnd = findLeadingEscapeDirectiveEnd(outside);
-	if (directiveEnd !== -1) {
-		const prefix = outside.subarray(0, directiveEnd);
-		const suffix = outside.subarray(directiveEnd);
+	const directive = findLeadingEscapeDirective(outside);
+	if (directive) {
+		assertManagedBlockSupportsEscapeRune(directive.escapeRune);
+		const prefix = outside.subarray(0, directive.preambleEnd);
+		const suffix = outside.subarray(directive.preambleEnd);
 		const prefixEndsWithNewline =
 			prefix[prefix.length - 1] === 0x0a || prefix[prefix.length - 1] === 0x0d;
 		const suffixBeginsWithNewline = suffix[0] === 0x0a || suffix[0] === 0x0d;
@@ -153,32 +169,61 @@ function prependManagedBlock(outside: Buffer): Buffer {
 	]);
 }
 
-function findLeadingEscapeDirectiveEnd(contents: Buffer): number {
+function assertManagedBlockSupportsEscapeRune(escapeRune?: string): void {
+	if (!escapeRune || escapeRune === "\\") return;
+	if (MANAGED_BLOCK.includes(Buffer.from(escapeRune, "utf8"))) {
+		throw new Error(
+			"Sync-ignore escape rune collides with the managed sensitive patterns",
+		);
+	}
+}
+
+function parseEscapeDirective(line: string): string {
+	const directive = line.slice(ESCAPE_DIRECTIVE_PREFIX.length).trim();
+	if (!directive.startsWith("=")) {
+		throw new Error("Sync-ignore contains an invalid #escape directive");
+	}
+	const runes = [...directive.slice(1).trim()];
+	if (runes.length !== 1) {
+		throw new Error(
+			"Sync-ignore #escape directive must contain exactly one rune",
+		);
+	}
+	return runes[0];
+}
+
+function findLeadingEscapeDirective(
+	contents: Buffer,
+): LeadingEscapeDirective | null {
 	let lineStart = 0;
+	let preambleEnd = 0;
+	let escapeRune: string | null = null;
+	let sawPattern = false;
 	while (lineStart < contents.length) {
 		const newline = contents.indexOf(0x0a, lineStart);
 		const lineEnd = newline === -1 ? contents.length : newline;
-		const contentEnd =
-			lineEnd > lineStart && contents[lineEnd - 1] === 0x0d
-				? lineEnd - 1
-				: lineEnd;
-		const line = contents.subarray(lineStart, contentEnd);
 		const nextLineStart = newline === -1 ? lineEnd : newline + 1;
+		const line = contents.subarray(lineStart, lineEnd).toString("utf8").trim();
 
-		if (
-			line.length === ESCAPE_DIRECTIVE_PREFIX.length + 1 &&
-			line
-				.subarray(0, ESCAPE_DIRECTIVE_PREFIX.length)
-				.equals(ESCAPE_DIRECTIVE_PREFIX)
-		) {
-			return nextLineStart;
+		if (line.startsWith(ESCAPE_DIRECTIVE_PREFIX)) {
+			if (escapeRune !== null || sawPattern) {
+				throw new Error(
+					"Sync-ignore #escape directive must appear once before all patterns",
+				);
+			}
+			escapeRune = parseEscapeDirective(line);
+			preambleEnd = nextLineStart;
+			lineStart = nextLineStart;
+			continue;
 		}
-		if (line.length !== 0 && !line.subarray(0, 2).equals(Buffer.from("//"))) {
-			return -1;
+		if (!sawPattern && (line.length === 0 || line.startsWith("//"))) {
+			preambleEnd = nextLineStart;
+		} else if (line.length !== 0 && !line.startsWith("//")) {
+			sawPattern = true;
 		}
 
 		lineStart = nextLineStart;
 	}
 
-	return -1;
+	return escapeRune === null ? null : { escapeRune, preambleEnd };
 }
