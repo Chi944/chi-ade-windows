@@ -103,7 +103,7 @@ test("requires the actual unpacked Windows or macOS executable", () => {
 			resolvePackagedExecutable(windowsExecutable, "win32", {
 				hostPlatform: "win32",
 			}),
-			fs.realpathSync(windowsExecutable),
+			fs.realpathSync.native(windowsExecutable),
 		);
 
 		const macExecutable = path.join(
@@ -121,7 +121,7 @@ test("requires the actual unpacked Windows or macOS executable", () => {
 			resolvePackagedExecutable(macExecutable, "darwin", {
 				hostPlatform: "darwin",
 			}),
-			fs.realpathSync(macExecutable),
+			fs.realpathSync.native(macExecutable),
 		);
 
 		assert.throws(() =>
@@ -155,7 +155,7 @@ test("accepts Canary naming only behind the explicit canary variant", () => {
 				hostPlatform: "win32",
 				variant: "canary",
 			}),
-			fs.realpathSync(windowsExecutable),
+			fs.realpathSync.native(windowsExecutable),
 		);
 
 		const macExecutable = path.join(
@@ -179,7 +179,7 @@ test("accepts Canary naming only behind the explicit canary variant", () => {
 				hostPlatform: "darwin",
 				variant: "canary",
 			}),
-			fs.realpathSync(macExecutable),
+			fs.realpathSync.native(macExecutable),
 		);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
