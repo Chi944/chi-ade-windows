@@ -6,7 +6,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { builtinModules } from "node:module";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const projectRoot = join(import.meta.dirname, "..");
 const allowedRuntimeImports = new Set([
@@ -65,6 +65,64 @@ function collectBareImports(): Set<string> {
 	return imports;
 }
 
+export function validatePatchedJsYamlRuntime(distMainRoot: string): void {
+	const sourceMapPaths = collectFiles(distMainRoot)
+		.filter((path) => path.endsWith(".js.map"))
+		.sort();
+	if (sourceMapPaths.length === 0) {
+		fail(`No main source maps were found beneath ${distMainRoot}`);
+	}
+
+	const sources: string[] = [];
+	for (const sourceMapPath of sourceMapPaths) {
+		let sourceMap: unknown;
+		try {
+			sourceMap = JSON.parse(readFileSync(sourceMapPath, "utf8"));
+		} catch {
+			fail(`Invalid main source map: ${sourceMapPath}`);
+		}
+		if (
+			typeof sourceMap !== "object" ||
+			sourceMap === null ||
+			!("sources" in sourceMap) ||
+			!Array.isArray(sourceMap.sources) ||
+			sourceMap.sources.some((source) => typeof source !== "string")
+		) {
+			fail(`Invalid main source map: ${sourceMapPath}`);
+		}
+		sources.push(
+			...(sourceMap.sources as string[]).map((source) =>
+				source.replaceAll("\\", "/"),
+			),
+		);
+	}
+
+	if (sources.some((source) => source.includes("/.bun/js-yaml@4.1.1/"))) {
+		fail("The vulnerable js-yaml 4.1.1 runtime leaked into the main bundle");
+	}
+	if (!sources.some((source) => source.includes("/.bun/js-yaml@4.3.0/"))) {
+		fail("The main bundle is not using the patched js-yaml 4.3.0 runtime");
+	}
+}
+
+export function validateMainBundleLayout(distMainRoot: string): void {
+	const resolvedRoot = resolve(distMainRoot);
+	const nestedBundles = collectFiles(resolvedRoot)
+		.filter(
+			(path) =>
+				path.endsWith(".js") &&
+				!path.endsWith(".template.js") &&
+				dirname(resolve(path)) !== resolvedRoot,
+		)
+		.map((path) => relative(resolvedRoot, path).replaceAll("\\", "/"))
+		.sort();
+	if (nestedBundles.length > 0) {
+		fail(
+			`Main JavaScript bundles must be emitted directly beneath ${resolvedRoot}; nested bundles break runtime asset paths: ${nestedBundles.join(", ")}`,
+		);
+	}
+}
+
 function main(): void {
 	const bareImports = collectBareImports();
 	const unexpected = [...bareImports].filter(
@@ -84,16 +142,9 @@ function main(): void {
 		}
 	}
 
-	const mainSourceMap = readFileSync(
-		join(projectRoot, "dist", "main", "index.js.map"),
-		"utf8",
-	);
-	if (!mainSourceMap.includes("node_modules/.bun/js-yaml@4.3.0")) {
-		fail("The main bundle is not using the patched js-yaml 4.3.0 runtime");
-	}
-	if (mainSourceMap.includes("node_modules/.bun/js-yaml@4.1.1")) {
-		fail("The vulnerable js-yaml 4.1.1 runtime leaked into the main bundle");
-	}
+	const distMainRoot = join(projectRoot, "dist", "main");
+	validateMainBundleLayout(distMainRoot);
+	validatePatchedJsYamlRuntime(distMainRoot);
 
 	const requiredPaths = [
 		join(
@@ -120,4 +171,4 @@ function main(): void {
 	);
 }
 
-main();
+if (import.meta.main) main();

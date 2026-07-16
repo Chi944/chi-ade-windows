@@ -38,6 +38,7 @@ import {
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
 import { initializeLocalDatabase, localDb } from "./lib/local-db";
+import { getActivePackagedSmokeStartup } from "./lib/packaged-smoke";
 import {
 	ensureProjectIconsDir,
 	ensureWorkspaceIconsDir,
@@ -58,10 +59,13 @@ import {
 	prewarmTerminalRuntime,
 	reconcileServiceSessions,
 } from "./lib/terminal";
+import { getTerminalHostClient } from "./lib/terminal-host/client";
 import { disposeTray, initTray } from "./lib/tray";
 import { MainWindow } from "./windows/main";
 
 console.log("[main] Local database ready:", !!localDb);
+
+const packagedSmokeStartup = getActivePackagedSmokeStartup();
 
 // Local build: set userData to our workspace-specific dir so singleton lock
 // doesn't conflict with the production Superset.app
@@ -78,7 +82,10 @@ if (process.env.NODE_ENV === "development") {
 // Dev mode: register with execPath + app script so macOS launches Electron with
 // our entry point. Isolated startup smoke tests opt out to avoid touching the
 // user's OS protocol registration.
-if (process.env.ADE_DISABLE_PROTOCOL_REGISTRATION !== "1") {
+if (
+	!packagedSmokeStartup &&
+	process.env.ADE_DISABLE_PROTOCOL_REGISTRATION !== "1"
+) {
 	if (process.defaultApp) {
 		if (process.argv.length >= 2) {
 			app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
@@ -182,8 +189,25 @@ export function quitWithoutConfirmation(): void {
 	app.exit(0);
 }
 
+async function quitPackagedSmokeCleanly(exitCode: number): Promise<void> {
+	setSkipQuitConfirmation();
+	try {
+		await getTerminalHostClient().shutdownIfRunning({ killSessions: true });
+	} catch {
+		// The runner independently checks terminal-host.pid and tree-kills any
+		// detached fallback before deleting the isolated home.
+	}
+	process.exitCode = exitCode;
+	app.quit();
+}
+
 app.on("before-quit", async (event) => {
 	if (isQuitting) return;
+	if (packagedSmokeStartup) {
+		isQuitting = true;
+		disposeTray();
+		return;
+	}
 
 	const isDev = process.env.NODE_ENV === "development";
 	const shouldConfirm =
@@ -244,18 +268,6 @@ if (process.env.NODE_ENV === "development") {
 	parentCheckInterval.unref();
 }
 
-protocol.registerSchemesAsPrivileged([
-	{
-		scheme: "superset-icon",
-		privileges: {
-			standard: true,
-			secure: true,
-			bypassCSP: true,
-			supportFetchAPI: true,
-		},
-	},
-]);
-
 const gotTheLock = hasSingleInstanceLock();
 
 if (!gotTheLock) {
@@ -311,7 +323,8 @@ if (!gotTheLock) {
 				subscriptionStorage.warning,
 			);
 		}
-		if (startup.notifications) registerWithMacOSNotificationCenter();
+		if (!packagedSmokeStartup && startup.notifications)
+			registerWithMacOSNotificationCenter();
 
 		// Must register on both default session and the app's custom partition
 		const iconProtocolHandler = (request: Request) => {
@@ -343,22 +356,26 @@ if (!gotTheLock) {
 				appStateWatcher.captureBeforeOverwrite(displacedPath),
 			onDiagnosticEvent: logAppStateRecovery,
 		});
-		if (startup.appStateWatcher) await startAppStateWatcher();
+		if (!packagedSmokeStartup && startup.appStateWatcher)
+			await startAppStateWatcher();
 
 		console.log("[main] boot: loadWebviewBrowserExtension…");
-		if (!bootStatus.safeMode) await loadWebviewBrowserExtension();
+		if (!bootStatus.safeMode && !packagedSmokeStartup)
+			await loadWebviewBrowserExtension();
 
 		// Must happen before renderer restore runs
 		console.log("[main] boot: reconcileServiceSessions…");
-		if (startup.terminalRestore) await reconcileServiceSessions();
-		if (startup.sshTunnels) {
+		if (!packagedSmokeStartup && startup.terminalRestore)
+			await reconcileServiceSessions();
+		if (!packagedSmokeStartup && startup.sshTunnels) {
 			void reconcileSshTunnels().catch((error) => {
 				getDiagnosticsLogger().warn("ssh-tunnels.reconcile.failed", { error });
 			});
 		}
-		if (startup.terminalPrewarm) prewarmTerminalRuntime();
+		if (!packagedSmokeStartup && startup.terminalPrewarm)
+			prewarmTerminalRuntime();
 
-		if (startup.agentHooks) {
+		if (!packagedSmokeStartup && startup.agentHooks) {
 			try {
 				setupAgentHooks();
 			} catch (error) {
@@ -367,17 +384,28 @@ if (!gotTheLock) {
 		}
 
 		console.log("[main] boot: makeAppSetup (create window)…");
-		await makeAppSetup(() => MainWindow({ safeMode: bootStatus.safeMode }));
+		await makeAppSetup(() =>
+			MainWindow({
+				safeMode: bootStatus.safeMode,
+				packagedSmoke: packagedSmokeStartup ?? undefined,
+				onPackagedSmokeComplete: (exitCode) => {
+					// Let tRPC flush its response before Electron starts closing windows.
+					setTimeout(() => {
+						void quitPackagedSmokeCleanly(exitCode);
+					}, 100);
+				},
+			}),
+		);
 		console.log("[main] boot: window created");
-		if (startup.autoUpdater) setupAutoUpdater();
-		if (startup.tray) initTray();
+		if (!packagedSmokeStartup && startup.autoUpdater) setupAutoUpdater();
+		if (!packagedSmokeStartup && startup.tray) initTray();
 
 		// One-time: bring agents created before the memory scaffold was enabled
 		// up to spec (idempotent + self-guarding; no-op when the flag is off).
 		// Deliberately OFF the critical boot path — scheduled after the window is
 		// up and fire-and-forget — so a slow or broken backfill can NEVER delay or
 		// brick window creation. Runs on a macrotask so it can't block this tick.
-		if (!bootStatus.safeMode)
+		if (!bootStatus.safeMode && !packagedSmokeStartup)
 			setTimeout(() => {
 				try {
 					const prunedHomes = pruneOrphanedSubscriptionHomes();

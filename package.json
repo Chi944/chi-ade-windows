@@ -26,6 +26,7 @@
 		"dev:marketing": "turbo dev --filter=@superset/marketing --filter=@superset/docs",
 		"build": "turbo build --filter=@ade/desktop",
 		"test": "turbo test",
+		"audit:production": "bun run scripts/verify-production-audit.ts",
 		"lint": "bun run scripts/lint.ts",
 		"lint:fix": "biome migrate --write && biome check --write --unsafe .",
 		"format": "biome format --write .",

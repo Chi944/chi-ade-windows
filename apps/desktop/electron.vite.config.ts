@@ -92,6 +92,9 @@ export default defineConfig({
 				},
 				output: {
 					dir: resolve(devPath, "main"),
+					// Main-process modules resolve packaged assets relative to dist/main.
+					// Keep dynamic chunks at that root so __dirname remains stable.
+					chunkFileNames: "[name]-[hash].js",
 				},
 				external: ["electron", "better-sqlite3", "node-pty"],
 			},

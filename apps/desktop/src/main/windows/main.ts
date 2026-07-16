@@ -4,8 +4,10 @@ import { eq } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { app, Notification, nativeTheme } from "electron";
 import { createWindow } from "lib/electron-app/factories/windows/create";
+import { mergeRouters } from "lib/trpc";
 import { createAppRouter } from "lib/trpc/routers";
 import { getWorkspacesInVisualOrder } from "lib/trpc/routers/workspaces/procedures/query";
+import { redactWindowUrlForLogs } from "lib/window-loader";
 import { localDb } from "main/lib/local-db";
 import { NOTIFICATION_EVENTS, PLATFORM } from "shared/constants";
 import {
@@ -29,6 +31,12 @@ import {
 	getNotificationTitle,
 	getWorkspaceName,
 } from "../lib/notifications/utils";
+import {
+	createPackagedSmokeController,
+	createPackagedSmokeRouter,
+	getPackagedSmokeWindowQuery,
+	type PackagedSmokeStartup,
+} from "../lib/packaged-smoke";
 import { AgentWatcher } from "../lib/scheduler/watcher";
 import {
 	configureTestServer,
@@ -43,7 +51,10 @@ import {
 import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
 
 // Singleton IPC handler to prevent duplicate handlers on window reopen (macOS)
-let ipcHandler: ReturnType<typeof createIPCHandler> | null = null;
+let ipcHandler: {
+	attachWindow: (window: BrowserWindow) => void;
+	detachWindow: (window: BrowserWindow) => void;
+} | null = null;
 
 function getWorkspaceNameFromDb(workspaceId: string | undefined): string {
 	if (!workspaceId) return "Workspace";
@@ -96,9 +107,15 @@ app.on("child-process-gone", (_event, details) => {
 
 export interface MainWindowOptions {
 	safeMode?: boolean;
+	packagedSmoke?: PackagedSmokeStartup;
+	onPackagedSmokeComplete?: (exitCode: number) => void;
 }
 
-export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
+export async function MainWindow({
+	safeMode = false,
+	packagedSmoke,
+	onPackagedSmokeComplete,
+}: MainWindowOptions = {}) {
 	const savedWindowState = loadWindowState();
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 
@@ -110,7 +127,11 @@ export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 
 	const window = createWindow({
 		id: "main",
-		query: safeMode ? { adeSafeRecovery: "1" } : undefined,
+		query: packagedSmoke
+			? getPackagedSmokeWindowQuery(packagedSmoke)
+			: safeMode
+				? { adeSafeRecovery: "1" }
+				: undefined,
 		title: windowTitle,
 		width: initialBounds.width,
 		height: initialBounds.height,
@@ -190,11 +211,29 @@ export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 		}
 	});
 
+	const packagedSmokeController = packagedSmoke
+		? createPackagedSmokeController({
+				startup: packagedSmoke,
+				authorizedSenderId: window.webContents.id,
+				scheduleExit: (exitCode) => onPackagedSmokeComplete?.(exitCode),
+			})
+		: null;
+
 	if (ipcHandler) {
 		ipcHandler.attachWindow(window);
 	} else {
+		const appRouter = createAppRouter(getWindow);
 		ipcHandler = createIPCHandler({
-			router: createAppRouter(getWindow),
+			router: packagedSmokeController
+				? mergeRouters(
+						appRouter,
+						createPackagedSmokeRouter(packagedSmokeController),
+					)
+				: appRouter,
+			createContext: async ({ event }) => ({
+				senderId: event.sender.id,
+				isMainFrame: event.senderFrame === event.sender.mainFrame,
+			}),
 			windows: [window],
 		});
 	}
@@ -202,7 +241,7 @@ export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 	let server: ReturnType<typeof notificationsApp.listen> | null = null;
 	let agentWatcher: AgentWatcher | null = null;
 	let notificationManager: NotificationManager | null = null;
-	if (!safeMode) {
+	if (!safeMode && !packagedSmoke) {
 		server = notificationsApp.listen(
 			env.DESKTOP_NOTIFICATIONS_PORT,
 			"127.0.0.1",
@@ -302,7 +341,7 @@ export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 		if (savedWindowState?.zoomLevel !== undefined) {
 			window.webContents.setZoomLevel(savedWindowState.zoomLevel);
 		}
-		window.show();
+		if (!packagedSmoke) window.show();
 	});
 
 	window.webContents.on(
@@ -311,20 +350,23 @@ export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 			console.error("[main-window] Failed to load renderer:");
 			console.error(`  Error code: ${errorCode}`);
 			console.error(`  Description: ${errorDescription}`);
-			console.error(`  URL: ${validatedURL}`);
+			console.error(`  URL: ${redactWindowUrlForLogs(validatedURL)}`);
 			// Show the window anyway so user can see something is wrong
-			window.show();
+			if (!packagedSmoke) window.show();
+			void packagedSmokeController?.fail();
 		},
 	);
 
 	window.webContents.on("render-process-gone", (_event, details) => {
 		console.error("[main-window] Renderer process gone:", details);
+		void packagedSmokeController?.fail();
 	});
 
 	window.webContents.on("preload-error", (_event, preloadPath, error) => {
 		console.error("[main-window] Preload script error:");
 		console.error(`  Path: ${preloadPath}`);
 		console.error(`  Error:`, error);
+		void packagedSmokeController?.fail();
 	});
 
 	window.on("close", () => {

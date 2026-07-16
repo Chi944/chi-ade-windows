@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { app, crashReporter } from "electron";
+import { app, crashReporter, protocol } from "electron";
 import {
 	pruneCrashDumpStorage,
 	scheduleCrashDumpPruning,
@@ -16,9 +16,15 @@ import {
 } from "./lib/diagnostics/logger";
 import { resolveLocalPrivateRoot } from "./lib/diagnostics/private-root";
 import { pruneCompletedInstallerVersions } from "./lib/diagnostics/update-storage-health";
+import { consumePackagedSmokeStartup } from "./lib/packaged-smoke";
+import { registerPrivilegedSchemes } from "./lib/privileged-schemes";
 import { acquireSingleInstanceLock } from "./lib/single-instance";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
+
+// Electron forbids privileged-scheme registration after `ready`. This must
+// stay synchronous and ahead of every awaited startup/recovery operation.
+registerPrivilegedSchemes(protocol);
 
 function defaultAdeHomeDirectory(): string {
 	const rawWorkspace = process.env.SUPERSET_WORKSPACE_NAME;
@@ -35,6 +41,10 @@ function defaultAdeHomeDirectory(): string {
 const adeHomeDir = process.env.ADE_HOME_DIR || defaultAdeHomeDirectory();
 process.env.ADE_HOME_DIR = adeHomeDir;
 mkdirSync(adeHomeDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+
+// Capture and scrub the authenticated packaged-smoke startup contract before
+// the main bundle can inspect automation-related environment variables.
+consumePackagedSmokeStartup({ isPackaged: app.isPackaged });
 
 const privateRoot = resolveLocalPrivateRoot({ adeHomeDir });
 const diagnosticsLogDirectory = resolveDiagnosticsLogDirectory(privateRoot);

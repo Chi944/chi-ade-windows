@@ -10,6 +10,7 @@ import {
 	reportBootError,
 } from "./lib/boot-errors";
 import { persistentHistory } from "./lib/persistent-hash-history";
+import { signalRendererCommit } from "./lib/renderer-ready";
 import { getInitialSafeRecoveryRoute } from "./lib/startup-recovery";
 import { electronTrpcClient } from "./lib/trpc-client";
 import { electronQueryClient } from "./providers/ElectronTRPCProvider";
@@ -66,6 +67,7 @@ function RendererReadySignal({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		void electronTrpcClient.diagnostics.markRendererReady
 			.mutate()
+			.then(() => signalRendererCommit())
 			.catch((error) => {
 				console.error("[renderer] Failed to record renderer readiness", error);
 			});
@@ -86,6 +88,17 @@ if (!rootElement) {
 		</BootErrorBoundary>,
 	);
 	markBootMounted();
+}
+
+if (
+	new URLSearchParams(window.location.search).get("adePackagedSmoke") === "1"
+) {
+	const smokeSearch = window.location.search;
+	void import("./lib/packaged-smoke-bridge")
+		.then(({ initializePackagedSmokeBridge }) =>
+			initializePackagedSmokeBridge(smokeSearch),
+		)
+		.catch(() => reportBootError("Packaged smoke bridge failed"));
 }
 
 // Dev-only test bridge: expose stores + router so external scripts (curl ->

@@ -4,9 +4,6 @@ let rootElement: Element | null = null;
 let listenersAttached = false;
 
 const renderBootError = (message: string, error?: unknown) => {
-	if (bootErrorReported) return;
-	bootErrorReported = true;
-
 	const container = rootElement ?? document.body;
 	const wrapper = document.createElement("div");
 	wrapper.style.display = "flex";
@@ -63,17 +60,17 @@ const renderBootError = (message: string, error?: unknown) => {
 
 export const reportBootError = (message: string, error?: unknown) => {
 	console.error("[renderer] Boot error:", message, error);
+	if (bootErrorReported) return;
+	bootErrorReported = true;
 	if (hasMounted) return;
 	renderBootError(message, error);
 };
 
 const handleGlobalError = (event: ErrorEvent) => {
-	if (hasMounted) return;
 	reportBootError(event.message || "Unhandled error", event.error);
 };
 
 const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
-	if (hasMounted) return;
 	reportBootError("Unhandled promise rejection", event.reason);
 };
 

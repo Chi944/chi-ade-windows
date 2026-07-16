@@ -12,6 +12,7 @@
 import { mock } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLocalDbSchemaMock } from "./test-support/local-db-schema-mock";
 
 process.env.NODE_ENV = "test";
 process.env.SKIP_ENV_VALIDATION = "1";
@@ -146,31 +147,13 @@ mock.module("main/lib/analytics", () => ({
 }));
 
 // =============================================================================
-// @superset/local-db Schema Mock (drizzle-orm/sqlite-core not available in Bun tests)
+// @superset/local-db Schema Mock
 // =============================================================================
-
-const mockTable = (name: string) => ({ id: `${name}_id` });
-
-const localDbMock = () => ({
-	projects: mockTable("projects"),
-	workspaces: mockTable("workspaces"),
-	worktrees: mockTable("worktrees"),
-	settings: mockTable("settings"),
-	users: mockTable("users"),
-	organizations: mockTable("organizations"),
-	organizationMembers: mockTable("organization_members"),
-	tasks: mockTable("tasks"),
-	EXTERNAL_APPS: [],
-	EXECUTION_MODES: ["sequential", "parallel"],
-	BRANCH_PREFIX_MODES: ["none", "github", "author", "custom"],
-	TERMINAL_LINK_BEHAVIORS: ["external-editor", "file-viewer"],
-	FILE_OPEN_MODES: ["split-pane", "new-tab"],
-});
 
 // Mock both the package name and the resolved source path to handle
 // bun's workspace package resolution in different versions.
-mock.module("@superset/local-db", localDbMock);
-mock.module("@superset/local-db/schema", localDbMock);
+mock.module("@superset/local-db", createLocalDbSchemaMock);
+mock.module("@superset/local-db/schema", createLocalDbSchemaMock);
 
 // =============================================================================
 // Local DB Mock (better-sqlite3 not supported in Bun tests)
