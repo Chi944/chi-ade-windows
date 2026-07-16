@@ -34,7 +34,11 @@ interface StartupFixture {
 }
 
 function createStartupFixture(launch: 1 | 2 = 1): StartupFixture {
-	const root = mkdtempSync(join(tmpdir(), "ade-packaged-gui-"));
+	const tempDirectory = canonicalizePackagedSmokeTempDirectory();
+	if (!tempDirectory) {
+		throw new Error("Expected a canonical operating-system temp directory");
+	}
+	const root = mkdtempSync(join(tempDirectory, "ade-packaged-gui-"));
 	const home = join(root, "ade-home");
 	mkdirSync(home, { mode: 0o700 });
 	return {
