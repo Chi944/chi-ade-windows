@@ -142,20 +142,8 @@ export function createPeerUpdateConsumer(
 }
 
 function applyCommittedPeerUpdate(result: CommittedPeerUpdate): void {
-	const winningCanonicalIds = new Set(result.winningWorkspaces);
-	const winningLocalWorkspaceIds = new Set(
-		Object.entries(result.sync.localToCanonical).flatMap(
-			([localWorkspaceId, canonical]) =>
-				winningCanonicalIds.has(canonical) ? [localWorkspaceId] : [],
-		),
-	);
-	const winningTabIds = new Set(
-		result.tabsState.tabs
-			.filter((tab) => winningLocalWorkspaceIds.has(tab.workspaceId))
-			.map((tab) => tab.id),
-	);
-	for (const [paneId, pane] of Object.entries(result.tabsState.panes)) {
-		if (winningTabIds.has(pane.tabId)) markSyncedPane(paneId);
+	for (const paneId of result.importedPeerPaneIds) {
+		if (Object.hasOwn(result.tabsState.panes, paneId)) markSyncedPane(paneId);
 	}
 
 	const tabsState = result.tabsState;

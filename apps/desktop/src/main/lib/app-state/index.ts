@@ -84,6 +84,9 @@ export interface InitAppStateOptions {
 	persistStartupPeerHandoff?: (
 		handoff: PeerClaudeSessionHandoff,
 	) => Promise<void>;
+	beforeOverwrite?: (displacedPath: string) => Promise<void>;
+	/** @internal Test seam for deterministic promotion races. */
+	writeStateAtomically?: typeof writeAppStateAtomically;
 }
 
 let _coordinator: AppStateMutationCoordinator | null = null;
@@ -193,13 +196,18 @@ async function loadAppState(
 			"homeDir" | "deviceIdFactory" | "now" | "readStateFile"
 		>
 	> &
-		Pick<InitAppStateOptions, "onDiagnosticEvent">,
+		Pick<
+			InitAppStateOptions,
+			"beforeOverwrite" | "onDiagnosticEvent" | "writeStateAtomically"
+		>,
 	deviceId: string,
 ): Promise<{
 	result: AppStateLoadResult;
 	writesEnabled: boolean;
 }> {
 	const path = join(options.homeDir, APP_STATE_FILE_NAME);
+	const writeStateAtomically =
+		options.writeStateAtomically ?? writeAppStateAtomically;
 	let exists = true;
 	try {
 		await lstat(path);
@@ -220,7 +228,9 @@ async function loadAppState(
 
 	if (!exists) {
 		const state = createDefaultAppState(deviceId);
-		await writeAppStateAtomically(path, state);
+		await writeStateAtomically(path, state, {
+			beforeOverwrite: options.beforeOverwrite,
+		});
 		return {
 			result: { source: "first-run", trust: "untrusted", state },
 			writesEnabled: true,
@@ -255,18 +265,47 @@ async function loadAppState(
 			options.homeDir,
 			options.now,
 		);
-		await writeAppStateAtomically(path, recoveredState);
+		const quarantinePath = join(options.homeDir, quarantineFile);
+		const quarantinedRaw = await readFile(quarantinePath, "utf8");
+		let quarantineCandidateIsValid = false;
+		try {
+			parseAppStateJson(quarantinedRaw, { deviceId });
+			quarantineCandidateIsValid = true;
+		} catch (error) {
+			if (!(error instanceof AppStateValidationError)) throw error;
+		}
+		if (quarantineCandidateIsValid) {
+			if (!options.beforeOverwrite) {
+				throw new Error(
+					"A valid app-state replacement could not be captured during recovery.",
+				);
+			}
+			await options.beforeOverwrite(quarantinePath);
+		}
+		await writeStateAtomically(path, recoveredState, {
+			beforeOverwrite: options.beforeOverwrite,
+		});
+		if (quarantineCandidateIsValid) {
+			await rm(quarantinePath, { force: true }).catch(() => undefined);
+		}
+		const retainedQuarantineFile = quarantineCandidateIsValid
+			? undefined
+			: quarantineFile;
 		emitDiagnosticEvent(options.onDiagnosticEvent, {
 			type: "app-state-recovered",
 			reason: source,
-			quarantineFile,
+			...(retainedQuarantineFile
+				? { quarantineFile: retainedQuarantineFile }
+				: {}),
 		});
 		return {
 			result: {
 				source,
 				trust: "recovered",
 				state: recoveredState,
-				quarantineFile,
+				...(retainedQuarantineFile
+					? { quarantineFile: retainedQuarantineFile }
+					: {}),
 			},
 			writesEnabled: true,
 		};
@@ -397,6 +436,8 @@ async function initialize(
 			readStateFile:
 				options.readStateFile ?? ((path) => readFile(path, "utf8")),
 			onDiagnosticEvent: options.onDiagnosticEvent,
+			beforeOverwrite: options.beforeOverwrite,
+			writeStateAtomically: options.writeStateAtomically,
 		},
 		deviceId,
 	);
@@ -450,7 +491,13 @@ async function initialize(
 				"App-state writes are disabled because recovery could not preserve the source file.",
 			);
 		}
-		await writeAppStateAtomically(appStatePath, state);
+		await (options.writeStateAtomically ?? writeAppStateAtomically)(
+			appStatePath,
+			state,
+			{
+				beforeOverwrite: options.beforeOverwrite,
+			},
+		);
 	};
 	_coordinator = new AppStateMutationCoordinator(preparedResult.state, {
 		validate: (state) => normalizeAppState(state, { deviceId }),
@@ -495,6 +542,7 @@ export function getAppStateSnapshot(): AppState {
 
 export function getAppStateRevision(): number {
 	if (!_coordinator) {
+		if (_initializing && _deviceId) return 0;
 		throw new Error("App state not initialized. Call initAppState() first.");
 	}
 	return _coordinator.getRevision();

@@ -267,6 +267,7 @@ describe("peer app-state sync service", () => {
 		};
 		const first = await service.rebasePeerUpdate(input);
 		if (first.status !== "committed") throw new Error("Expected commit");
+		expect(first.importedPeerPaneIds).toEqual(["peer-pane"]);
 		await coordinator.enqueue("later-local-tabs", (draft) => {
 			draft.tabsState.tabs[0].name = "later-local";
 		});
@@ -280,7 +281,23 @@ describe("peer app-state sync service", () => {
 		expect(replay.revision).toBe(2);
 		expect(replay.tabsState.tabs[0]?.name).toBe("later-local");
 		expect(replay.winningWorkspaces).toEqual([]);
-		expect(writes).toHaveBeenCalledTimes(2);
+		expect(replay.importedPeerPaneIds).toEqual(["peer-pane"]);
+		await coordinator.enqueue("remove-imported-peer-pane", (draft) => {
+			delete draft.tabsState.panes["peer-pane"];
+			draft.tabsState.tabs = [];
+			draft.tabsState.activeTabIds = {};
+			draft.tabsState.focusedPaneIds = {};
+			draft.tabsState.tabHistoryStacks = {};
+		});
+		const afterRemoval = await service.rebasePeerUpdate({
+			...input,
+			baseRevision: coordinator.getRevision(),
+		});
+		if (afterRemoval.status !== "committed") {
+			throw new Error("Expected replay after pane removal");
+		}
+		expect(afterRemoval.importedPeerPaneIds).toEqual([]);
+		expect(writes).toHaveBeenCalledTimes(3);
 	});
 
 	test("joins simultaneous duplicate requests behind one durable commit", async () => {

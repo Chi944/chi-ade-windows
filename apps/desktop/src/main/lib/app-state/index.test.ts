@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import {
 	chmod,
+	link,
 	mkdir,
 	mkdtemp,
 	readdir,
@@ -16,13 +17,17 @@ import {
 	type AppStateBindingReconciliationInput,
 	type AppStateDiagnosticEvent,
 	enqueueAppStateMutation,
+	getAppStateRevision,
 	getAppStateSnapshot,
+	getDeviceId,
 	initAppState,
 	reconcileLoadedAppStateBindings,
 	resetAppStateForTests,
 	takeStartupPeerPaneIds,
 } from ".";
 import { type AppState, createDefaultAppState } from "./schemas";
+import { AppStateWatcherController, ValidatedPeerEventCache } from "./watcher";
+import { writeAppStateAtomically } from "./write-queue";
 
 const temporaryHomes = new Set<string>();
 
@@ -84,6 +89,30 @@ function createPeerStartupState(): AppState {
 	};
 	state.sync.paneClaudeSessions = { "peer-pane": "session-123" };
 	return state;
+}
+
+function createInitializationCapture(targetPath: string): {
+	cache: ValidatedPeerEventCache;
+	beforeOverwrite: (candidatePath: string) => Promise<void>;
+} {
+	const cache = new ValidatedPeerEventCache({
+		localDeviceId: () => getDeviceId(),
+	});
+	const watcher = new AppStateWatcherController({
+		targetPath,
+		localDeviceId: () => getDeviceId(),
+		getBaseRevision: getAppStateRevision,
+		readCandidateFile: (path) => readFile(path, "utf8"),
+		readStableFile: async () => null,
+		watchDirectory: () => ({ close: () => undefined }),
+		eventCache: cache,
+		eventIdFactory: () => "initialization-peer-event",
+	});
+	return {
+		cache,
+		beforeOverwrite: (candidatePath) =>
+			watcher.captureBeforeOverwrite(candidatePath),
+	};
 }
 
 afterEach(async () => {
@@ -199,6 +228,55 @@ describe("validated app-state initialization", () => {
 				0o600,
 			);
 		}
+	});
+
+	test("captures a peer that lands during first-run promotion at revision zero", async () => {
+		const home = await createTemporaryHome();
+		const targetPath = join(home, "app-state.json");
+		const peer = createDefaultAppState("peer-device");
+		peer.themeState.activeThemeId = "peer-first-run";
+		const capture = createInitializationCapture(targetPath);
+		let injectPeer = true;
+
+		const result = await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "first-device",
+			beforeOverwrite: capture.beforeOverwrite,
+			writeStateAtomically: (path, state, dependencies) =>
+				writeAppStateAtomically(path, state, {
+					...dependencies,
+					linkFile: async (source, destination) => {
+						if (injectPeer) {
+							injectPeer = false;
+							await writeFile(destination, JSON.stringify(peer), "utf8");
+							const error = new Error(
+								"peer won first-run target",
+							) as NodeJS.ErrnoException;
+							error.code = "EEXIST";
+							throw error;
+						}
+						await link(source, destination);
+					},
+				}),
+			reconciliation: false,
+		});
+
+		expect(result).toMatchObject({ source: "first-run", trust: "untrusted" });
+		expect(capture.cache.listMetadata()).toEqual([
+			expect.objectContaining({
+				eventId: "initialization-peer-event",
+				baseRevision: 0,
+			}),
+		]);
+		expect(capture.cache.get("initialization-peer-event")?.state).toMatchObject(
+			{
+				themeState: { activeThemeId: "peer-first-run" },
+				sync: { deviceId: "peer-device" },
+			},
+		);
+		expect(JSON.parse(await readFile(targetPath, "utf8")).sync.deviceId).toBe(
+			"first-device",
+		);
 	});
 
 	test("loads a valid file as trusted without rewriting it", async () => {
@@ -335,6 +413,58 @@ describe("validated app-state initialization", () => {
 		]);
 		expect(JSON.stringify(events)).not.toContain(damaged);
 		expect(JSON.stringify(events)).not.toContain(home);
+	});
+
+	test("captures a valid peer replacement at the recovery quarantine boundary", async () => {
+		const home = await createTemporaryHome();
+		const targetPath = join(home, "app-state.json");
+		const damaged = "{not-json";
+		await writeFile(targetPath, damaged, "utf8");
+		const peer = createDefaultAppState("peer-device");
+		peer.themeState.activeThemeId = "peer-recovery-race";
+		const capture = createInitializationCapture(targetPath);
+		const events: AppStateDiagnosticEvent[] = [];
+
+		const result = await initAppState({
+			homeDir: home,
+			deviceIdFactory: () => "recovery-device",
+			readStateFile: async (path) => {
+				const observed = await readFile(path, "utf8");
+				await writeFile(path, JSON.stringify(peer), "utf8");
+				return observed;
+			},
+			beforeOverwrite: capture.beforeOverwrite,
+			onDiagnosticEvent: (event) => events.push(event),
+			reconciliation: false,
+		});
+
+		expect(result).toEqual(
+			expect.objectContaining({ source: "invalid-json", trust: "recovered" }),
+		);
+		expect(result.quarantineFile).toBeUndefined();
+		expect(capture.cache.listMetadata()).toEqual([
+			expect.objectContaining({
+				eventId: "initialization-peer-event",
+				baseRevision: 0,
+			}),
+		]);
+		expect(capture.cache.get("initialization-peer-event")?.state).toMatchObject(
+			{
+				themeState: { activeThemeId: "peer-recovery-race" },
+				sync: { deviceId: "peer-device" },
+			},
+		);
+		expect(events).toEqual([
+			{ type: "app-state-recovered", reason: "invalid-json" },
+		]);
+		expect(JSON.parse(await readFile(targetPath, "utf8")).sync.deviceId).toBe(
+			"recovery-device",
+		);
+		expect(
+			(await readdir(home)).filter((name) =>
+				name.startsWith("app-state.quarantine."),
+			),
+		).toEqual([]);
 	});
 
 	test("does not let a diagnostic observer crash successful recovery", async () => {

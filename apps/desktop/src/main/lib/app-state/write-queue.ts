@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
+import { chmod, link, mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
 	SUPERSET_HOME_DIR_MODE,
@@ -114,8 +114,36 @@ export class AppStateMutationCoordinator {
 }
 
 export interface AtomicAppStateWriteDependencies {
+	beforeOverwrite?: (displacedPath: string) => Promise<void>;
+	linkFile?: (source: string, destination: string) => Promise<void>;
 	renameFile?: (source: string, destination: string) => Promise<void>;
 	temporaryId?: () => string;
+}
+
+const MAX_ATOMIC_PROMOTION_ATTEMPTS = 8;
+
+function hasErrorCode(error: unknown, code: string): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { code?: string }).code === code
+	);
+}
+
+async function restoreDisplacedWithoutClobber(
+	displacedPath: string,
+	targetPath: string,
+	linkFile: (source: string, destination: string) => Promise<void>,
+): Promise<boolean> {
+	try {
+		await linkFile(displacedPath, targetPath);
+		await rm(displacedPath, { force: true });
+		return true;
+	} catch {
+		// A newer target wins. Preserve the displaced file for local recovery.
+		return false;
+	}
 }
 
 export async function writeAppStateAtomically(
@@ -132,18 +160,87 @@ export async function writeAppStateAtomically(
 		`.${basename(path)}.${process.pid}.${dependencies.temporaryId?.() ?? randomUUID()}.tmp`,
 	);
 	let handle: Awaited<ReturnType<typeof open>> | null = null;
+	const disposableDisplacedPaths = new Set<string>();
+	const preservedDisplacedPaths = new Set<string>();
+	const renameFile = dependencies.renameFile ?? rename;
+	const linkFile = dependencies.linkFile ?? link;
 	try {
 		handle = await open(temporaryPath, "wx", SUPERSET_SENSITIVE_FILE_MODE);
 		await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
 		await handle.sync();
 		await handle.close();
 		handle = null;
-		await (dependencies.renameFile ?? rename)(temporaryPath, path);
+
+		let promoted = false;
+		for (
+			let attempt = 0;
+			attempt < MAX_ATOMIC_PROMOTION_ATTEMPTS;
+			attempt += 1
+		) {
+			const displacedPath = join(
+				parent,
+				`.${basename(path)}.${process.pid}.${randomUUID()}.displaced`,
+			);
+			let displaced = false;
+			try {
+				await renameFile(path, displacedPath);
+				displaced = true;
+			} catch (error) {
+				if (!hasErrorCode(error, "ENOENT")) throw error;
+			}
+
+			if (displaced) {
+				try {
+					await dependencies.beforeOverwrite?.(displacedPath);
+					disposableDisplacedPaths.add(displacedPath);
+				} catch (error) {
+					preservedDisplacedPaths.add(displacedPath);
+					if (
+						await restoreDisplacedWithoutClobber(displacedPath, path, linkFile)
+					) {
+						preservedDisplacedPaths.delete(displacedPath);
+					}
+					throw error;
+				}
+			}
+
+			try {
+				await linkFile(temporaryPath, path);
+				promoted = true;
+				break;
+			} catch (error) {
+				if (hasErrorCode(error, "EEXIST")) continue;
+				const latestDisplaced = [...disposableDisplacedPaths].at(-1);
+				if (latestDisplaced) {
+					preservedDisplacedPaths.add(latestDisplaced);
+					if (
+						await restoreDisplacedWithoutClobber(
+							latestDisplaced,
+							path,
+							linkFile,
+						)
+					) {
+						preservedDisplacedPaths.delete(latestDisplaced);
+					}
+				}
+				throw error;
+			}
+		}
+		if (!promoted) {
+			throw new Error(
+				"App-state promotion could not acquire an empty target without overwriting a peer snapshot.",
+			);
+		}
+		await rm(temporaryPath, { force: true });
 		await chmod(path, SUPERSET_SENSITIVE_FILE_MODE).catch(() => undefined);
 	} catch (error) {
 		await handle?.close().catch(() => undefined);
 		throw error;
 	} finally {
 		await rm(temporaryPath, { force: true }).catch(() => undefined);
+		for (const displacedPath of disposableDisplacedPaths) {
+			if (preservedDisplacedPaths.has(displacedPath)) continue;
+			await rm(displacedPath, { force: true }).catch(() => undefined);
+		}
 	}
 }

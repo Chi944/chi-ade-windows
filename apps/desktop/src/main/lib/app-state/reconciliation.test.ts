@@ -82,7 +82,7 @@ describe("trusted startup app-state reconciliation", () => {
 			join(import.meta.dir, "..", "..", "index.ts"),
 			"utf8",
 		);
-		const initIndex = source.indexOf("await initAppState();");
+		const initIndex = source.indexOf("await initAppState(");
 		const watcherIndex = source.indexOf("await startAppStateWatcher();");
 		const restoreIndex = source.indexOf("await reconcileServiceSessions();");
 

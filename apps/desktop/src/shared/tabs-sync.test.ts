@@ -616,6 +616,7 @@ describe("deterministic workspace clocks", () => {
 				claudeSessionId: "session-123",
 			},
 		]);
+		expect(withSession.importedPeerPaneIds).toEqual(["peer-pane"]);
 	});
 
 	test("rebases a no-winner peer replacement without bumping local clocks", () => {

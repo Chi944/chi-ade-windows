@@ -31,6 +31,7 @@ const MANAGED_BLOCK = Buffer.from(
 		"// App-state recovery artifacts and atomic write temporaries",
 		"/app-state.quarantine.*.json",
 		"/.app-state.json.*.tmp",
+		"/.app-state.json.*.displaced",
 		"// Terminal host identity and runtime state are device-local",
 		"/terminal-host.*",
 		"/service.log",

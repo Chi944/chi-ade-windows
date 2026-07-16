@@ -50,6 +50,7 @@ export type RebasePeerUpdateResult =
 			sync: TabsMergePlan["envelope"];
 			warnings: string[];
 			winningWorkspaces: string[];
+			importedPeerPaneIds: string[];
 			suppressionToken: TabsSuppressionToken;
 	  }
 	| { status: "stale"; revision: number }
@@ -232,6 +233,9 @@ export function createPeerSyncService(
 								tabsState: snapshot.tabsState,
 								sync: snapshot.sync,
 								winningWorkspaces: [],
+								importedPeerPaneIds: prior.result.importedPeerPaneIds.filter(
+									(paneId) => Object.hasOwn(snapshot.tabsState.panes, paneId),
+								),
 							};
 						})();
 			replay.suppressionToken = createSuppressionToken(
@@ -285,6 +289,9 @@ export function createPeerSyncService(
 				sync: commit.state.sync,
 				warnings: commit.result.warnings,
 				winningWorkspaces: commit.result.winningCanonicalIds,
+				importedPeerPaneIds: commit.result.importedPeerPaneIds.filter(
+					(paneId) => Object.hasOwn(commit.state.tabsState.panes, paneId),
+				),
 				suppressionToken: createSuppressionToken(
 					commit.revision,
 					commit.state.tabsState,

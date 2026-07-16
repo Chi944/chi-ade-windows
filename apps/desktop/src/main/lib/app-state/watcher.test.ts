@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDefaultAppState } from "./schemas";
 import {
@@ -6,6 +8,7 @@ import {
 	parsePeerAppStateJson,
 	ValidatedPeerEventCache,
 } from "./watcher";
+import { writeAppStateAtomically } from "./write-queue";
 
 function peerRaw(deviceId: string, label: string): string {
 	const state = createDefaultAppState(deviceId);
@@ -139,6 +142,7 @@ describe("rename-safe app-state watcher", () => {
 			| ((eventType: string, filename: string | Buffer | null) => void)
 			| undefined;
 		let readIndex = 0;
+		let eventIndex = 0;
 		const watcher = new AppStateWatcherController({
 			targetPath: "/sync/app-state.json",
 			localDeviceId: () => "local-device",
@@ -151,7 +155,7 @@ describe("rename-safe app-state watcher", () => {
 			eventCache: new ValidatedPeerEventCache({
 				localDeviceId: "local-device",
 			}),
-			eventIdFactory: () => `event-${readIndex}`,
+			eventIdFactory: () => `event-${++eventIndex}`,
 		});
 		const labels: string[] = [];
 		watcher.on("peer-update", (event) => labels.push(event.eventId));
@@ -161,6 +165,130 @@ describe("rename-safe app-state watcher", () => {
 		await watcher.flush();
 
 		expect(labels).toEqual(["event-1", "event-2"]);
+	});
+
+	test("captures each peer replacement once before a queued local write can overwrite it", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-watcher-capture-"));
+		const targetPath = join(directory, "app-state.json");
+		let callback:
+			| ((eventType: string, filename: string | Buffer | null) => void)
+			| undefined;
+		await writeFile(
+			targetPath,
+			peerRaw("local-device", "local-startup"),
+			"utf8",
+		);
+		const cache = new ValidatedPeerEventCache({
+			localDeviceId: "local-device",
+		});
+		let eventIndex = 0;
+		const watcher = new AppStateWatcherController({
+			targetPath,
+			localDeviceId: () => "local-device",
+			getBaseRevision: () => eventIndex,
+			readCandidateFile: (path) => readFile(path, "utf8"),
+			readCurrentFile: () => readFile(targetPath, "utf8"),
+			readStableFile: () => readFile(targetPath, "utf8"),
+			watchDirectory: (_path, listener) => {
+				callback = listener;
+				return { close: () => undefined };
+			},
+			eventCache: cache,
+			eventIdFactory: () => `captured-${++eventIndex}`,
+			debounceMs: 60_000,
+		});
+		const emittedLabels: string[] = [];
+		watcher.on("peer-update", (metadata) => {
+			const captured = cache.get(metadata.eventId);
+			if (captured) {
+				emittedLabels.push(captured.state.tabsState.tabs[0]?.name ?? "missing");
+			}
+		});
+
+		try {
+			await watcher.start();
+			for (const label of ["peer-one", "peer-two"]) {
+				await writeFile(targetPath, peerRaw("peer-device", label), "utf8");
+				callback?.("rename", "app-state.json");
+				callback?.("change", "app-state.json");
+
+				const local = createDefaultAppState("local-device");
+				local.themeState.activeThemeId = label;
+				await writeAppStateAtomically(targetPath, local, {
+					beforeOverwrite: (candidatePath) =>
+						watcher.captureBeforeOverwrite(candidatePath),
+				});
+				callback?.("rename", "app-state.json");
+			}
+			await watcher.flush();
+
+			expect(emittedLabels).toEqual(["peer-one", "peer-two"]);
+			expect(cache.size).toBe(2);
+		} finally {
+			watcher.stop();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("fails closed when a pre-overwrite candidate cannot be classified", async () => {
+		for (const candidate of [
+			{ localDeviceId: () => "local-device", raw: null },
+			{ localDeviceId: () => "local-device", raw: "{broken" },
+			{ localDeviceId: () => null, raw: peerRaw("peer-device", "unknown") },
+		]) {
+			const watcher = new AppStateWatcherController({
+				targetPath: "/sync/app-state.json",
+				localDeviceId: candidate.localDeviceId,
+				getBaseRevision: () => 0,
+				readCurrentFile: async () => candidate.raw,
+				readStableFile: async () => candidate.raw,
+				watchDirectory: () => ({ close: () => undefined }),
+				eventCache: new ValidatedPeerEventCache({
+					localDeviceId: "local-device",
+				}),
+			});
+
+			await expect(watcher.captureBeforeOverwrite()).rejects.toThrow(
+				/capture|candidate|device|snapshot/i,
+			);
+		}
+	});
+
+	test("does not queue an immutable displaced capture behind a stable target read", async () => {
+		let releaseStableRead: (() => void) | undefined;
+		const stableReadGate = new Promise<void>((resolve) => {
+			releaseStableRead = resolve;
+		});
+		let captureSettled = false;
+		const watcher = new AppStateWatcherController({
+			targetPath: "/sync/app-state.json",
+			localDeviceId: () => "local-device",
+			getBaseRevision: () => 0,
+			readCandidateFile: async () => peerRaw("peer-device", "captured"),
+			readStableFile: async () => {
+				await stableReadGate;
+				return peerRaw("local-device", "local");
+			},
+			watchDirectory: () => ({ close: () => undefined }),
+			eventCache: new ValidatedPeerEventCache({
+				localDeviceId: "local-device",
+			}),
+		});
+
+		const start = watcher.start();
+		const capture = watcher
+			.captureBeforeOverwrite("/sync/.app-state.json.displaced")
+			.then(() => {
+				captureSettled = true;
+			});
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		const settledBeforeStableRead = captureSettled;
+		releaseStableRead?.();
+		await Promise.all([start, capture]);
+
+		expect(settledBeforeStableRead).toBe(true);
 	});
 
 	test("ignores malformed and local-authored startup files", async () => {

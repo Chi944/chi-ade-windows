@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import {
+	link,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -242,5 +250,173 @@ describe("atomic app-state writer", () => {
 		expect(
 			(await readdir(directory)).filter((name) => name.endsWith(".tmp")),
 		).toEqual([]);
+	});
+
+	test("captures the current target immediately before atomic promotion", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		const calls: string[] = [];
+		await writeFile(path, "peer-snapshot", "utf8");
+
+		await writeAppStateAtomically(path, createDefaultAppState("device"), {
+			beforeOverwrite: async () => {
+				calls.push("capture");
+			},
+			linkFile: async (source, destination) => {
+				calls.push("promote");
+				await link(source, destination);
+			},
+		});
+
+		expect(calls).toEqual(["capture", "promote"]);
+	});
+
+	test("aborts promotion and removes the temporary file when capture fails", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		await writeFile(path, "peer-snapshot", "utf8");
+		let promoted = false;
+
+		await expect(
+			writeAppStateAtomically(path, createDefaultAppState("device"), {
+				beforeOverwrite: async () => {
+					throw new Error("capture failed");
+				},
+				linkFile: async (source, destination) => {
+					if (source.endsWith(".tmp")) promoted = true;
+					await link(source, destination);
+				},
+			}),
+		).rejects.toThrow("capture failed");
+		expect(promoted).toBe(false);
+		expect(await readFile(path, "utf8")).toBe("peer-snapshot");
+		expect(
+			(await readdir(directory)).filter((name) => name.endsWith(".tmp")),
+		).toEqual([]);
+	});
+
+	test("captures a peer that lands after displacement instead of overwriting it", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		await writeFile(path, "peer-one", "utf8");
+		const captured: string[] = [];
+		let injectedLatePeer = false;
+
+		await writeAppStateAtomically(path, createDefaultAppState("local-device"), {
+			beforeOverwrite: async (candidatePath?: string) => {
+				captured.push(await readFile(candidatePath ?? path, "utf8"));
+				if (!injectedLatePeer) {
+					injectedLatePeer = true;
+					await writeFile(path, "peer-two", "utf8");
+				}
+			},
+		});
+
+		expect(captured).toEqual(["peer-one", "peer-two"]);
+		expect(JSON.parse(await readFile(path, "utf8")).sync.deviceId).toBe(
+			"local-device",
+		);
+	});
+
+	test("captures a peer that appears during an absent-target promotion", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		const captured: string[] = [];
+		let injectPeer = true;
+
+		await writeAppStateAtomically(path, createDefaultAppState("local-device"), {
+			beforeOverwrite: async (candidatePath?: string) => {
+				if (candidatePath) {
+					captured.push(await readFile(candidatePath, "utf8"));
+				}
+			},
+			linkFile: async (source: string, destination: string) => {
+				if (injectPeer) {
+					injectPeer = false;
+					await writeFile(destination, "peer-during-first-run", "utf8");
+					const error = new Error("target exists") as NodeJS.ErrnoException;
+					error.code = "EEXIST";
+					throw error;
+				}
+				await link(source, destination);
+			},
+		});
+
+		expect(captured).toEqual(["peer-during-first-run"]);
+		expect(JSON.parse(await readFile(path, "utf8")).sync.deviceId).toBe(
+			"local-device",
+		);
+	});
+
+	test("leaves the last peer winner intact when no-clobber retries are exhausted", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		const captured: string[] = [];
+		let peerIndex = 0;
+
+		await expect(
+			writeAppStateAtomically(path, createDefaultAppState("local-device"), {
+				beforeOverwrite: async (candidatePath) => {
+					captured.push(await readFile(candidatePath, "utf8"));
+				},
+				linkFile: async (_source, destination) => {
+					peerIndex += 1;
+					await writeFile(destination, `peer-${peerIndex}`, "utf8");
+					const error = new Error("target exists") as NodeJS.ErrnoException;
+					error.code = "EEXIST";
+					throw error;
+				},
+			}),
+		).rejects.toThrow(/empty target|peer snapshot/i);
+
+		expect(captured).toEqual(
+			Array.from({ length: 7 }, (_, index) => `peer-${index + 1}`),
+		);
+		expect(await readFile(path, "utf8")).toBe("peer-8");
+		expect(
+			(await readdir(directory)).filter(
+				(name) => name.endsWith(".tmp") || name.endsWith(".displaced"),
+			),
+		).toEqual([]);
+	});
+
+	test("fails closed and preserves a displaced target when hard links are unavailable", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "ade-state-write-"));
+		temporaryDirectories.add(directory);
+		const path = join(directory, "app-state.json");
+		await writeFile(path, "peer-snapshot", "utf8");
+
+		await expect(
+			writeAppStateAtomically(path, createDefaultAppState("local-device"), {
+				beforeOverwrite: async () => undefined,
+				linkFile: async () => {
+					const error = new Error(
+						"hard links unavailable",
+					) as NodeJS.ErrnoException;
+					error.code = "EPERM";
+					throw error;
+				},
+			}),
+		).rejects.toThrow("hard links unavailable");
+
+		expect(
+			await readFile(
+				join(
+					directory,
+					(await readdir(directory)).find((name) =>
+						name.endsWith(".displaced"),
+					) ?? "missing",
+				),
+				"utf8",
+			),
+		).toBe("peer-snapshot");
+		expect(
+			(await readdir(directory)).some((name) => name.endsWith(".tmp")),
+		).toBe(false);
 	});
 });

@@ -100,6 +100,9 @@ function expectManagedRecoverySemantics(contents: string): void {
 		true,
 	);
 	expect(
+		managedPatternMatches(contents, "/.app-state.json.123.id.displaced"),
+	).toBe(true);
+	expect(
 		managedPatternMatches(
 			contents,
 			"/nested/app-state.quarantine.1700000000000.id.json",
@@ -107,6 +110,9 @@ function expectManagedRecoverySemantics(contents: string): void {
 	).toBe(false);
 	expect(
 		managedPatternMatches(contents, "/nested/.app-state.json.123.id.tmp"),
+	).toBe(false);
+	expect(
+		managedPatternMatches(contents, "/nested/.app-state.json.123.id.displaced"),
 	).toBe(false);
 	expect(managedPatternMatches(contents, "/app-state.json")).toBe(false);
 }
@@ -137,6 +143,7 @@ describe("ensureSensitiveSyncIgnore", () => {
 		expect(contents).toContain("/service.log");
 		expect(contents).toContain("/app-state.quarantine.*.json");
 		expect(contents).toContain("/.app-state.json.*.tmp");
+		expect(contents).toContain("/.app-state.json.*.displaced");
 	});
 
 	test("preserves every existing byte while prepending the block", () => {

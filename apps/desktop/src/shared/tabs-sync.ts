@@ -41,6 +41,7 @@ export interface TabsMergePlan {
 	rejectedCanonicalIds: string[];
 	nextClocks: Record<string, WorkspaceClock>;
 	peerClaudeSessionHandoffs: PeerClaudeSessionHandoff[];
+	importedPeerPaneIds: string[];
 	warnings: string[];
 }
 
@@ -607,6 +608,7 @@ export function planTabsMerge(input: {
 	);
 	const nextEnvelope = structuredClone(input.localEnvelope);
 	const handoffs: PeerClaudeSessionHandoff[] = [];
+	const importedPeerPaneIds = new Set<string>();
 
 	for (const candidate of accepted) {
 		nextEnvelope.perWorkspaceWrittenAt[candidate.canonical] = {
@@ -644,6 +646,7 @@ export function planTabsMerge(input: {
 		for (const [paneId, pane] of Object.entries(input.peerTabs.panes)) {
 			if (!importedTabIds.has(pane.tabId)) continue;
 			mergedPanes[paneId] = pane;
+			importedPeerPaneIds.add(paneId);
 			const claudeSessionId = input.peerEnvelope.paneClaudeSessions[paneId];
 			if (claudeSessionId) {
 				nextEnvelope.paneClaudeSessions[paneId] = claudeSessionId;
@@ -687,6 +690,7 @@ export function planTabsMerge(input: {
 		rejectedCanonicalIds: [...rejected].sort(),
 		nextClocks: seedWorkspaceClocks(nextEnvelope).clocks,
 		peerClaudeSessionHandoffs: handoffs,
+		importedPeerPaneIds: [...importedPeerPaneIds].sort(),
 		warnings,
 	};
 }

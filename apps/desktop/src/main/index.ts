@@ -25,7 +25,7 @@ import {
 	SUPERSET_HOME_DIR,
 } from "./lib/app-environment";
 import { initAppState } from "./lib/app-state";
-import { startAppStateWatcher } from "./lib/app-state/watcher";
+import { appStateWatcher, startAppStateWatcher } from "./lib/app-state/watcher";
 import { setupAutoUpdater } from "./lib/auto-updater";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
@@ -332,7 +332,10 @@ if (!gotTheLock) {
 		// Boot-phase markers: each awaited step below can block window creation,
 		// so log entry/exit to make a boot hang localizable from the log alone.
 		console.log("[main] boot: initAppState…");
-		await initAppState();
+		await initAppState({
+			beforeOverwrite: (displacedPath) =>
+				appStateWatcher.captureBeforeOverwrite(displacedPath),
+		});
 		await startAppStateWatcher();
 
 		console.log("[main] boot: loadWebviewBrowserExtension…");
