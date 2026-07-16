@@ -179,6 +179,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen
 
+      - name: Test personal update publication contract
+        run: node --test .github/scripts/create-personal-update-manifest.test.cjs
+
       - name: Build Desktop
         run: bun turbo run build --filter=@ade/desktop
 

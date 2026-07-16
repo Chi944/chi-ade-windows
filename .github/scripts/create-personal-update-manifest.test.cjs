@@ -194,10 +194,9 @@ describe("verifyPersonalUpdateManifest", () => {
 
 describe("publication integration", () => {
 	test("supports the legacy four-file rollout and swaps the manifest last", async () => {
-		const script = await readFile(
-			resolve(__dirname, "publish-direct-downloads.sh"),
-			"utf8",
-		);
+		const script = (
+			await readFile(resolve(__dirname, "publish-direct-downloads.sh"), "utf8")
+		).replace(/\r\n?/g, "\n");
 		assert.match(script, /LEGACY_STABLE_FILES=/);
 		const stableBlock = script.match(/STABLE_FILES=\(([\s\S]*?)\)/)?.[1] ?? "";
 		assert.ok(stableBlock.includes('"ade-personal-update-v1.json"'));
@@ -210,10 +209,9 @@ describe("publication integration", () => {
 	});
 
 	test("keeps transient old and next asset cleanup recoverable", async () => {
-		const script = await readFile(
-			resolve(__dirname, "publish-direct-downloads.sh"),
-			"utf8",
-		);
+		const script = (
+			await readFile(resolve(__dirname, "publish-direct-downloads.sh"), "utf8")
+		).replace(/\r\n?/g, "\n");
 		assert.match(script, /delete_asset_with_retry\(\)/);
 		assert.match(script, /is_managed_old_name\(\)/);
 		assert.match(script, /is_managed_next_name\(\)/);
@@ -265,8 +263,14 @@ describe("publication integration", () => {
 			workflow,
 			/node --test \.github\/scripts\/create-personal-update-manifest\.test\.cjs/,
 		);
-		assert.match(workflow, /Smoke packaged Windows runtime/);
-		assert.match(workflow, /Smoke packaged macOS runtime/);
+		assert.match(
+			workflow,
+			/Smoke packaged Windows GUI[\s\S]*smoke:packaged-gui -- --platform win32/,
+		);
+		assert.match(
+			workflow,
+			/Smoke packaged macOS GUI[\s\S]*smoke:packaged-gui -- --platform darwin/,
+		);
 
 		const viteConfig = await readFile(
 			resolve(__dirname, "../../apps/desktop/electron.vite.config.ts"),
