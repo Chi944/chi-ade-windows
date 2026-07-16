@@ -27,15 +27,24 @@ import {
 import { initAppState } from "./lib/app-state";
 import { appStateWatcher, startAppStateWatcher } from "./lib/app-state/watcher";
 import { setupAutoUpdater } from "./lib/auto-updater";
+import {
+	getBootRuntimeStatus,
+	getStartupCapabilities,
+} from "./lib/diagnostics/boot-state";
+import {
+	getDiagnosticsLogger,
+	logAppStateRecovery,
+} from "./lib/diagnostics/logger";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
-import { localDb } from "./lib/local-db";
+import { initializeLocalDatabase, localDb } from "./lib/local-db";
 import {
 	ensureProjectIconsDir,
 	ensureWorkspaceIconsDir,
 	getIconPath,
 } from "./lib/project-icons";
 import { reconcileSshTunnels } from "./lib/remote/tunnel-manager";
+import { hasSingleInstanceLock } from "./lib/single-instance";
 import {
 	initializeSubscriptionProfiles,
 	pruneOrphanedSubscriptionHomes,
@@ -204,16 +213,6 @@ app.on("before-quit", async (event) => {
 	app.exit(0);
 });
 
-process.on("uncaughtException", (error) => {
-	if (isQuitting) return;
-	console.error("[main] Uncaught exception:", error);
-});
-
-process.on("unhandledRejection", (reason) => {
-	if (isQuitting) return;
-	console.error("[main] Unhandled rejection:", reason);
-});
-
 // Without these handlers, Electron may not quit when electron-vite sends SIGTERM
 if (process.env.NODE_ENV === "development") {
 	const handleTerminationSignal = (signal: string) => {
@@ -257,7 +256,7 @@ protocol.registerSchemesAsPrivileged([
 	},
 ]);
 
-const gotTheLock = app.requestSingleInstanceLock();
+const gotTheLock = hasSingleInstanceLock();
 
 if (!gotTheLock) {
 	app.exit(0);
@@ -273,7 +272,14 @@ if (!gotTheLock) {
 
 	(async () => {
 		await app.whenReady();
+		const bootStatus = getBootRuntimeStatus();
+		const startup = getStartupCapabilities(bootStatus.safeMode);
+		getDiagnosticsLogger()[bootStatus.safeMode ? "warn" : "info"](
+			"startup.mode",
+			bootStatus,
+		);
 		ensureSupersetHomeDirExists();
+		await initializeLocalDatabase();
 		let sensitiveSyncIgnoreReady = true;
 		try {
 			ensureSensitiveSyncIgnore(SUPERSET_HOME_DIR);
@@ -305,7 +311,7 @@ if (!gotTheLock) {
 				subscriptionStorage.warning,
 			);
 		}
-		registerWithMacOSNotificationCenter();
+		if (startup.notifications) registerWithMacOSNotificationCenter();
 
 		// Must register on both default session and the app's custom partition
 		const iconProtocolHandler = (request: Request) => {
@@ -335,69 +341,77 @@ if (!gotTheLock) {
 		await initAppState({
 			beforeOverwrite: (displacedPath) =>
 				appStateWatcher.captureBeforeOverwrite(displacedPath),
+			onDiagnosticEvent: logAppStateRecovery,
 		});
-		await startAppStateWatcher();
+		if (startup.appStateWatcher) await startAppStateWatcher();
 
 		console.log("[main] boot: loadWebviewBrowserExtension…");
-		await loadWebviewBrowserExtension();
+		if (!bootStatus.safeMode) await loadWebviewBrowserExtension();
 
 		// Must happen before renderer restore runs
 		console.log("[main] boot: reconcileServiceSessions…");
-		await reconcileServiceSessions();
-		void reconcileSshTunnels().catch((error) => {
-			console.warn("[main] Failed to reconcile managed SSH tunnels:", error);
-		});
-		prewarmTerminalRuntime();
+		if (startup.terminalRestore) await reconcileServiceSessions();
+		if (startup.sshTunnels) {
+			void reconcileSshTunnels().catch((error) => {
+				getDiagnosticsLogger().warn("ssh-tunnels.reconcile.failed", { error });
+			});
+		}
+		if (startup.terminalPrewarm) prewarmTerminalRuntime();
 
-		try {
-			setupAgentHooks();
-		} catch (error) {
-			console.error("[main] Failed to set up agent hooks:", error);
+		if (startup.agentHooks) {
+			try {
+				setupAgentHooks();
+			} catch (error) {
+				getDiagnosticsLogger().error("agent-hooks.setup.failed", { error });
+			}
 		}
 
 		console.log("[main] boot: makeAppSetup (create window)…");
-		await makeAppSetup(() => MainWindow());
+		await makeAppSetup(() => MainWindow({ safeMode: bootStatus.safeMode }));
 		console.log("[main] boot: window created");
-		setupAutoUpdater();
-		initTray();
+		if (startup.autoUpdater) setupAutoUpdater();
+		if (startup.tray) initTray();
 
 		// One-time: bring agents created before the memory scaffold was enabled
 		// up to spec (idempotent + self-guarding; no-op when the flag is off).
 		// Deliberately OFF the critical boot path — scheduled after the window is
 		// up and fire-and-forget — so a slow or broken backfill can NEVER delay or
 		// brick window creation. Runs on a macrotask so it can't block this tick.
-		setTimeout(() => {
-			try {
-				const prunedHomes = pruneOrphanedSubscriptionHomes();
-				if (prunedHomes > 0) {
-					console.info(
-						`[main] Pruned ${prunedHomes} orphaned provider ${prunedHomes === 1 ? "home" : "homes"}`,
-					);
+		if (!bootStatus.safeMode)
+			setTimeout(() => {
+				try {
+					const prunedHomes = pruneOrphanedSubscriptionHomes();
+					if (prunedHomes > 0) {
+						console.info(
+							`[main] Pruned ${prunedHomes} orphaned provider ${prunedHomes === 1 ? "home" : "homes"}`,
+						);
+					}
+				} catch (error) {
+					console.error("[main] Provider home cleanup failed:", error);
 				}
-			} catch (error) {
-				console.error("[main] Provider home cleanup failed:", error);
-			}
-			try {
-				const removedAuthFiles = removeLegacyAgentCodexAuthFiles();
-				if (removedAuthFiles > 0) {
-					console.info(
-						`[main] Removed ${removedAuthFiles} legacy Codex credential ${removedAuthFiles === 1 ? "copy" : "copies"}`,
-					);
+				try {
+					const removedAuthFiles = removeLegacyAgentCodexAuthFiles();
+					if (removedAuthFiles > 0) {
+						console.info(
+							`[main] Removed ${removedAuthFiles} legacy Codex credential ${removedAuthFiles === 1 ? "copy" : "copies"}`,
+						);
+					}
+					backfillAgentMemory();
+				} catch (error) {
+					console.error("[main] Memory backfill failed:", error);
 				}
-				backfillAgentMemory();
-			} catch (error) {
-				console.error("[main] Memory backfill failed:", error);
-			}
-		}, 0);
+			}, 0);
 
 		// Process any deep links from cold start
-		const coldStartUrl = findDeepLinkInArgv(process.argv);
-		if (coldStartUrl) {
-			await processDeepLink(coldStartUrl);
-		}
-		if (pendingDeepLinkUrl) {
-			await processDeepLink(pendingDeepLinkUrl);
-			pendingDeepLinkUrl = null;
+		if (!bootStatus.safeMode) {
+			const coldStartUrl = findDeepLinkInArgv(process.argv);
+			if (coldStartUrl) {
+				await processDeepLink(coldStartUrl);
+			}
+			if (pendingDeepLinkUrl) {
+				await processDeepLink(pendingDeepLinkUrl);
+				pendingDeepLinkUrl = null;
+			}
 		}
 
 		appReady = true;

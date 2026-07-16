@@ -1,5 +1,4 @@
 import { resolve } from "node:path";
-import { sentryVitePlugin } from "@sentry/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import reactPlugin from "@vitejs/plugin-react";
@@ -28,16 +27,6 @@ await import("./src/main/env.main");
 const tsconfigPaths = tsconfigPathsPlugin({
 	projects: [resolve("tsconfig.json")],
 });
-
-// Sentry plugin for uploading sourcemaps (only in CI with auth token)
-const sentryPlugin = process.env.SENTRY_AUTH_TOKEN
-	? sentryVitePlugin({
-			org: "superset-sh",
-			project: "desktop",
-			authToken: process.env.SENTRY_AUTH_TOKEN,
-			release: { name: version },
-		})
-	: null;
 
 export default defineConfig({
 	main: {
@@ -70,9 +59,6 @@ export default defineConfig({
 				process.env.NEXT_PUBLIC_DOCS_URL,
 				"https://docs.superset.sh",
 			),
-			"process.env.SENTRY_DSN_DESKTOP": defineEnv(
-				process.env.SENTRY_DSN_DESKTOP,
-			),
 			// Must match renderer for analytics in main process
 			"process.env.NEXT_PUBLIC_POSTHOG_KEY": defineEnv(
 				process.env.NEXT_PUBLIC_POSTHOG_KEY,
@@ -98,7 +84,7 @@ export default defineConfig({
 			sourcemap: true,
 			rollupOptions: {
 				input: {
-					index: resolve("src/main/index.ts"),
+					index: resolve("src/main/bootstrap.ts"),
 					// Terminal host service process - runs separately for terminal persistence
 					"terminal-host": resolve("src/main/terminal-host/index.ts"),
 					// PTY subprocess - spawned by terminal-host for each terminal
@@ -108,7 +94,6 @@ export default defineConfig({
 					dir: resolve(devPath, "main"),
 				},
 				external: ["electron", "better-sqlite3", "node-pty"],
-				plugins: [sentryPlugin].filter(Boolean),
 			},
 		},
 		resolve: {
@@ -127,7 +112,7 @@ export default defineConfig({
 		plugins: [
 			tsconfigPaths,
 			externalizeDepsPlugin({
-				exclude: ["trpc-electron", "@sentry/electron"],
+				exclude: ["trpc-electron"],
 			}),
 		],
 
@@ -180,9 +165,6 @@ export default defineConfig({
 			),
 			"import.meta.env.NEXT_PUBLIC_POSTHOG_HOST": defineEnv(
 				process.env.NEXT_PUBLIC_POSTHOG_HOST,
-			),
-			"import.meta.env.SENTRY_DSN_DESKTOP": defineEnv(
-				process.env.SENTRY_DSN_DESKTOP,
 			),
 			"process.env.STREAMS_URL": defineEnv(
 				process.env.STREAMS_URL,
@@ -246,8 +228,7 @@ export default defineConfig({
 						NODE_ENV: "production",
 						platform: process.platform,
 					}),
-					sentryPlugin,
-				].filter(Boolean),
+				],
 
 				input: {
 					index: resolve("src/renderer/index.html"),

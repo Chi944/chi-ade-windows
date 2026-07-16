@@ -4,6 +4,28 @@ import { env } from "shared/env.shared";
 /** Window IDs defined in the router configuration */
 type WindowId = "main" | "about";
 
+export function buildDevelopmentWindowUrl(
+	port: number,
+	query?: Record<string, string>,
+): string {
+	const url = new URL(`http://localhost:${port}/`);
+	for (const [key, value] of Object.entries(query ?? {})) {
+		url.searchParams.set(key, value);
+	}
+	url.hash = "/";
+	return url.toString();
+}
+
+export function buildProductionWindowOptions(query?: Record<string, string>): {
+	hash: string;
+	query?: Record<string, string>;
+} {
+	return {
+		hash: "/",
+		...(query && Object.keys(query).length > 0 ? { query } : {}),
+	};
+}
+
 /**
  * Load an Electron window with the appropriate URL for TanStack Router.
  * Uses hash-based routing for compatibility with Electron's file:// protocol.
@@ -21,14 +43,17 @@ export function registerRoute(props: {
 
 	if (isDev) {
 		// Development: load from Vite dev server with hash routing
-		const url = `http://localhost:${env.DESKTOP_VITE_PORT}/#/`;
+		const url = buildDevelopmentWindowUrl(env.DESKTOP_VITE_PORT, props.query);
 		console.log("[window-loader] Loading development URL:", url);
 		props.browserWindow.loadURL(url);
 	} else {
 		// Production: load from file with hash routing
 		// TanStack Router uses hash-based routing, so we always start at #/
 		console.log("[window-loader] Loading file:", props.htmlFile);
-		props.browserWindow.loadFile(props.htmlFile, { hash: "/" });
+		props.browserWindow.loadFile(
+			props.htmlFile,
+			buildProductionWindowOptions(props.query),
+		);
 	}
 
 	// Log successful loads

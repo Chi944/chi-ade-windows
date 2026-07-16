@@ -102,6 +102,12 @@ export function createApplicationMenu() {
 						menuEmitter.emit("open-settings", "keyboard");
 					},
 				},
+				{
+					label: "Health & Recovery",
+					click: () => {
+						menuEmitter.emit("open-settings", "health");
+					},
+				},
 				{ type: "separator" },
 				{
 					label: "Check for Updates...",

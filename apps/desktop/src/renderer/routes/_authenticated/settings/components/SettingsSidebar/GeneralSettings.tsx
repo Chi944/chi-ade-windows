@@ -3,6 +3,7 @@ import { Link, useMatchRoute } from "@tanstack/react-router";
 import {
 	HiOutlineBell,
 	HiOutlineCommandLine,
+	HiOutlineHeart,
 	HiOutlineKey,
 	HiOutlinePaintBrush,
 	HiOutlinePuzzlePiece,
@@ -27,7 +28,8 @@ type SettingsRoute =
 	| "/settings/terminal"
 	| "/settings/integrations"
 	| "/settings/api-keys"
-	| "/settings/permissions";
+	| "/settings/permissions"
+	| "/settings/health";
 
 const GENERAL_SECTIONS: {
 	id: SettingsRoute;
@@ -90,6 +92,12 @@ const GENERAL_SECTIONS: {
 		label: "Permissions",
 		icon: <HiOutlineShieldCheck className="h-4 w-4" />,
 		macOnly: true,
+	},
+	{
+		id: "/settings/health",
+		section: "health",
+		label: "Health & Recovery",
+		icon: <HiOutlineHeart className="h-4 w-4" />,
 	},
 ];
 

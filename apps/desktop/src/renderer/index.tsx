@@ -1,4 +1,5 @@
 import { createRouter, RouterProvider } from "@tanstack/react-router";
+import { type ReactNode, useEffect } from "react";
 import ReactDom from "react-dom/client";
 import { BootErrorBoundary } from "./components/BootErrorBoundary";
 import {
@@ -9,6 +10,8 @@ import {
 	reportBootError,
 } from "./lib/boot-errors";
 import { persistentHistory } from "./lib/persistent-hash-history";
+import { getInitialSafeRecoveryRoute } from "./lib/startup-recovery";
+import { electronTrpcClient } from "./lib/trpc-client";
 import { electronQueryClient } from "./providers/ElectronTRPCProvider";
 import { routeTree } from "./routeTree.gen";
 
@@ -16,6 +19,11 @@ import "./globals.css";
 
 const rootElement = document.querySelector("app");
 initBootErrorHandling(rootElement);
+
+const safeRecoveryRoute = getInitialSafeRecoveryRoute(window.location.search);
+if (safeRecoveryRoute) {
+	persistentHistory.replace(safeRecoveryRoute);
+}
 
 const router = createRouter({
 	routeTree,
@@ -54,6 +62,17 @@ declare module "@tanstack/react-router" {
 	}
 }
 
+function RendererReadySignal({ children }: { children: ReactNode }) {
+	useEffect(() => {
+		void electronTrpcClient.diagnostics.markRendererReady
+			.mutate()
+			.catch((error) => {
+				console.error("[renderer] Failed to record renderer readiness", error);
+			});
+	}, []);
+	return children;
+}
+
 if (!rootElement) {
 	reportBootError("Missing <app> root element");
 } else if (!isBootErrorReported()) {
@@ -61,7 +80,9 @@ if (!rootElement) {
 		<BootErrorBoundary
 			onError={(error) => reportBootError("Render failed", error)}
 		>
-			<RouterProvider router={router} />
+			<RendererReadySignal>
+				<RouterProvider router={router} />
+			</RendererReadySignal>
 		</BootErrorBoundary>,
 	);
 	markBootMounted();

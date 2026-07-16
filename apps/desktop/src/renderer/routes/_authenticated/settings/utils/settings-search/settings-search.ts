@@ -61,6 +61,10 @@ export const SETTING_ITEM_ID = {
 	PERMISSIONS_MICROPHONE: "permissions-microphone",
 	PERMISSIONS_APPLE_EVENTS: "permissions-apple-events",
 	PERMISSIONS_LOCAL_NETWORK: "permissions-local-network",
+
+	// Health & Recovery
+	HEALTH_DIAGNOSTICS: "health-diagnostics",
+	HEALTH_RECOVERY: "health-recovery",
 } as const;
 
 export type SettingItemId =
@@ -873,6 +877,39 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"security",
 			"privacy",
 			"development servers",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.HEALTH_DIAGNOSTICS,
+		section: "health",
+		title: "Health checks",
+		description: "Run local diagnostics and export a privacy-safe report",
+		keywords: [
+			"health",
+			"diagnostics",
+			"status",
+			"troubleshoot",
+			"checks",
+			"export",
+			"logs",
+			"errors",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.HEALTH_RECOVERY,
+		section: "health",
+		title: "Health Recovery",
+		description: "Restore a snapshot, reset app state, or retry normal mode",
+		keywords: [
+			"health recovery",
+			"recovery",
+			"snapshot",
+			"backup",
+			"restore",
+			"reset",
+			"safe mode",
+			"startup",
+			"boot",
 		],
 	},
 ];

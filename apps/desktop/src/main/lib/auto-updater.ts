@@ -13,15 +13,15 @@ import {
 } from "shared/auto-update";
 import { PLATFORM } from "shared/constants";
 import { SUPERSET_HOME_DIR } from "./app-environment";
-import { getAppStateSnapshot } from "./app-state";
-import { backupLocalDatabase } from "./local-db";
+import { isSafeRecoveryMode } from "./diagnostics/boot-state";
+import { logUpdateFailure } from "./diagnostics/logger";
+import { createRecoverySnapshot } from "./diagnostics/recovery";
 import {
 	createPersonalUpdateController,
 	isPersonalUpdateNetworkError,
 	type PersonalUpdateController,
 	parsePersonalBuildIdentity,
 } from "./personal-auto-updater";
-import { createUpdateSnapshot } from "./recovery/update-snapshot";
 
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4;
 const RELEASE_REPO_OWNER = "Chi944";
@@ -58,6 +58,22 @@ let currentProgress: number | undefined;
 let currentReadyAction: AutoUpdateReadyAction | undefined;
 let personalController: PersonalUpdateController | undefined;
 
+function updatesSuppressedForSafeRecovery(): boolean {
+	try {
+		return isSafeRecoveryMode();
+	} catch {
+		// Unit tests and non-bootstrap tooling may import the updater in isolation.
+		return false;
+	}
+}
+
+function mirrorUpdateFailureInDevelopment(
+	message: string,
+	error: unknown,
+): void {
+	if (env.NODE_ENV === "development") console.error(message, error);
+}
+
 function emitStatus(
 	status: AutoUpdateStatus,
 	version?: string,
@@ -70,6 +86,9 @@ function emitStatus(
 	currentError = error;
 	currentProgress = progress;
 	currentReadyAction = readyAction;
+	if (status === AUTO_UPDATE_STATUS.ERROR && error) {
+		logUpdateFailure(error, { version });
+	}
 	autoUpdateEmitter.emit("status-changed", {
 		status,
 		...(version !== undefined ? { version } : {}),
@@ -92,6 +111,7 @@ export function getUpdateStatus(): AutoUpdateStatusEvent {
 }
 
 export async function downloadUpdate(): Promise<void> {
+	if (updatesSuppressedForSafeRecovery()) return;
 	if (personalController) {
 		await personalController.download();
 		return;
@@ -111,7 +131,10 @@ export async function downloadUpdate(): Promise<void> {
 	try {
 		await autoUpdater.downloadUpdate();
 	} catch (error) {
-		console.error("[auto-updater] Failed to download update:", error);
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to download update:",
+			error,
+		);
 		emitStatus(
 			AUTO_UPDATE_STATUS.ERROR,
 			currentVersion,
@@ -121,6 +144,7 @@ export async function downloadUpdate(): Promise<void> {
 }
 
 export async function installUpdate(): Promise<void> {
+	if (updatesSuppressedForSafeRecovery()) return;
 	if (personalController) {
 		await personalController.install();
 		return;
@@ -149,6 +173,7 @@ export function dismissUpdate(): void {
 }
 
 export function checkForUpdates(): void {
+	if (updatesSuppressedForSafeRecovery()) return;
 	if (personalController) {
 		void personalController.check();
 		return;
@@ -177,7 +202,10 @@ export function checkForUpdates(): void {
 			emitStatus(AUTO_UPDATE_STATUS.IDLE);
 			return;
 		}
-		console.error("[auto-updater] Failed to check for updates:", error);
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to check for updates:",
+			error,
+		);
 		emitStatus(
 			AUTO_UPDATE_STATUS.ERROR,
 			undefined,
@@ -187,6 +215,14 @@ export function checkForUpdates(): void {
 }
 
 export function checkForUpdatesInteractive(): void {
+	if (updatesSuppressedForSafeRecovery()) {
+		void dialog.showMessageBox({
+			type: "info",
+			title: "Updates paused in recovery mode",
+			message: "Restart ADE in normal mode before checking for updates.",
+		});
+		return;
+	}
 	if (personalController) {
 		void personalController.check({ interactive: true });
 		return;
@@ -249,7 +285,10 @@ export function checkForUpdatesInteractive(): void {
 				emitStatus(AUTO_UPDATE_STATUS.IDLE);
 				return;
 			}
-			console.error("[auto-updater] Failed to check for updates:", error);
+			mirrorUpdateFailureInDevelopment(
+				"[auto-updater] Failed to check for updates:",
+				error,
+			);
 			emitStatus(
 				AUTO_UPDATE_STATUS.ERROR,
 				undefined,
@@ -303,7 +342,11 @@ function scheduleUpdateChecks(): void {
 			.whenReady()
 			.then(() => checkForUpdates())
 			.catch((error) => {
-				console.error("[auto-updater] Failed to start update checks:", error);
+				logUpdateFailure(error, { operation: "schedule-update-checks" });
+				mirrorUpdateFailureInDevelopment(
+					"[auto-updater] Failed to start update checks:",
+					error,
+				);
 			});
 	}
 }
@@ -334,11 +377,7 @@ function setupPersonalUpdater(buildNumber: number): void {
 			return result.response === 0;
 		},
 		createSnapshot: async () => {
-			await createUpdateSnapshot({
-				recoveryDirectory: join(SUPERSET_HOME_DIR, "recovery", "updates"),
-				backupDatabase: backupLocalDatabase,
-				getAppStateSnapshot,
-			});
+			await createRecoverySnapshot("update");
 		},
 		openPath: (path) => shell.openPath(path),
 		showUpToDate: async () => {
@@ -378,7 +417,10 @@ function setupLegacyUpdater(): void {
 			emitStatus(AUTO_UPDATE_STATUS.IDLE);
 			return;
 		}
-		console.error("[auto-updater] Error during update:", error);
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Error during update:",
+			error,
+		);
 		emitStatus(
 			AUTO_UPDATE_STATUS.ERROR,
 			undefined,
@@ -419,7 +461,13 @@ function setupLegacyUpdater(): void {
 }
 
 export function setupAutoUpdater(): void {
-	if (!AUTO_UPDATE_ENABLED || !app.isPackaged) return;
+	if (
+		updatesSuppressedForSafeRecovery() ||
+		!AUTO_UPDATE_ENABLED ||
+		!app.isPackaged
+	) {
+		return;
+	}
 	let personalBuild: ReturnType<typeof parsePersonalBuildIdentity>;
 	try {
 		personalBuild = parsePersonalBuildIdentity(

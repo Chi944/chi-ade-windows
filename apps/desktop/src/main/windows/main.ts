@@ -94,7 +94,11 @@ app.on("child-process-gone", (_event, details) => {
 	}
 });
 
-export async function MainWindow() {
+export interface MainWindowOptions {
+	safeMode?: boolean;
+}
+
+export async function MainWindow({ safeMode = false }: MainWindowOptions = {}) {
 	const savedWindowState = loadWindowState();
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 
@@ -106,6 +110,7 @@ export async function MainWindow() {
 
 	const window = createWindow({
 		id: "main",
+		query: safeMode ? { adeSafeRecovery: "1" } : undefined,
 		title: windowTitle,
 		width: initialBounds.width,
 		height: initialBounds.height,
@@ -194,84 +199,90 @@ export async function MainWindow() {
 		});
 	}
 
-	const server = notificationsApp.listen(
-		env.DESKTOP_NOTIFICATIONS_PORT,
-		"127.0.0.1",
-		() => {
-			console.log(
-				`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
-			);
-		},
-	);
-
-	// Non-LLM event watcher → fires POST /agent/invoke. Opt-in via ~/agents/watchers.json.
-	const agentWatcher = new AgentWatcher(env.DESKTOP_NOTIFICATIONS_PORT);
-	agentWatcher.start();
-
-	if (env.NODE_ENV === "development") {
-		configureTestServer(() => window);
-		testServerApp.listen(TEST_SERVER_PORT, "127.0.0.1", () => {
-			console.log(
-				`[test-server] Listening on http://127.0.0.1:${TEST_SERVER_PORT}`,
-			);
-		});
-	}
-
-	const notificationManager = new NotificationManager({
-		isSupported: () => Notification.isSupported(),
-		createNotification: (opts) => new Notification(opts),
-		playSound: playNotificationSound,
-		onNotificationClick: (ids) => {
-			window.show();
-			window.focus();
-			notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
-		},
-		getVisibilityContext: () => ({
-			isFocused: window.isFocused(),
-			currentWorkspaceId: extractWorkspaceIdFromUrl(
-				window.webContents.getURL(),
-			),
-			tabsState: appState.data?.tabsState,
-		}),
-		getWorkspaceName: getWorkspaceNameFromDb,
-		getNotificationTitle: (event) =>
-			getNotificationTitle({
-				tabId: event.tabId,
-				paneId: event.paneId,
-				tabs: appState.data?.tabsState?.tabs,
-				panes: appState.data?.tabsState?.panes,
-			}),
-	});
-	notificationManager.start();
-
-	notificationsEmitter.on(
-		NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
-		(event: AgentLifecycleEvent) => {
-			notificationManager.handleAgentLifecycle(event);
-		},
-	);
-
-	// Forward low-volume terminal lifecycle events to the renderer via the existing
-	// notifications subscription. This is used only for correctness (e.g. clearing
-	// stuck agent lifecycle statuses when terminal panes aren't mounted).
-	getWorkspaceRuntimeRegistry()
-		.getDefault()
-		.terminal.on(
-			"terminalExit",
-			(event: {
-				paneId: string;
-				exitCode: number;
-				signal?: number;
-				reason?: "killed" | "exited" | "error";
-			}) => {
-				notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
-					paneId: event.paneId,
-					exitCode: event.exitCode,
-					signal: event.signal,
-					reason: event.reason,
-				});
+	let server: ReturnType<typeof notificationsApp.listen> | null = null;
+	let agentWatcher: AgentWatcher | null = null;
+	let notificationManager: NotificationManager | null = null;
+	if (!safeMode) {
+		server = notificationsApp.listen(
+			env.DESKTOP_NOTIFICATIONS_PORT,
+			"127.0.0.1",
+			() => {
+				console.log(
+					`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
+				);
 			},
 		);
+
+		// Non-LLM event watcher → fires POST /agent/invoke. Opt-in via ~/agents/watchers.json.
+		agentWatcher = new AgentWatcher(env.DESKTOP_NOTIFICATIONS_PORT);
+		agentWatcher.start();
+
+		if (env.NODE_ENV === "development") {
+			configureTestServer(() => window);
+			testServerApp.listen(TEST_SERVER_PORT, "127.0.0.1", () => {
+				console.log(
+					`[test-server] Listening on http://127.0.0.1:${TEST_SERVER_PORT}`,
+				);
+			});
+		}
+
+		const activeNotificationManager = new NotificationManager({
+			isSupported: () => Notification.isSupported(),
+			createNotification: (opts) => new Notification(opts),
+			playSound: playNotificationSound,
+			onNotificationClick: (ids) => {
+				window.show();
+				window.focus();
+				notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
+			},
+			getVisibilityContext: () => ({
+				isFocused: window.isFocused(),
+				currentWorkspaceId: extractWorkspaceIdFromUrl(
+					window.webContents.getURL(),
+				),
+				tabsState: appState.data?.tabsState,
+			}),
+			getWorkspaceName: getWorkspaceNameFromDb,
+			getNotificationTitle: (event) =>
+				getNotificationTitle({
+					tabId: event.tabId,
+					paneId: event.paneId,
+					tabs: appState.data?.tabsState?.tabs,
+					panes: appState.data?.tabsState?.panes,
+				}),
+		});
+		notificationManager = activeNotificationManager;
+		activeNotificationManager.start();
+
+		notificationsEmitter.on(
+			NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
+			(event: AgentLifecycleEvent) => {
+				activeNotificationManager.handleAgentLifecycle(event);
+			},
+		);
+
+		// Forward low-volume terminal lifecycle events to the renderer via the existing
+		// notifications subscription. This is used only for correctness (e.g. clearing
+		// stuck agent lifecycle statuses when terminal panes aren't mounted).
+		getWorkspaceRuntimeRegistry()
+			.getDefault()
+			.terminal.on(
+				"terminalExit",
+				(event: {
+					paneId: string;
+					exitCode: number;
+					signal?: number;
+					reason?: "killed" | "exited" | "error";
+				}) => {
+					notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
+						paneId: event.paneId,
+						exitCode: event.exitCode,
+						signal: event.signal,
+						reason: event.reason,
+					});
+				},
+			);
+	}
 
 	// macOS Sequoia+: occluded/minimized windows can lose compositor layers
 	if (PLATFORM.IS_MAC) {
@@ -331,12 +342,14 @@ export async function MainWindow() {
 		});
 
 		browserManager.unregisterAll();
-		server.close();
-		agentWatcher.stop();
-		notificationManager.dispose();
+		server?.close();
+		agentWatcher?.stop();
+		notificationManager?.dispose();
 		notificationsEmitter.removeAllListeners();
 		// Remove terminal listeners to prevent duplicates when window reopens on macOS
-		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+		if (!safeMode) {
+			getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+		}
 		// Detach window from IPC handler (handler stays alive for window reopen)
 		ipcHandler?.detachWindow(window);
 		currentWindow = null;
