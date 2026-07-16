@@ -16,8 +16,8 @@ describe("local database test schema contract", () => {
 	test("uses every production runtime schema export", () => {
 		const mockSchema = createLocalDbSchemaMock();
 
-		for (const exportName of Object.keys(localDbZod)) {
-			expect(mockSchema).toHaveProperty(exportName, localDbZod[exportName]);
+		for (const [exportName, runtimeSchema] of Object.entries(localDbZod)) {
+			expect(mockSchema).toHaveProperty(exportName, runtimeSchema);
 		}
 	});
 });

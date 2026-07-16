@@ -246,10 +246,7 @@ test("launch environment removes Electron's Node mode and isolates private roots
 		path.resolve("smoke-root", "roaming-app-data"),
 	);
 	assert.equal(environment.HOME, path.resolve("smoke-root", "os-home"));
-	assert.equal(
-		environment.USERPROFILE,
-		path.resolve("smoke-root", "os-home"),
-	);
+	assert.equal(environment.USERPROFILE, path.resolve("smoke-root", "os-home"));
 	assert.equal(
 		environment.CODEX_HOME,
 		path.resolve("smoke-root", "os-home", ".codex"),
@@ -477,10 +474,16 @@ test("reports redacted artifacts when private cleanup fails after passed launche
 		const result = JSON.parse(
 			fs.readFileSync(path.join(artifactsPath, "result.json"), "utf8"),
 		);
-		const log = fs.readFileSync(path.join(artifactsPath, "log-tail.txt"), "utf8");
+		const log = fs.readFileSync(
+			path.join(artifactsPath, "log-tail.txt"),
+			"utf8",
+		);
 		assert.equal(result.status, "failed");
 		assert.match(log, /private cleanup failed \(EPERM\)/);
-		assert.doesNotMatch(log, new RegExp(tempRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.doesNotMatch(
+			log,
+			new RegExp(tempRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+		);
 	} finally {
 		fs.rmSync(outer, { recursive: true, force: true });
 	}

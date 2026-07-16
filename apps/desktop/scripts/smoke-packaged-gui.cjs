@@ -486,6 +486,8 @@ async function runPackagedSmoke(options, dependencies = {}) {
 	const issuedTokens = [];
 	let lastChildTail = "";
 	let failedResult = null;
+	let smokeResult;
+	let smokeFailure;
 
 	try {
 		const launches = [];
@@ -532,33 +534,43 @@ async function runPackagedSmoke(options, dependencies = {}) {
 			launches.push(result);
 			fs.rmSync(outputPath);
 		}
-		return { status: "passed", launches };
+		smokeResult = { status: "passed", launches };
 	} catch (error) {
 		lastChildTail = `${lastChildTail}\n${error.logTail ?? ""}\n${collectDiagnosticLogTail(tempRoot)}`;
 		for (const token of issuedTokens) {
 			lastChildTail = redactSmokeText(lastChildTail, { token, tempRoot });
 		}
-		writeFailureArtifacts({
-			artifactsPath: options.artifactsPath,
-			platform: options.platform,
-			arch,
-			launch: currentLaunch > 2 ? 2 : currentLaunch,
-			result: failedResult,
-			logTail: lastChildTail,
-		});
-		throw new Error("Packaged GUI smoke failed; inspect failure artifacts");
-	} finally {
+		smokeFailure = new Error(
+			"Packaged GUI smoke failed; inspect failure artifacts",
+		);
 		try {
-			try {
-				await cleanupTerminalHost(home, options.platform);
-			} finally {
-				removeTempRoot(tempRoot);
-			}
-		} catch (error) {
-			const code =
-				typeof error?.code === "string" && /^[A-Z0-9_]+$/u.test(error.code)
-					? error.code
-					: "UNKNOWN";
+			writeFailureArtifacts({
+				artifactsPath: options.artifactsPath,
+				platform: options.platform,
+				arch,
+				launch: currentLaunch > 2 ? 2 : currentLaunch,
+				result: failedResult,
+				logTail: lastChildTail,
+			});
+		} catch {
+			// Cleanup still has to run when the bounded failure report cannot be written.
+		}
+	}
+
+	let cleanupFailure;
+	try {
+		try {
+			await cleanupTerminalHost(home, options.platform);
+		} finally {
+			removeTempRoot(tempRoot);
+		}
+	} catch (error) {
+		const code =
+			typeof error?.code === "string" && /^[A-Z0-9_]+$/u.test(error.code)
+				? error.code
+				: "UNKNOWN";
+		cleanupFailure = new Error("Packaged smoke private cleanup failed");
+		try {
 			writeFailureArtifacts({
 				artifactsPath: options.artifactsPath,
 				platform: options.platform,
@@ -570,9 +582,14 @@ async function runPackagedSmoke(options, dependencies = {}) {
 					{ tempRoot },
 				),
 			});
-			throw new Error("Packaged smoke private cleanup failed");
+		} catch {
+			// Preserve the cleanup failure even if its bounded report cannot be written.
 		}
 	}
+
+	if (cleanupFailure) throw cleanupFailure;
+	if (smokeFailure) throw smokeFailure;
+	return smokeResult;
 }
 
 module.exports = {
