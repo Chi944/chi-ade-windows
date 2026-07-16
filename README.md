@@ -39,7 +39,7 @@ These validated builds are unsigned, so Windows SmartScreen or macOS Gatekeeper 
 - **AI diff annotations** attach persistent notes to exact file/side/line locations and combine unresolved notes into one review prompt.
 - **Drag files to agents** pastes safely shell-quoted Explorer or Finder paths into a terminal.
 - **Custom appearance** includes a deep true-black theme and editable UI and terminal colours.
-- **User-controlled updates** announce published releases; nothing downloads or installs until you choose it.
+- **User-controlled updates** announce published releases; nothing downloads or opens until you choose it.
 - **Remote and extensible by default** uses the operating system's OpenSSH client and a declarative local extension registry instead of bundling another runtime.
 
 ## Gallery
@@ -106,15 +106,15 @@ Provider API tokens entered in ADE are encrypted with Electron secure storage an
 
 ## Updates
 
-Packaged builds check the latest published stable GitHub Release at startup, every four hours, and when you choose **Check for Updates**:
+Personal builds from 0.6.0 onward check a strict, verified personal update manifest at startup, every four hours, and when you choose **Check for Updates**:
 
 1. ADE tells you a version is available.
-2. You choose **Download** and can watch its progress.
-3. You choose **Install & Restart** when ready.
+2. You choose **Download**; ADE verifies the exact size and SHA-256 digest before keeping the installer.
+3. You choose **Open Installer**; after a second confirmation ADE creates a recovery snapshot, re-verifies the file, and asks Windows or macOS to open it.
 
-ADE never downloads an update automatically or silently installs one on quit. Differential blockmaps reduce repeat-download size when a published release provides them. Stable publishing is intentionally blocked unless the Windows signing and Apple signing/notarization credentials are configured.
+ADE never downloads or runs a personal update automatically, restarts the app, or bypasses operating-system security prompts. Existing builds older than 0.6.0 require one manual upgrade from the download links above. Builds without the personal release identity retain the separate signed stable feed; stable publishing remains blocked unless the Windows signing and Apple signing/notarization credentials are configured.
 
-The Direct Download workflow uses Actions artifacts only to transfer packages between jobs. After publishing the validated Windows installer, two macOS DMGs, and their checksum to the rolling `personal-latest` prerelease, it deletes the temporary artifacts; a one-day expiry is the cleanup fallback. Release downloads remain available until replaced by a newer validated build. This unsigned prerelease is excluded from the signed stable update feed.
+The Direct Download workflow uses Actions artifacts only to transfer packages between jobs. After publishing the validated Windows installer, two macOS DMGs, checksum file, and verified personal update manifest to the rolling `personal-latest` prerelease, it deletes the temporary artifacts; a one-day expiry is the cleanup fallback. The manifest is published last, only after the three installers are live and verified for the exact successful CI commit. Release downloads remain available until replaced by a newer validated build. This unsigned prerelease is excluded from the signed stable update feed.
 
 ## Storage and privacy
 

@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -28,6 +29,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api "repos/${{ github.repository }}/git/ref/tags/personal-latest" --silent
+
+      - name: Require successful CI for exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUNS=$(gh api \
+            --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" \
+            -f branch="main" \
+            -f event="push" \
+            -f status="completed" \
+            -f per_page="100")
+          MATCHES=$(jq \
+            --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(
+              .head_sha == $sha and
+              .head_branch == "main" and
+              .event == "push" and
+              .status == "completed" and
+              .conclusion == "success"
+            )] | length' <<< "$RUNS")
+          test "$MATCHES" -ge 1 || {
+            echo "::error::No successful completed CI push run exists for exact SHA $GITHUB_SHA"
+            exit 1
+          }
 
   package:
     needs: validate
@@ -92,7 +119,22 @@ jobs:
           apps/desktop/src/lib/trpc/routers/config/config.test.ts
           apps/desktop/src/lib/trpc/routers/config/project-config-files.test.ts
 
+      - name: Test verified personal update channel
+        run: >-
+          bun test --isolate
+          apps/desktop/src/shared/personal-update.test.ts
+          apps/desktop/src/main/lib/personal-update-downloader.test.ts
+          apps/desktop/src/main/lib/personal-auto-updater.test.ts
+          apps/desktop/src/main/lib/recovery/update-snapshot.test.ts
+          apps/desktop/src/main/lib/local-db/backup.test.ts
+
+      - name: Test personal update publication contract
+        run: node --test .github/scripts/create-personal-update-manifest.test.cjs
+
       - name: Compile desktop
+        env:
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
         run: bun run --cwd apps/desktop compile:app
 
       - name: Smoke native runtime
@@ -293,10 +335,26 @@ jobs:
           VERSION=$(node -p "require('./apps/desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Create and verify personal update manifest
+        env:
+          ADE_VERSION: ${{ steps.version.outputs.version }}
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          COMMIT_DATE=$(git show -s --format=%cI "$GITHUB_SHA")
+          export ADE_PUBLISHED_AT
+          ADE_PUBLISHED_AT=$(date --utc --date="$COMMIT_DATE" +"%Y-%m-%dT%H:%M:%S.000Z")
+          node .github/scripts/create-personal-update-manifest.cjs release-assets
+          node .github/scripts/verify-update-manifests.cjs \
+            release-assets/ade-personal-update-v1.json
+
       - name: Publish verified rolling direct downloads
         env:
           GH_TOKEN: ${{ github.token }}
           ADE_VERSION: ${{ steps.version.outputs.version }}
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
           RELEASE_DIR: release-assets
         shell: bash
         run: bash .github/scripts/publish-direct-downloads.sh

@@ -2,7 +2,7 @@
 	"name": "@ade/desktop",
 	"productName": "ADE",
 	"description": "A local-first agentic development environment for Windows and macOS",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"main": "./dist/main/index.js",
 	"resources": "src/resources",
 	"repository": {

@@ -62,6 +62,31 @@ Compare the result with the matching installer line in `SHA256SUMS.txt`.
 
 ## Updates
 
+**One-time manual upgrade:** install ADE 0.6.0 or newer from the links above.
+Earlier builds do not contain the verified personal update channel and cannot
+upgrade themselves into it.
+
+From ADE 0.6.0 onward, a personal build checks the strict
+[`ade-personal-update-v1.json`](https://github.com/Chi944/chi-ade-windows/releases/download/personal-latest/ade-personal-update-v1.json)
+manifest at startup, every four hours, and when you check manually. A background
+check only announces an available version; it never downloads or opens anything.
+
+1. Choose **Download**. ADE streams the platform-specific installer to a private
+   local update folder, rejects excess or missing bytes, and verifies its exact
+   size and SHA-256 digest before an atomic rename.
+2. Choose **Open Installer**. ADE asks for a second confirmation, rechecks the
+   file and manifest, and creates a bounded recovery snapshot of the local
+   SQLite database and app state.
+3. ADE launches the Windows installer or opens the macOS DMG only after that
+   confirmation. It does not complete installation, restart ADE, or bypass
+   SmartScreen or Gatekeeper automatically.
+
+Network loss leaves the updater idle for a later retry. Invalid manifest data,
+an unexpected repository URL, a changed download, or a checksum mismatch is
+shown as an error and the partial installer is removed. ADE retains at most two
+update recovery snapshots and one verified installer for each downloaded
+version.
+
 The `personal-latest` links always point to the newest validated direct-download
-build. This unsigned prerelease remains separate from ADE's signed stable
-update feed, so install a newer prerelease manually from the same links.
+build. The rolling release and manifest remain separate from ADE's signed stable
+update feed.

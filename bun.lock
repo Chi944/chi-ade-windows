@@ -110,7 +110,7 @@
     },
     "apps/desktop": {
       "name": "@ade/desktop",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@ai-sdk/react": "^3.0.226",
         "@better-auth/stripe": "1.4.18",

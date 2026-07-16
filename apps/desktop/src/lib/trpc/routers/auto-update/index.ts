@@ -40,12 +40,12 @@ export const createAutoUpdateRouter = () => {
 			checkForUpdates();
 		}),
 
-		download: publicProcedure.mutation(() => {
-			downloadUpdate();
+		download: publicProcedure.mutation(async () => {
+			await downloadUpdate();
 		}),
 
-		install: publicProcedure.mutation(() => {
-			installUpdate();
+		install: publicProcedure.mutation(async () => {
+			await installUpdate();
 		}),
 
 		dismiss: publicProcedure.mutation(() => {

@@ -18,6 +18,16 @@ STABLE_FILES=(
   "ADE-macOS-Apple-Silicon.dmg"
   "ADE-macOS-Intel.dmg"
   "SHA256SUMS.txt"
+  "ade-personal-update-v1.json"
+)
+
+# The first verified-channel rollout upgrades the exact historical inventory
+# without a manifest. No other partial inventory is accepted.
+LEGACY_STABLE_FILES=(
+  "ADE-Windows-x64.exe"
+  "ADE-macOS-Apple-Silicon.dmg"
+  "ADE-macOS-Intel.dmg"
+  "SHA256SUMS.txt"
 )
 
 declare -A NEXT_NAMES=()
@@ -88,6 +98,25 @@ verify_exact_inventory() {
     diff <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
     return 1
   }
+}
+
+verify_existing_inventory() {
+  local json="$1"
+  local stable_expected legacy_expected actual
+  stable_expected=$(printf '%s\n' "${STABLE_FILES[@]}" | sort)
+  legacy_expected=$(printf '%s\n' "${LEGACY_STABLE_FILES[@]}" | sort)
+  actual=$(jq -r '.assets[].name' <<< "$json" | sort)
+  if test "$actual" = "$stable_expected"; then
+    echo stable
+    return 0
+  fi
+  if test "$actual" = "$legacy_expected"; then
+    echo legacy
+    return 0
+  fi
+  echo "::error::Release has neither the exact current nor legacy asset inventory" >&2
+  diff <(printf '%s\n' "$stable_expected") <(printf '%s\n' "$actual") >&2 || true
+  return 1
 }
 
 verify_stable_assets() {
@@ -219,14 +248,108 @@ rename_asset_with_retry() {
   return 1
 }
 
+delete_asset_with_retry() {
+  local asset_id="$1"
+  local asset_label="$2"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    gh api \
+      --method DELETE \
+      "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+      --silent 2>/dev/null || true
+    if ! asset_name "$asset_id" > /dev/null; then
+      return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  echo "::error::Could not delete release asset after retries: $asset_label"
+  return 1
+}
+
+is_managed_old_name() {
+  local name="$1"
+  [[ "$name" =~ ^ADE-Windows-x64\.old-[0-9]+-[0-9]+\.exe$ ]] ||
+    [[ "$name" =~ ^ADE-macOS-Apple-Silicon\.old-[0-9]+-[0-9]+\.dmg$ ]] ||
+    [[ "$name" =~ ^ADE-macOS-Intel\.old-[0-9]+-[0-9]+\.dmg$ ]] ||
+    [[ "$name" =~ ^SHA256SUMS\.old-[0-9]+-[0-9]+\.txt$ ]] ||
+    [[ "$name" =~ ^ade-personal-update-v1\.old-[0-9]+-[0-9]+\.json$ ]]
+}
+
+is_managed_next_name() {
+  local name="$1"
+  [[ "$name" =~ ^ADE-Windows-x64\.next-[0-9]+-[0-9]+\.exe$ ]] ||
+    [[ "$name" =~ ^ADE-macOS-Apple-Silicon\.next-[0-9]+-[0-9]+\.dmg$ ]] ||
+    [[ "$name" =~ ^ADE-macOS-Intel\.next-[0-9]+-[0-9]+\.dmg$ ]] ||
+    [[ "$name" =~ ^SHA256SUMS\.next-[0-9]+-[0-9]+\.txt$ ]] ||
+    [[ "$name" =~ ^ade-personal-update-v1\.next-[0-9]+-[0-9]+\.json$ ]]
+}
+
+cleanup_reconcilable_release_assets() {
+  local json="$1"
+  local file stable_id manifest_id asset_id asset_name_value
+  local current_complete=true legacy_complete=true
+
+  # A committed current swap leaves all five stable names live. A rolled-back
+  # first-channel swap leaves the exact four legacy names live and no stable
+  # manifest. Those are the only bases from which generated residue is safe to
+  # remove; verify_existing_inventory rejects every other final inventory.
+  for file in "${STABLE_FILES[@]}"; do
+    stable_id=$(asset_field "$json" "$file" id)
+    if test -z "$stable_id" || test "$stable_id" = "null"; then
+      current_complete=false
+      break
+    fi
+  done
+  for file in "${LEGACY_STABLE_FILES[@]}"; do
+    stable_id=$(asset_field "$json" "$file" id)
+    if test -z "$stable_id" || test "$stable_id" = "null"; then
+      legacy_complete=false
+      break
+    fi
+  done
+  manifest_id=$(asset_field "$json" "ade-personal-update-v1.json" id)
+  if test -n "$manifest_id" && test "$manifest_id" != "null"; then
+    legacy_complete=false
+  fi
+
+  if test "$current_complete" != "true" && test "$legacy_complete" != "true"; then
+    return 0
+  fi
+
+  while IFS=$'\t' read -r asset_id asset_name_value; do
+    if test "$current_complete" = "true"; then
+      if is_managed_old_name "$asset_name_value" ||
+        is_managed_next_name "$asset_name_value"; then
+        delete_asset_with_retry "$asset_id" "$asset_name_value"
+      fi
+    elif test "$legacy_complete" = "true" &&
+      is_managed_next_name "$asset_name_value"; then
+      delete_asset_with_retry "$asset_id" "$asset_name_value"
+    fi
+  done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<< "$json")
+}
+
 rollback_assets() {
   local index file old_current next_current stable_current rollback_failed=false
   set +e
 
   for ((index=${#STABLE_FILES[@]} - 1; index >= 0; index--)); do
     file="${STABLE_FILES[$index]}"
-    test -n "${OLD_IDS[$file]:-}" || continue
     test -n "${NEXT_IDS[$file]:-}" || continue
+
+    if test -z "${OLD_IDS[$file]:-}"; then
+      # First-channel rollout: the manifest has no optional old manifest to
+      # restore. Move the new manifest out of its live name before rolling the
+      # installers back, then delete the staged copy in delete_next_assets().
+      next_current=$(asset_name "${NEXT_IDS[$file]}")
+      if test "$next_current" = "$file"; then
+        rename_asset_with_retry "${NEXT_IDS[$file]}" "${NEXT_NAMES[$file]}" || \
+          rollback_failed=true
+      elif test "$next_current" != "${NEXT_NAMES[$file]}"; then
+        rollback_failed=true
+      fi
+      continue
+    fi
 
     next_current=$(gh api \
       "repos/$GITHUB_REPOSITORY/releases/assets/${NEXT_IDS[$file]}" \
@@ -273,20 +396,26 @@ delete_next_assets() {
     fi
     test -n "$next_id" && test "$next_id" != "null" || continue
     old_id="${OLD_IDS[$file]:-}"
-    test -n "$old_id" && test "$old_id" != "null" || continue
 
     next_current=$(gh api \
       "repos/$GITHUB_REPOSITORY/releases/assets/$next_id" \
       --jq '.name' 2>/dev/null)
+
+    if test -z "$old_id" || test "$old_id" = "null"; then
+      if test "$next_current" = "${NEXT_NAMES[$file]}"; then
+        delete_asset_with_retry "$next_id" "${NEXT_NAMES[$file]}" || true
+      else
+        echo "::error::Optional old manifest rollback could not be proven for $file"
+      fi
+      continue
+    fi
+
     old_current=$(gh api \
       "repos/$GITHUB_REPOSITORY/releases/assets/$old_id" \
       --jq '.name' 2>/dev/null)
 
     if test "$next_current" = "${NEXT_NAMES[$file]}" && test "$old_current" = "$file"; then
-      gh api \
-        --method DELETE \
-        "repos/$GITHUB_REPOSITORY/releases/assets/$next_id" \
-        --silent || true
+      delete_asset_with_retry "$next_id" "${NEXT_NAMES[$file]}" || true
     else
       echo "::error::Rollback could not be proven for $file; retaining both assets for manual recovery"
     fi
@@ -294,8 +423,9 @@ delete_next_assets() {
 }
 
 update_existing_release() {
-  local json file old_id next_id
+  local json file old_id next_id existing_inventory
   local -a next_paths=()
+  local swap_committed=false
 
   json=$(release_json)
   test "$(jq -r '.draft' <<< "$json")" = "false" || {
@@ -306,12 +436,20 @@ update_existing_release() {
     echo "::error::$RELEASE_TAG must remain a prerelease"
     return 1
   }
-  verify_exact_inventory "$json"
+  cleanup_reconcilable_release_assets "$json"
+  json=$(release_json)
+  existing_inventory=$(verify_existing_inventory "$json")
+  echo "Updating exact $existing_inventory release inventory"
 
   for file in "${STABLE_FILES[@]}"; do
     old_id=$(asset_field "$json" "$file" id)
-    test -n "$old_id" && test "$old_id" != "null"
-    OLD_IDS["$file"]="$old_id"
+    if test -n "$old_id" && test "$old_id" != "null"; then
+      OLD_IDS["$file"]="$old_id"
+    elif test "$file" != "ade-personal-update-v1.json" || \
+      test "$existing_inventory" != "legacy"; then
+      echo "::error::Missing current release asset $file"
+      return 1
+    fi
     cp --reflink=auto \
       "$RELEASE_DIR/$file" \
       "$RELEASE_DIR/${NEXT_NAMES[$file]}"
@@ -322,8 +460,12 @@ update_existing_release() {
     local status=$?
     trap - EXIT
     if test "$status" -ne 0; then
-      rollback_assets
-      delete_next_assets
+      if test "$swap_committed" != "true"; then
+        rollback_assets
+        delete_next_assets
+      else
+        echo "::warning::The verified stable swap is live; a later run will reconcile any retained .old-* or .next-* assets"
+      fi
     fi
     cleanup_local_next_files
     exit "$status"
@@ -346,21 +488,25 @@ update_existing_release() {
   done
 
   for file in "${STABLE_FILES[@]}"; do
-    gh api \
-      --method PATCH \
-      "repos/$GITHUB_REPOSITORY/releases/assets/${OLD_IDS[$file]}" \
-      -f name="${OLD_NAMES[$file]}" \
-      --silent
+    if test -n "${OLD_IDS[$file]:-}"; then
+      gh api \
+        --method PATCH \
+        "repos/$GITHUB_REPOSITORY/releases/assets/${OLD_IDS[$file]}" \
+        -f name="${OLD_NAMES[$file]}" \
+        --silent
+    fi
     if ! gh api \
       --method PATCH \
       "repos/$GITHUB_REPOSITORY/releases/assets/${NEXT_IDS[$file]}" \
       -f name="$file" \
       --silent; then
-      gh api \
-        --method PATCH \
-        "repos/$GITHUB_REPOSITORY/releases/assets/${OLD_IDS[$file]}" \
-        -f name="$file" \
-        --silent || true
+      if test -n "${OLD_IDS[$file]:-}"; then
+        gh api \
+          --method PATCH \
+          "repos/$GITHUB_REPOSITORY/releases/assets/${OLD_IDS[$file]}" \
+          -f name="$file" \
+          --silent || true
+      fi
       return 1
     fi
   done
@@ -368,13 +514,12 @@ update_existing_release() {
   json=$(release_json)
   verify_stable_assets "$json"
   verify_anonymous_links
+  swap_committed=true
 
-  trap - EXIT
   for file in "${STABLE_FILES[@]}"; do
-    gh api \
-      --method DELETE \
-      "repos/$GITHUB_REPOSITORY/releases/assets/${OLD_IDS[$file]}" \
-      --silent
+    if test -n "${OLD_IDS[$file]:-}"; then
+      delete_asset_with_retry "${OLD_IDS[$file]}" "${OLD_NAMES[$file]}"
+    fi
   done
   cleanup_local_next_files
 
@@ -383,6 +528,7 @@ update_existing_release() {
   json=$(release_json)
   verify_exact_inventory "$json"
   verify_stable_assets "$json"
+  trap - EXIT
 }
 
 if existing_release=$(release_json 2>/dev/null); then

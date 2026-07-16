@@ -14,6 +14,7 @@ import {
 	SUPERSET_HOME_DIR,
 	SUPERSET_SENSITIVE_FILE_MODE,
 } from "../app-environment";
+import { backupSqliteDatabase } from "./backup";
 
 const DB_PATH = join(SUPERSET_HOME_DIR, "local.db");
 
@@ -94,6 +95,10 @@ console.log(`[local-db] Database initialized at: ${DB_PATH}`);
 console.log(`[local-db] Running migrations from: ${migrationsFolder}`);
 
 export const localDb = drizzle(sqlite, { schema });
+
+export function backupLocalDatabase(destination: string): Promise<void> {
+	return backupSqliteDatabase(sqlite, destination);
+}
 
 try {
 	migrate(localDb, { migrationsFolder });

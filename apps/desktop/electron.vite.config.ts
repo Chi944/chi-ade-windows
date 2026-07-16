@@ -45,6 +45,11 @@ export default defineConfig({
 
 		define: {
 			"process.env.NODE_ENV": defineEnv(process.env.NODE_ENV, "production"),
+			"process.env.ADE_BUILD_SHA": defineEnv(process.env.ADE_BUILD_SHA, ""),
+			"process.env.ADE_BUILD_NUMBER": defineEnv(
+				process.env.ADE_BUILD_NUMBER,
+				"",
+			),
 			"process.env.SKIP_ENV_VALIDATION": defineEnv(
 				process.env.SKIP_ENV_VALIDATION,
 				"",
