@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectUpdateStorage } from "./update-storage-health";
+import {
+	inspectUpdateStorage,
+	pruneCompletedInstallerVersions,
+} from "./update-storage-health";
 
 const temporaryRoots: string[] = [];
 
@@ -37,6 +48,7 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(root)).toEqual({
 			completedInstallerVersions: 2,
+			completedInstallerBytes: 2 * Buffer.byteLength("completed installer"),
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 0,
 		});
@@ -48,6 +60,7 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(root)).toEqual({
 			completedInstallerVersions: 0,
+			completedInstallerBytes: 0,
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 0,
 		});
@@ -62,6 +75,7 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(root)).toEqual({
 			completedInstallerVersions: 0,
+			completedInstallerBytes: 0,
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 4,
 		});
@@ -75,6 +89,7 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(root)).toEqual({
 			completedInstallerVersions: 2,
+			completedInstallerBytes: 3 * Buffer.byteLength("completed installer"),
 			updateVersionOverageCount: 1,
 			invalidUpdateEntryCount: 0,
 		});
@@ -88,6 +103,7 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(root)).toEqual({
 			completedInstallerVersions: 1,
+			completedInstallerBytes: Buffer.byteLength("completed installer"),
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 2,
 		});
@@ -99,8 +115,80 @@ describe("update storage health", () => {
 
 		expect(await inspectUpdateStorage(absent)).toEqual({
 			completedInstallerVersions: 0,
+			completedInstallerBytes: 0,
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 0,
 		});
+	});
+
+	it("never follows a linked version directory while pruning", async () => {
+		const root = await temporaryRoot();
+		const outside = await temporaryRoot();
+		await writeInstaller(root, "1.0.0", "ADE-Windows-x64.exe", "current");
+		await writeInstaller(outside, "linked", "ADE-Windows-x64.exe", "outside");
+		await symlink(
+			join(outside, "linked"),
+			join(root, "0.9.0"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		await pruneCompletedInstallerVersions(root, "1.0.0");
+
+		expect(
+			await readFile(join(outside, "linked", "ADE-Windows-x64.exe"), "utf8"),
+		).toBe("outside");
+	});
+
+	it("rejects a linked update root without pruning the external target", async () => {
+		const container = await temporaryRoot();
+		const outside = await temporaryRoot();
+		for (const version of ["1.0.0", "2.0.0", "3.0.0"]) {
+			await writeInstaller(outside, version, "ADE-Windows-x64.exe", version);
+		}
+		const linkedRoot = join(container, "updates");
+		await symlink(
+			outside,
+			linkedRoot,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+
+		await expect(
+			pruneCompletedInstallerVersions(linkedRoot, "3.0.0"),
+		).rejects.toThrow("Update storage root must be a non-link directory");
+		await expect(inspectUpdateStorage(linkedRoot)).rejects.toThrow(
+			"Update storage root must be a non-link directory",
+		);
+		expect(
+			await readFile(join(outside, "1.0.0", "ADE-Windows-x64.exe"), "utf8"),
+		).toBe("1.0.0");
+	});
+
+	it("removes an older candidate when cumulative installer bytes exceed the cap", async () => {
+		const root = await temporaryRoot();
+		const older = join(root, "1.0.0", "ADE-Windows-x64.exe");
+		const current = join(root, "2.0.0", "ADE-Windows-x64.exe");
+		await writeInstaller(root, "1.0.0", "ADE-Windows-x64.exe", "123456");
+		await writeInstaller(root, "2.0.0", "ADE-Windows-x64.exe", "abcdef");
+
+		await pruneCompletedInstallerVersions(root, "2.0.0", {
+			maxVersions: 2,
+			maxBytes: 10,
+		});
+
+		expect((await stat(current)).size).toBe(6);
+		await expect(stat(older)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("removes an oversized installer even when it belongs to the current version", async () => {
+		const root = await temporaryRoot();
+		const current = join(root, "2.0.0", "ADE-Windows-x64.exe");
+		await writeInstaller(root, "2.0.0", "ADE-Windows-x64.exe", "oversized");
+
+		await pruneCompletedInstallerVersions(root, "2.0.0", {
+			maxVersions: 2,
+			maxBytes: 8,
+		});
+
+		await expect(stat(current)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });

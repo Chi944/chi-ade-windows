@@ -3,6 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { app, crashReporter } from "electron";
 import {
+	pruneCrashDumpStorage,
+	scheduleCrashDumpPruning,
+} from "./lib/diagnostics/crash-storage";
+import {
 	ensurePrivateDiagnosticsDirectory,
 	getDiagnosticsLogger,
 	initializeDiagnosticsLogger,
@@ -11,6 +15,7 @@ import {
 	resolveDiagnosticsLogDirectory,
 } from "./lib/diagnostics/logger";
 import { resolveLocalPrivateRoot } from "./lib/diagnostics/private-root";
+import { pruneCompletedInstallerVersions } from "./lib/diagnostics/update-storage-health";
 import { acquireSingleInstanceLock } from "./lib/single-instance";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
@@ -42,6 +47,12 @@ ensurePrivateDiagnosticsDirectory(diagnosticsCrashDirectory);
 app.setPath("userData", adeHomeDir);
 app.setPath("crashDumps", diagnosticsCrashDirectory);
 app.setAppLogsPath(diagnosticsLogDirectory);
+let crashStorageFailure: unknown;
+try {
+	pruneCrashDumpStorage(diagnosticsCrashDirectory);
+} catch (error) {
+	crashStorageFailure = error;
+}
 
 let crashReporterFailure: unknown;
 try {
@@ -75,6 +86,11 @@ if (crashReporterFailure !== undefined) {
 		error: crashReporterFailure,
 	});
 }
+if (crashStorageFailure !== undefined) {
+	getDiagnosticsLogger().warn("crash-storage.prune.failed", {
+		error: crashStorageFailure,
+	});
+}
 getDiagnosticsLogger().info("bootstrap.ready", {
 	crashUploadsEnabled: false,
 });
@@ -93,6 +109,16 @@ const ownsSingleInstance = acquireSingleInstanceLock(() =>
 );
 
 async function startOwnerApplication(): Promise<void> {
+	scheduleCrashDumpPruning({
+		prune: () => pruneCrashDumpStorage(diagnosticsCrashDirectory),
+		onError: (error) => {
+			getDiagnosticsLogger().warn("crash-storage.prune.failed", {
+				error,
+				phase: "scheduled",
+			});
+		},
+	});
+
 	try {
 		const recoveryDirectory = ensurePrivateDiagnosticsDirectory(
 			join(privateRoot, "recovery"),
@@ -110,6 +136,15 @@ async function startOwnerApplication(): Promise<void> {
 	} catch (error) {
 		getDiagnosticsLogger().error("boot-state.initialize.failed", { error });
 		throw error;
+	}
+
+	try {
+		await pruneCompletedInstallerVersions(
+			join(adeHomeDir, "updates"),
+			app.getVersion(),
+		);
+	} catch (error) {
+		getDiagnosticsLogger().warn("update-storage.prune.failed", { error });
 	}
 
 	try {

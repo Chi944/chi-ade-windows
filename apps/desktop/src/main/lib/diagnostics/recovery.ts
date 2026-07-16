@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
-	chmod,
 	lstat,
 	open,
 	readdir,
 	readFile,
 	rename,
-	rm,
+	rmdir,
+	unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { SUPERSET_HOME_DIR } from "../app-environment";
@@ -18,6 +18,7 @@ import { resolveLocalPrivateRoot } from "./private-root";
 
 const APP_STATE_SNAPSHOT_LIMIT = 3;
 const DATABASE_SNAPSHOT_LIMIT = 2;
+const APP_STATE_CAPTURE_MAX_ATTEMPTS = 3;
 const FILE_MODE = 0o600;
 const STATE_EXTENSION = ".app-state.json";
 const DATABASE_EXTENSION = ".local.db";
@@ -44,13 +45,44 @@ export interface RecoveryStatus {
 export interface RecoveryManagerDependencies {
 	recoveryRoot: string;
 	getAppStateSnapshot: () => unknown;
+	getAppStateRevision: () => number;
 	validateSerializedAppState: (serialized: string) => unknown;
-	replaceAppState: (state: unknown) => Promise<void>;
+	replaceAppStateAtRevision: (
+		state: unknown,
+		expectedRevision: number,
+	) => Promise<"committed" | "stale">;
 	createDefaultAppState: () => unknown;
 	backupDatabase: (destination: string) => Promise<void>;
 	databaseExists: () => Promise<boolean>;
 	now?: () => number;
 	createId?: () => string;
+}
+
+interface RevisionedRecoverySnapshot extends RecoverySnapshot {
+	appStateRevision: number;
+}
+
+function captureRevisionedAppState(
+	dependencies: Pick<
+		RecoveryManagerDependencies,
+		"getAppStateRevision" | "getAppStateSnapshot"
+	>,
+): { state: unknown; revision: number } {
+	for (
+		let attempt = 0;
+		attempt < APP_STATE_CAPTURE_MAX_ATTEMPTS;
+		attempt += 1
+	) {
+		const revisionBefore = dependencies.getAppStateRevision();
+		const state = dependencies.getAppStateSnapshot();
+		const revisionAfter = dependencies.getAppStateRevision();
+		if (revisionBefore === revisionAfter) {
+			return { state, revision: revisionAfter };
+		}
+	}
+	throw new Error(
+		"App state changed repeatedly while the recovery snapshot was being captured",
+	);
 }
 
 function isErrno(error: unknown, code: string): boolean {
@@ -63,18 +95,57 @@ function isErrno(error: unknown, code: string): boolean {
 }
 
 async function safeRemove(path: string): Promise<void> {
-	await rm(path, { force: true }).catch((error) => {
+	try {
+		const entry = await lstat(path);
+		if (entry.isDirectory() && !entry.isSymbolicLink()) {
+			await rmdir(path);
+		} else {
+			await unlink(path);
+		}
+	} catch (error) {
 		if (!isErrno(error, "ENOENT")) throw error;
-	});
+	}
 }
 
-async function fsync(path: string): Promise<void> {
+async function assertRegularNonLinkFile(
+	path: string,
+	label: string,
+): Promise<void> {
+	let entry: Awaited<ReturnType<typeof lstat>>;
+	try {
+		entry = await lstat(path);
+	} catch (error) {
+		if (isErrno(error, "ENOENT")) throw new Error(`${label} is missing`);
+		throw error;
+	}
+	if (entry.isSymbolicLink()) {
+		throw new Error(`Refusing to use a symbolic link or junction as ${label}`);
+	}
+	if (!entry.isFile()) throw new Error(`${label} is not a regular file`);
+}
+
+async function finalizeDatabasePart(path: string): Promise<void> {
+	await assertRegularNonLinkFile(
+		path,
+		"database recovery snapshot partial file",
+	);
 	const handle = await open(path, "r+");
 	try {
+		const entry = await handle.stat();
+		if (!entry.isFile()) {
+			throw new Error(
+				"Database recovery snapshot partial file is not a regular file",
+			);
+		}
+		await handle.chmod(FILE_MODE);
 		await handle.sync();
 	} finally {
 		await handle.close();
 	}
+	await assertRegularNonLinkFile(
+		path,
+		"database recovery snapshot partial file",
+	);
 }
 
 async function writeStatePart(path: string, state: unknown): Promise<void> {
@@ -178,12 +249,16 @@ export class RecoveryManager {
 	}
 
 	createSnapshot(reason: RecoverySnapshotReason): Promise<RecoverySnapshot> {
-		return this.enqueueOperation(() => this.createSnapshotInternal(reason));
+		return this.enqueueOperation(async () => {
+			const { appStateRevision: _appStateRevision, ...snapshot } =
+				await this.createSnapshotInternal(reason);
+			return snapshot;
+		});
 	}
 
 	private async createSnapshotInternal(
 		reason: RecoverySnapshotReason,
-	): Promise<RecoverySnapshot> {
+	): Promise<RevisionedRecoverySnapshot> {
 		const timestamp = (this.dependencies.now ?? Date.now)();
 		const id = (this.dependencies.createId ?? randomUUID)();
 		validateSnapshotIdentity(timestamp, id);
@@ -209,14 +284,12 @@ export class RecoveryManager {
 		let databasePromoted = false;
 
 		try {
-			await writeStatePart(
-				appStatePartPath,
-				this.dependencies.getAppStateSnapshot(),
-			);
+			const { state: appStateSnapshot, revision: appStateRevision } =
+				captureRevisionedAppState(this.dependencies);
+			await writeStatePart(appStatePartPath, appStateSnapshot);
 			if (databasePartPath) {
 				await this.dependencies.backupDatabase(databasePartPath);
-				await chmod(databasePartPath, FILE_MODE);
-				await fsync(databasePartPath);
+				await finalizeDatabasePart(databasePartPath);
 				await rename(databasePartPath, databasePath as string);
 				databasePromoted = true;
 			}
@@ -231,6 +304,7 @@ export class RecoveryManager {
 			return {
 				appStatePath,
 				...(databasePath ? { databasePath } : {}),
+				appStateRevision,
 			};
 		} catch (error) {
 			await safeRemove(appStatePartPath);
@@ -260,8 +334,11 @@ export class RecoveryManager {
 			throw new Error("No app-state recovery snapshot is available");
 		const serialized = await readFile(join(stateDirectory, latestName), "utf8");
 		const validated = this.dependencies.validateSerializedAppState(serialized);
-		await this.createSnapshotInternal("before-restore");
-		await this.dependencies.replaceAppState(validated);
+		const safetySnapshot = await this.createSnapshotInternal("before-restore");
+		await this.replaceAppStateAtRevision(
+			validated,
+			safetySnapshot.appStateRevision,
+		);
 		return { restored: true };
 	}
 
@@ -270,11 +347,27 @@ export class RecoveryManager {
 	}
 
 	private async resetAppStateWithBackupInternal(): Promise<{ reset: true }> {
-		await this.createSnapshotInternal("before-reset");
-		await this.dependencies.replaceAppState(
+		const safetySnapshot = await this.createSnapshotInternal("before-reset");
+		await this.replaceAppStateAtRevision(
 			this.dependencies.createDefaultAppState(),
+			safetySnapshot.appStateRevision,
 		);
 		return { reset: true };
+	}
+
+	private async replaceAppStateAtRevision(
+		replacement: unknown,
+		expectedRevision: number,
+	): Promise<void> {
+		const outcome = await this.dependencies.replaceAppStateAtRevision(
+			replacement,
+			expectedRevision,
+		);
+		if (outcome === "stale") {
+			throw new Error(
+				"App state changed while the recovery backup was being created; recovery was cancelled without replacing the newer state.",
+			);
+		}
 	}
 
 	async getStatus(): Promise<RecoveryStatus> {
@@ -315,14 +408,16 @@ async function getDefaultRecoveryManager(): Promise<RecoveryManager> {
 		return createRecoveryManager({
 			recoveryRoot: resolveRecoveryRoot(),
 			getAppStateSnapshot: appStateModule.getAppStateSnapshot,
+			getAppStateRevision: appStateModule.getAppStateRevision,
 			validateSerializedAppState: (serialized) =>
 				parseAppStateJson(serialized, {
 					deviceId: appStateModule.getDeviceId(),
 				}),
-			replaceAppState: async (state) => {
+			replaceAppStateAtRevision: async (state, expectedRevision) => {
 				const replacement = state as AppState;
-				await appStateModule.enqueueAppStateMutation(
+				const outcome = await appStateModule.enqueueAppStateMutationAtRevision(
 					"recovery.replace-app-state",
+					expectedRevision,
 					(draft) => {
 						draft.tabsState = structuredClone(replacement.tabsState);
 						draft.themeState = structuredClone(replacement.themeState);
@@ -330,6 +425,7 @@ async function getDefaultRecoveryManager(): Promise<RecoveryManager> {
 						draft.sync = structuredClone(replacement.sync);
 					},
 				);
+				return outcome.status;
 			},
 			createDefaultAppState: () =>
 				createDefaultAppState(appStateModule.getDeviceId()),

@@ -16,6 +16,7 @@ import { SUPERSET_HOME_DIR } from "./app-environment";
 import { isSafeRecoveryMode } from "./diagnostics/boot-state";
 import { logUpdateFailure } from "./diagnostics/logger";
 import { createRecoverySnapshot } from "./diagnostics/recovery";
+import { runLegacyUpdateInstall } from "./legacy-update-install";
 import {
 	createPersonalUpdateController,
 	isPersonalUpdateNetworkError,
@@ -27,6 +28,8 @@ const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4;
 const RELEASE_REPO_OWNER = "Chi944";
 const RELEASE_REPO_NAME = "chi-ade-windows";
 const AUTO_UPDATE_ENABLED = true;
+const LEGACY_INSTALL_SNAPSHOT_ERROR =
+	"ADE could not prepare the update safely. Restart ADE and try again.";
 
 function isPrereleaseBuild(): boolean {
 	const components = prerelease(app.getVersion());
@@ -160,8 +163,25 @@ export async function installUpdate(): Promise<void> {
 		);
 		return;
 	}
-	setSkipQuitConfirmation();
-	autoUpdater.quitAndInstall(false, true);
+	try {
+		await runLegacyUpdateInstall({
+			createSnapshot: () =>
+				createRecoverySnapshot("update").then(() => undefined),
+			setSkipQuitConfirmation,
+			quitAndInstall: () => autoUpdater.quitAndInstall(false, true),
+		});
+	} catch (error) {
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to create an update recovery snapshot:",
+			error,
+		);
+		logUpdateFailure(error, { phase: "legacy-install-snapshot" });
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			currentVersion,
+			LEGACY_INSTALL_SNAPSHOT_ERROR,
+		);
+	}
 }
 
 export function dismissUpdate(): void {

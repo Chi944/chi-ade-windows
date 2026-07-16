@@ -4,6 +4,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	realpath,
 	rm,
 	stat,
 	symlink,
@@ -31,7 +32,9 @@ afterEach(async () => {
 });
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "ade-diagnostics-test-"));
+	const directory = await mkdtemp(
+		join(await realpath(tmpdir()), "ade-diagnostics-test-"),
+	);
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -97,6 +100,7 @@ describe("early diagnostics bootstrap", () => {
 		);
 		const setUserData = source.indexOf('app.setPath("userData"');
 		const setCrashDumps = source.indexOf('app.setPath("crashDumps"');
+		const pruneCrashDumps = source.indexOf("pruneCrashDumpStorage(");
 		const startCrashReporter = source.indexOf("crashReporter.start(");
 		const initializeLogger = source.indexOf("initializeDiagnosticsLogger(");
 		const acquireSingleInstance = source.indexOf("acquireSingleInstanceLock(");
@@ -105,6 +109,8 @@ describe("early diagnostics bootstrap", () => {
 
 		expect(setUserData).toBeGreaterThan(-1);
 		expect(setCrashDumps).toBeGreaterThan(setUserData);
+		expect(pruneCrashDumps).toBeGreaterThan(setCrashDumps);
+		expect(pruneCrashDumps).toBeLessThan(startCrashReporter);
 		expect(startCrashReporter).toBeGreaterThan(setCrashDumps);
 		expect(initializeLogger).toBeGreaterThan(startCrashReporter);
 		expect(acquireSingleInstance).toBeGreaterThan(initializeLogger);
@@ -113,6 +119,40 @@ describe("early diagnostics bootstrap", () => {
 		expect(source).toContain("uploadToServer: false");
 		expect(source).toContain('process.on("uncaughtExceptionMonitor"');
 		expect(source).toContain('process.on("unhandledRejection"');
+	});
+
+	test("prunes completed installers on every owner startup before loading main", async () => {
+		const source = await readFile(
+			join(import.meta.dir, "..", "..", "bootstrap.ts"),
+			"utf8",
+		);
+		const owner = source.slice(
+			source.indexOf("async function startOwnerApplication"),
+			source.indexOf("if (!ownsSingleInstance)"),
+		);
+		const prune = owner.indexOf("await pruneCompletedInstallerVersions(");
+		const importMain = owner.indexOf('await import("./index")');
+
+		expect(prune).toBeGreaterThan(-1);
+		expect(prune).toBeLessThan(importMain);
+		expect(owner).toContain('join(adeHomeDir, "updates")');
+		expect(owner).toContain("app.getVersion()");
+		expect(owner).toContain('"update-storage.prune.failed"');
+	});
+
+	test("schedules recurring unrefed crash pruning after diagnostics initialize", async () => {
+		const source = await readFile(
+			join(import.meta.dir, "..", "..", "bootstrap.ts"),
+			"utf8",
+		);
+		const initializeLogger = source.indexOf("initializeDiagnosticsLogger(");
+		const schedule = source.indexOf("scheduleCrashDumpPruning({");
+
+		expect(schedule).toBeGreaterThan(initializeLogger);
+		expect(source).toContain(
+			"prune: () => pruneCrashDumpStorage(diagnosticsCrashDirectory)",
+		);
+		expect(source).toContain('"crash-storage.prune.failed"');
 	});
 
 	test("secondary instances exit before recording a boot attempt", async () => {

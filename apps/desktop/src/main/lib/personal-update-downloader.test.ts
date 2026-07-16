@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parsePersonalUpdateManifest } from "../../shared/personal-update";
+import { MAX_COMPLETED_INSTALLER_BYTES } from "./diagnostics/update-storage-health";
 import {
 	downloadPersonalUpdate,
 	nodePersonalUpdateFileSystem,
@@ -108,6 +117,79 @@ function downloadOptions(
 }
 
 describe("downloadPersonalUpdate", () => {
+	test("rejects a linked update root without touching its target", async () => {
+		const container = await temporaryDirectory();
+		const outside = await temporaryDirectory();
+		const updatesDirectory = join(container, "updates");
+		const sentinel = join(outside, "keep.txt");
+		await writeFile(sentinel, "outside");
+		await symlink(
+			outside,
+			updatesDirectory,
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		const bytes = new TextEncoder().encode("installer");
+		const manifest = manifestFor(bytes);
+		const fetchUpdate = mock(async () => responseFromChunks([bytes]));
+
+		await expect(
+			downloadPersonalUpdate(
+				downloadOptions(updatesDirectory, manifest, fetchUpdate),
+			),
+		).rejects.toThrow(/non-link directory/i);
+		expect(fetchUpdate).not.toHaveBeenCalled();
+		expect(await readFile(sentinel, "utf8")).toBe("outside");
+	});
+
+	test("rejects a linked version directory without touching its target", async () => {
+		const updatesDirectory = await temporaryDirectory();
+		const outside = await temporaryDirectory();
+		const sentinel = join(outside, "keep.txt");
+		await writeFile(sentinel, "outside");
+		const bytes = new TextEncoder().encode("installer");
+		const manifest = manifestFor(bytes);
+		await symlink(
+			outside,
+			join(updatesDirectory, manifest.version),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		const fetchUpdate = mock(async () => responseFromChunks([bytes]));
+
+		await expect(
+			downloadPersonalUpdate(
+				downloadOptions(updatesDirectory, manifest, fetchUpdate),
+			),
+		).rejects.toThrow(/non-link directory/i);
+		expect(fetchUpdate).not.toHaveBeenCalled();
+		expect(await readFile(sentinel, "utf8")).toBe("outside");
+	});
+
+	test("rejects an oversized selected asset before filesystem writes or fetch", async () => {
+		const directory = await temporaryDirectory();
+		const bytes = new TextEncoder().encode("installer");
+		const manifest = manifestFor(bytes, {
+			size: MAX_COMPLETED_INSTALLER_BYTES + 1,
+		});
+		const fetchUpdate = mock(async () => {
+			throw new Error("fetch must not run");
+		});
+		const mkdirUpdateDirectory = mock(async () => {
+			throw new Error("filesystem write must not run");
+		});
+
+		await expect(
+			downloadPersonalUpdate({
+				...downloadOptions(directory, manifest, fetchUpdate),
+				files: {
+					...nodePersonalUpdateFileSystem,
+					mkdir: mkdirUpdateDirectory,
+				},
+			}),
+		).rejects.toThrow("Selected update installer exceeds the storage limit");
+		expect(fetchUpdate).not.toHaveBeenCalled();
+		expect(mkdirUpdateDirectory).not.toHaveBeenCalled();
+	});
+
 	test("rejects HTTP failures and removes partial files", async () => {
 		const directory = await temporaryDirectory();
 		const bytes = new TextEncoder().encode("installer");
@@ -345,6 +427,33 @@ describe("downloadPersonalUpdate", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
+	test("keeps only the two newest completed installer versions globally", async () => {
+		const directory = await temporaryDirectory();
+		for (const version of ["0.4.0", "0.5.0"]) {
+			const versionDirectory = join(directory, version);
+			await mkdir(versionDirectory, { recursive: true });
+			await writeFile(join(versionDirectory, "ADE-Windows-x64.exe"), version);
+		}
+		const bytes = new TextEncoder().encode("installer");
+		const manifest = manifestFor(bytes);
+
+		await downloadPersonalUpdate(
+			downloadOptions(
+				directory,
+				manifest,
+				mock(async () => responseFromChunks([bytes])),
+			),
+		);
+
+		const completed = (await allFiles(directory)).filter((name) =>
+			name.endsWith("ADE-Windows-x64.exe"),
+		);
+		expect(completed.sort()).toEqual([
+			join("0.5.0", "ADE-Windows-x64.exe"),
+			join("0.6.0", "ADE-Windows-x64.exe"),
+		]);
+	});
+
 	test("removes a changed existing installer and downloads it again", async () => {
 		const directory = await temporaryDirectory();
 		const bytes = new TextEncoder().encode("installer");
@@ -455,6 +564,24 @@ describe("openVerifiedPersonalUpdate", () => {
 
 		expect(result).toBe("opened");
 		expect(order).toEqual(["confirm", "snapshot", "open"]);
+	});
+
+	test("does not open a personal installer when its recovery snapshot fails", async () => {
+		const { manifest, verified } = await downloadedUpdate();
+		const openPath = mock(async () => "");
+
+		await expect(
+			openVerifiedPersonalUpdate({
+				verified,
+				getCurrentManifest: () => manifest,
+				confirm: mock(async () => true),
+				createSnapshot: mock(async () => {
+					throw new Error("snapshot unavailable");
+				}),
+				openPath,
+			}),
+		).rejects.toThrow("snapshot unavailable");
+		expect(openPath).not.toHaveBeenCalled();
 	});
 
 	test("refuses a tampered verified installer before confirmation", async () => {

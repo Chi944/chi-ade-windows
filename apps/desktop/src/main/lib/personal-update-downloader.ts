@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, open, readdir, rename, stat, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
+import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import {
 	type PersonalUpdateAsset,
 	type PersonalUpdateManifest,
 	selectPersonalUpdateAsset,
 } from "../../shared/personal-update";
+import {
+	MAX_COMPLETED_INSTALLER_BYTES,
+	pruneCompletedInstallerVersions,
+} from "./diagnostics/update-storage-health";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -20,7 +24,12 @@ export interface PersonalUpdateWriteHandle {
 export interface PersonalUpdateFileSystem {
 	mkdir(path: string): Promise<void>;
 	openExclusive(path: string): Promise<PersonalUpdateWriteHandle>;
-	stat(path: string): Promise<{ isFile: boolean; size: number }>;
+	lstat(path: string): Promise<{
+		isDirectory: boolean;
+		isFile: boolean;
+		isSymbolicLink: boolean;
+		size: number;
+	}>;
 	readChunks(path: string): AsyncIterable<Uint8Array>;
 	rename(from: string, to: string): Promise<void>;
 	unlink(path: string): Promise<void>;
@@ -42,9 +51,14 @@ export const nodePersonalUpdateFileSystem: PersonalUpdateFileSystem = {
 			close: () => handle.close(),
 		};
 	},
-	stat: async (path) => {
-		const metadata = await stat(path);
-		return { isFile: metadata.isFile(), size: metadata.size };
+	lstat: async (path) => {
+		const metadata = await lstat(path);
+		return {
+			isDirectory: metadata.isDirectory(),
+			isFile: metadata.isFile(),
+			isSymbolicLink: metadata.isSymbolicLink(),
+			size: metadata.size,
+		};
 	},
 	readChunks: (path) => createReadStream(path),
 	rename,
@@ -77,6 +91,10 @@ export interface DownloadPersonalUpdateOptions {
 	getCurrentManifest: () => PersonalUpdateManifest | undefined;
 	onProgress?: (percent: number) => void;
 	signal?: AbortSignal;
+	pruneCompletedInstallers?: (
+		updatesDirectory: string,
+		keepVersion: string,
+	) => Promise<void>;
 }
 
 export interface OpenVerifiedPersonalUpdateOptions {
@@ -94,6 +112,43 @@ export interface OpenVerifiedPersonalUpdateOptions {
 
 function isMissingFile(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function ensureNonLinkDirectoryPath(
+	files: PersonalUpdateFileSystem,
+	directory: string,
+	label: string,
+): Promise<string> {
+	if (!directory || directory.includes("\0") || !isAbsolute(directory)) {
+		throw new Error(`${label} must be a valid absolute path`);
+	}
+	const absolute = resolve(directory);
+	const root = parse(absolute).root;
+	const relativePath = relative(root, absolute);
+	const segments = relativePath ? relativePath.split(sep) : [];
+	if (
+		!segments.length ||
+		segments.some((segment) => !segment || segment === "." || segment === "..")
+	) {
+		throw new Error(`${label} must be below its filesystem root`);
+	}
+
+	let cursor = root;
+	for (const segment of segments) {
+		cursor = join(cursor, segment);
+		let metadata: Awaited<ReturnType<PersonalUpdateFileSystem["lstat"]>>;
+		try {
+			metadata = await files.lstat(cursor);
+		} catch (error) {
+			if (!isMissingFile(error)) throw error;
+			await files.mkdir(cursor);
+			metadata = await files.lstat(cursor);
+		}
+		if (metadata.isSymbolicLink || !metadata.isDirectory) {
+			throw new Error(`${label} must be a non-link directory`);
+		}
+	}
+	return absolute;
 }
 
 async function safeUnlink(
@@ -145,8 +200,14 @@ async function isVerifiedFile(
 	asset: PersonalUpdateAsset,
 ): Promise<boolean> {
 	try {
-		const metadata = await files.stat(path);
-		if (!metadata.isFile || metadata.size !== asset.size) return false;
+		const metadata = await files.lstat(path);
+		if (
+			metadata.isSymbolicLink ||
+			!metadata.isFile ||
+			metadata.size !== asset.size
+		) {
+			return false;
+		}
 		return (await hashFile(files, path)) === asset.sha256;
 	} catch (error) {
 		if (isMissingFile(error)) return false;
@@ -228,24 +289,36 @@ export async function downloadPersonalUpdate(
 		options.platform,
 		options.arch,
 	);
+	if (asset.size > MAX_COMPLETED_INSTALLER_BYTES) {
+		throw new Error("Selected update installer exceeds the storage limit");
+	}
 	const fingerprint = manifestFingerprint(options.manifest);
 	assertCurrentManifest(fingerprint, options.getCurrentManifest);
 	throwIfAborted(options.signal);
 
-	const versionDirectory = join(
+	const updatesDirectory = await ensureNonLinkDirectoryPath(
+		files,
 		options.updatesDirectory,
-		options.manifest.version,
+		"Update storage root",
+	);
+	const versionDirectory = await ensureNonLinkDirectoryPath(
+		files,
+		join(updatesDirectory, options.manifest.version),
+		"Update version directory",
 	);
 	const targetPath = join(versionDirectory, asset.name);
 	const partPath = join(
 		versionDirectory,
 		`${asset.name}.build-${options.manifest.buildNumber}.part`,
 	);
-	await files.mkdir(versionDirectory);
 	await cleanupVersionDirectory(files, versionDirectory, asset.name);
 
 	if (await isVerifiedFile(files, targetPath, asset)) {
 		assertCurrentManifest(fingerprint, options.getCurrentManifest);
+		await (options.pruneCompletedInstallers ?? pruneCompletedInstallerVersions)(
+			updatesDirectory,
+			options.manifest.version,
+		);
 		return verifiedResult(
 			options.manifest,
 			asset,
@@ -310,6 +383,10 @@ export async function downloadPersonalUpdate(
 		assertCurrentManifest(fingerprint, options.getCurrentManifest);
 		await files.rename(partPath, targetPath);
 		await cleanupVersionDirectory(files, versionDirectory, asset.name);
+		await (options.pruneCompletedInstallers ?? pruneCompletedInstallerVersions)(
+			updatesDirectory,
+			options.manifest.version,
+		);
 		return verifiedResult(
 			options.manifest,
 			asset,

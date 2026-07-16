@@ -4,6 +4,11 @@ import {
 	parsePersonalUpdateManifest,
 	selectPersonalUpdateAsset,
 } from "shared/personal-update";
+import { MAX_CRASH_DUMP_BYTES, MAX_CRASH_DUMP_COUNT } from "./crash-storage";
+import {
+	MAX_COMPLETED_INSTALLER_BYTES,
+	MAX_COMPLETED_INSTALLER_VERSIONS,
+} from "./update-storage-health";
 
 export type HealthNetworkFetch = (
 	url: string,
@@ -73,6 +78,45 @@ export interface StateShapeCounts {
 	remoteHostCount: number;
 }
 
+export interface StateShapeSummary extends StateShapeCounts {
+	unavailableMetricCount: number;
+}
+
+const STATE_SHAPE_METRICS = [
+	"projectCount",
+	"workspaceCount",
+	"tabCount",
+	"paneCount",
+	"accountCount",
+	"remoteHostCount",
+] as const satisfies ReadonlyArray<keyof StateShapeCounts>;
+
+export function readStateShapeBestEffort(
+	readers: Record<keyof StateShapeCounts, () => unknown>,
+): StateShapeSummary {
+	const counts = {} as StateShapeCounts;
+	let unavailableMetricCount = 0;
+	for (const metric of STATE_SHAPE_METRICS) {
+		try {
+			const value = readers[metric]();
+			if (
+				typeof value !== "number" ||
+				!Number.isSafeInteger(value) ||
+				value < 0
+			) {
+				unavailableMetricCount += 1;
+				counts[metric] = 0;
+				continue;
+			}
+			counts[metric] = value;
+		} catch {
+			unavailableMetricCount += 1;
+			counts[metric] = 0;
+		}
+	}
+	return { ...counts, unavailableMetricCount };
+}
+
 export interface HealthCheckDependencies {
 	platform: string;
 	arch: string;
@@ -115,10 +159,14 @@ export interface HealthCheckDependencies {
 	readStorageHealth: () => Promise<{
 		diagnosticLogCount: number;
 		diagnosticLogBytes: number;
+		crashDumpCount: number;
+		crashDumpBytes: number;
+		invalidCrashDumpEntryCount: number;
 		appStateSnapshotCount: number;
 		databaseSnapshotCount: number;
 		/** Final installer filenames with non-zero regular files; not historical hashes. */
 		completedInstallerVersions: number;
+		completedInstallerBytes: number;
 		updateVersionOverageCount: number;
 		invalidUpdateEntryCount: number;
 	}>;
@@ -202,6 +250,8 @@ async function databaseCheck(
 	deps: HealthCheckDependencies,
 ): Promise<HealthCheckResult> {
 	const create = checkFactory("local-database", "state", "Local database");
+	const remediation =
+		"Export diagnostics, then restart ADE. Do not use Reset app state or Restore app state; neither action can repair local.db.";
 	try {
 		const database = await deps.readDatabaseHealth();
 		return database.integrity === "ok"
@@ -211,14 +261,10 @@ async function databaseCheck(
 					database.integrity === "corrupt"
 						? "Database integrity check failed."
 						: "The database is unavailable.",
-					"Restore a database snapshot before continuing.",
+					remediation,
 				);
 	} catch {
-		return create(
-			"fail",
-			"The database could not be checked.",
-			"Restart in recovery mode and restore a database snapshot.",
-		);
+		return create("fail", "The database could not be checked.", remediation);
 	}
 }
 
@@ -445,8 +491,13 @@ async function storageBudgetCheck(
 		const overBudget =
 			health.diagnosticLogCount > 3 ||
 			health.diagnosticLogBytes > 3 * 1024 * 1024 ||
+			health.crashDumpCount > MAX_CRASH_DUMP_COUNT ||
+			health.crashDumpBytes > MAX_CRASH_DUMP_BYTES ||
+			health.invalidCrashDumpEntryCount > 0 ||
 			health.appStateSnapshotCount > 3 ||
 			health.databaseSnapshotCount > 2 ||
+			health.completedInstallerVersions > MAX_COMPLETED_INSTALLER_VERSIONS ||
+			health.completedInstallerBytes > MAX_COMPLETED_INSTALLER_BYTES ||
 			health.updateVersionOverageCount > 0 ||
 			health.invalidUpdateEntryCount > 0;
 		return overBudget
@@ -542,10 +593,28 @@ export interface DiagnosticsExportBundle {
 		summary: Record<HealthStatus, number>;
 		checks: Array<Pick<HealthCheckResult, "id" | "group" | "status">>;
 	};
-	stateShape: StateShapeCounts;
+	stateShape: StateShapeSummary;
+	storage: DiagnosticsStorageSummary;
 	pathHashes: Record<string, string>;
 	recentEvents: RecentDiagnosticEvent[];
 }
+
+export interface DiagnosticsStorageSummary {
+	completedInstallerVersions: number;
+	completedInstallerBytes: number;
+	crashDumpCount: number;
+	crashDumpBytes: number;
+	unavailableMetricCount: number;
+}
+
+const STORAGE_METRICS = [
+	"completedInstallerVersions",
+	"completedInstallerBytes",
+	"crashDumpCount",
+	"crashDumpBytes",
+] as const satisfies ReadonlyArray<
+	keyof Omit<DiagnosticsStorageSummary, "unavailableMetricCount">
+>;
 
 const EVENT_CATEGORIES = new Set([
 	"application",
@@ -651,19 +720,57 @@ function safeAppIdentity(identity: DiagnosticsAppIdentity) {
 export function createDiagnosticsExport(options: {
 	report: HealthReport;
 	app: DiagnosticsAppIdentity;
-	stateShape: StateShapeCounts;
+	stateShape?: Partial<StateShapeSummary>;
+	storage?: Partial<DiagnosticsStorageSummary>;
 	paths: Partial<Record<"syncRoot" | "privateRoot", string>>;
 	recentLogs: unknown[];
 	now: () => Date;
 }): DiagnosticsExportBundle {
-	const stateShape: StateShapeCounts = {
-		projectCount: safeCount(options.stateShape.projectCount),
-		workspaceCount: safeCount(options.stateShape.workspaceCount),
-		tabCount: safeCount(options.stateShape.tabCount),
-		paneCount: safeCount(options.stateShape.paneCount),
-		accountCount: safeCount(options.stateShape.accountCount),
-		remoteHostCount: safeCount(options.stateShape.remoteHostCount),
-	};
+	let unavailableMetricCount = Math.min(
+		STATE_SHAPE_METRICS.length,
+		safeCount(options.stateShape?.unavailableMetricCount),
+	);
+	const stateShape = {} as StateShapeCounts;
+	for (const metric of STATE_SHAPE_METRICS) {
+		const value = options.stateShape?.[metric];
+		if (
+			typeof value !== "number" ||
+			!Number.isSafeInteger(value) ||
+			value < 0
+		) {
+			unavailableMetricCount = Math.min(
+				STATE_SHAPE_METRICS.length,
+				unavailableMetricCount + 1,
+			);
+			stateShape[metric] = 0;
+			continue;
+		}
+		stateShape[metric] = value;
+	}
+	let unavailableStorageMetricCount = Math.min(
+		STORAGE_METRICS.length,
+		safeCount(options.storage?.unavailableMetricCount),
+	);
+	const storage = {} as Omit<
+		DiagnosticsStorageSummary,
+		"unavailableMetricCount"
+	>;
+	for (const metric of STORAGE_METRICS) {
+		const value = options.storage?.[metric];
+		if (
+			typeof value !== "number" ||
+			!Number.isSafeInteger(value) ||
+			value < 0
+		) {
+			unavailableStorageMetricCount = Math.min(
+				STORAGE_METRICS.length,
+				unavailableStorageMetricCount + 1,
+			);
+			storage[metric] = 0;
+			continue;
+		}
+		storage[metric] = value;
+	}
 	const pathHashes: Record<string, string> = {};
 	for (const key of ["syncRoot", "privateRoot"] as const) {
 		const value = options.paths[key];
@@ -690,7 +797,11 @@ export function createDiagnosticsExport(options: {
 			},
 			checks,
 		},
-		stateShape,
+		stateShape: { ...stateShape, unavailableMetricCount },
+		storage: {
+			...storage,
+			unavailableMetricCount: unavailableStorageMetricCount,
+		},
 		pathHashes,
 		recentEvents: safeRecentEvents(options.recentLogs),
 	};

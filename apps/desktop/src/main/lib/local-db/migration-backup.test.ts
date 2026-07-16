@@ -4,7 +4,10 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
+	renameSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -24,8 +27,21 @@ function createDirectoryLink(target: string, path: string): void {
 	symlinkSync(target, path, process.platform === "win32" ? "junction" : "dir");
 }
 
+function replaceWithPathLink(path: string, target: string): void {
+	rmSync(path, { recursive: true, force: true });
+	if (process.platform === "win32") {
+		mkdirSync(target, { recursive: true });
+		symlinkSync(target, path, "junction");
+		return;
+	}
+	writeFileSync(target, "outside");
+	symlinkSync(target, path, "file");
+}
+
 function createFixture() {
-	const root = mkdtempSync(join(tmpdir(), "ade-migration-backup-"));
+	const root = mkdtempSync(
+		join(realpathSync.native(tmpdir()), "ade-migration-backup-"),
+	);
 	temporaryDirectories.push(root);
 	const migrationsFolder = join(root, "migrations");
 	const recoveryDirectory = join(root, "private", "recovery", "database");
@@ -96,6 +112,104 @@ describe("migration fingerprint", () => {
 		);
 		expect(computeMigrationFingerprint(fixture.migrationsFolder)).not.toBe(
 			first,
+		);
+	});
+
+	test("rejects a linked migrations directory", () => {
+		const fixture = createFixture();
+		const realMigrations = join(fixture.root, "real-migrations");
+		rmSync(fixture.migrationsFolder, { recursive: true, force: true });
+		mkdirSync(join(realMigrations, "meta"), { recursive: true });
+		writeFileSync(join(realMigrations, "0000_first.sql"), "select 1;\n");
+		writeFileSync(
+			join(realMigrations, "meta", "_journal.json"),
+			'{"entries":[{"tag":"0000_first"}]}\n',
+		);
+		createDirectoryLink(realMigrations, fixture.migrationsFolder);
+
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/symbolic link|junction/i,
+		);
+	});
+
+	test("rejects a linked ancestor before reading migration inputs", () => {
+		const fixture = createFixture();
+		const canonicalBoundary = join(fixture.root, "canonical-boundary");
+		const linkedBoundary = join(fixture.root, "linked-boundary");
+		mkdirSync(canonicalBoundary);
+		renameSync(fixture.migrationsFolder, join(canonicalBoundary, "migrations"));
+		createDirectoryLink(canonicalBoundary, linkedBoundary);
+
+		expect(() =>
+			computeMigrationFingerprint(join(linkedBoundary, "migrations")),
+		).toThrow(/symbolic link|junction/i);
+	});
+
+	test("rejects linked migration SQL input", () => {
+		const fixture = createFixture();
+		replaceWithPathLink(
+			join(fixture.migrationsFolder, "0000_first.sql"),
+			join(fixture.root, "outside-migration-input"),
+		);
+
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/symbolic link|junction|regular file/i,
+		);
+	});
+
+	test("rejects a linked migration metadata directory", () => {
+		const fixture = createFixture();
+		const outsideMeta = join(fixture.root, "outside-meta");
+		rmSync(join(fixture.migrationsFolder, "meta"), {
+			recursive: true,
+			force: true,
+		});
+		mkdirSync(outsideMeta, { recursive: true });
+		writeFileSync(
+			join(outsideMeta, "_journal.json"),
+			'{"entries":[{"tag":"0000_first"}]}\n',
+		);
+		createDirectoryLink(outsideMeta, join(fixture.migrationsFolder, "meta"));
+
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/symbolic link|junction/i,
+		);
+	});
+
+	test("rejects a linked migration journal", () => {
+		const fixture = createFixture();
+		replaceWithPathLink(
+			join(fixture.migrationsFolder, "meta", "_journal.json"),
+			join(fixture.root, "outside-journal"),
+		);
+
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/symbolic link|junction|regular file/i,
+		);
+	});
+
+	test("rejects malformed migration journals and unsafe migration tags", () => {
+		const fixture = createFixture();
+		const journalPath = join(fixture.migrationsFolder, "meta", "_journal.json");
+		writeFileSync(journalPath, "not-json\n");
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/migration journal/i,
+		);
+
+		writeFileSync(journalPath, '{"entries":[{"tag":"../outside"}]}\n');
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/migration tag/i,
+		);
+	});
+
+	test("rejects a nonregular migration referenced by the journal", () => {
+		const fixture = createFixture();
+		const migrationPath = join(fixture.migrationsFolder, "0000_first.sql");
+		rmSync(migrationPath, { force: true });
+		mkdirSync(migrationPath);
+
+		expect(() => computeMigrationFingerprint(fixture.migrationsFolder)).toThrow(
+			/regular file/i,
 		);
 	});
 });
@@ -257,14 +371,20 @@ describe("prepareMigrationBackup", () => {
 	test("rejects a backup result that is not a regular non-link file", async () => {
 		const fixture = createFixture();
 		const outside = join(fixture.root, "outside-backup-result");
+		mkdirSync(outside, { recursive: true });
 		fixture.backupDatabase.mockImplementationOnce(async (destination) => {
 			createDirectoryLink(outside, destination);
 		});
+		const outsideModeBefore =
+			process.platform === "win32" ? -1 : statSync(outside).mode;
 
 		await expect(fixture.run(true)).rejects.toThrow(
 			/symbolic link|regular file/i,
 		);
 		expect(() => readFileSync(fixture.markerPath)).toThrow();
 		expect(readdirSync(outside)).toEqual([]);
+		if (process.platform !== "win32") {
+			expect(statSync(outside).mode).toBe(outsideModeBefore);
+		}
 	});
 });

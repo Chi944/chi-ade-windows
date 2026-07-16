@@ -11,8 +11,12 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { ensurePrivateDiagnosticsDirectory } from "../diagnostics/logger";
+import {
+	assertSafeExistingDirectoryPath,
+	assertSafeRegularFilePath,
+} from "./filesystem-safety";
 
 const MARKER_SCHEMA_VERSION = 1;
 const FILE_MODE = 0o600;
@@ -69,12 +73,7 @@ function getEntry(path: string): ReturnType<typeof lstatSync> | null {
 }
 
 function assertRegularNonLinkFile(path: string, label: string): void {
-	const entry = getEntry(path);
-	if (!entry) throw new Error(`${label} is missing`);
-	if (entry.isSymbolicLink()) {
-		throw new Error(`Refusing to use a symbolic link as ${label}`);
-	}
-	if (!entry.isFile()) throw new Error(`${label} is not a regular file`);
+	assertSafeRegularFilePath(path, label);
 }
 
 function assertPathAbsent(path: string, label: string): void {
@@ -109,20 +108,82 @@ function removeRegularFileBestEffort(path: string): void {
 }
 
 export function computeMigrationFingerprint(migrationsFolder: string): string {
-	const migrationNames = readdirSync(migrationsFolder, { withFileTypes: true })
-		.filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
-		.map((entry) => entry.name)
+	const safeMigrationsFolder = assertSafeExistingDirectoryPath(
+		migrationsFolder,
+		"migrations directory",
+	);
+	const migrationNames = readdirSync(safeMigrationsFolder, {
+		withFileTypes: true,
+	})
+		.filter((entry) => entry.name.endsWith(".sql"))
+		.map((entry) => {
+			assertSafeRegularFilePath(
+				join(safeMigrationsFolder, entry.name),
+				`migration SQL file ${entry.name}`,
+				safeMigrationsFolder,
+			);
+			return entry.name;
+		})
 		.sort();
+	const metaDirectory = assertSafeExistingDirectoryPath(
+		join(safeMigrationsFolder, "meta"),
+		"migration metadata directory",
+		safeMigrationsFolder,
+	);
+	const journalPath = assertSafeRegularFilePath(
+		join(metaDirectory, "_journal.json"),
+		"migration journal",
+		safeMigrationsFolder,
+	);
+	const journalContents = readFileSync(journalPath);
+	let journal: unknown;
+	try {
+		journal = JSON.parse(journalContents.toString("utf8"));
+	} catch {
+		throw new Error("Migration journal is malformed JSON");
+	}
+	if (
+		typeof journal !== "object" ||
+		journal === null ||
+		Array.isArray(journal) ||
+		!Array.isArray((journal as { entries?: unknown }).entries)
+	) {
+		throw new Error("Migration journal must contain an entries array");
+	}
+	for (const entry of (journal as { entries: unknown[] }).entries) {
+		const tag =
+			typeof entry === "object" && entry !== null && !Array.isArray(entry)
+				? (entry as { tag?: unknown }).tag
+				: undefined;
+		if (typeof tag !== "string" || !tag || tag.includes("\0")) {
+			throw new Error("Migration journal contains an unsafe migration tag");
+		}
+		const migrationPath = resolve(safeMigrationsFolder, `${tag}.sql`);
+		if (dirname(migrationPath) !== safeMigrationsFolder) {
+			throw new Error("Migration journal contains an unsafe migration tag");
+		}
+		assertSafeRegularFilePath(
+			migrationPath,
+			`migration SQL file ${tag}.sql`,
+			safeMigrationsFolder,
+		);
+	}
 	const hash = createHash("sha256");
 	for (const name of migrationNames) {
-		updateHashWithFile(hash, name, readFileSync(join(migrationsFolder, name)));
+		const path = assertSafeRegularFilePath(
+			join(safeMigrationsFolder, name),
+			`migration SQL file ${name}`,
+			safeMigrationsFolder,
+		);
+		updateHashWithFile(hash, name, readFileSync(path));
 	}
 	const journalName = "meta/_journal.json";
-	updateHashWithFile(
-		hash,
-		journalName,
-		readFileSync(join(migrationsFolder, "meta", "_journal.json")),
+	assertSafeRegularFilePath(
+		journalPath,
+		"migration journal",
+		safeMigrationsFolder,
 	);
+	updateHashWithFile(hash, journalName, journalContents);
 	return hash.digest("hex");
 }
 

@@ -31,18 +31,21 @@ import {
 	markRendererReady,
 	prepareNormalModeRetry,
 } from "main/lib/diagnostics/boot-state";
+import { inspectCrashDumpStorage } from "main/lib/diagnostics/crash-storage";
 import {
 	createDiagnosticsExport,
 	exportDiagnostics,
 	fetchHealthUpdateManifest,
 	type HealthCheckDependencies,
+	readStateShapeBestEffort,
 	runHealthChecks,
-	type StateShapeCounts,
+	type StateShapeSummary,
 } from "main/lib/diagnostics/health";
 import {
 	ensurePrivateDiagnosticsDirectory,
 	logHealthOperation,
 	readRecentDiagnosticEntries,
+	resolveDiagnosticsCrashDirectory,
 	resolveDiagnosticsDirectory,
 	resolveDiagnosticsLogDirectory,
 } from "main/lib/diagnostics/logger";
@@ -254,12 +257,16 @@ async function readStorageHealth() {
 		),
 	);
 	const recovery = await getRecoveryStatus();
+	const crashStorage = inspectCrashDumpStorage(
+		resolveDiagnosticsCrashDirectory(privateRoot),
+	);
 	const updateStorage = await inspectUpdateStorage(
 		join(SUPERSET_HOME_DIR, "updates"),
 	);
 	return {
 		diagnosticLogCount: logEntries.length,
 		diagnosticLogBytes: logSizes.reduce((total, size) => total + size, 0),
+		...crashStorage,
 		appStateSnapshotCount: recovery.appStateSnapshotCount,
 		databaseSnapshotCount: recovery.databaseSnapshotCount,
 		...updateStorage,
@@ -322,16 +329,15 @@ export async function runDefaultHealthChecks() {
 	}
 }
 
-function currentStateShape(): StateShapeCounts {
-	const state = getAppStateSnapshot();
-	return {
-		projectCount: localDb.select().from(projects).all().length,
-		workspaceCount: localDb.select().from(workspaces).all().length,
-		tabCount: state.tabsState.tabs.length,
-		paneCount: Object.keys(state.tabsState.panes).length,
-		accountCount: listSubscriptionProfiles().profiles.length,
-		remoteHostCount: localDb.select().from(remoteHosts).all().length,
-	};
+function currentStateShape(): StateShapeSummary {
+	return readStateShapeBestEffort({
+		projectCount: () => localDb.select().from(projects).all().length,
+		workspaceCount: () => localDb.select().from(workspaces).all().length,
+		tabCount: () => getAppStateSnapshot().tabsState.tabs.length,
+		paneCount: () => Object.keys(getAppStateSnapshot().tabsState.panes).length,
+		accountCount: () => listSubscriptionProfiles().profiles.length,
+		remoteHostCount: () => localDb.select().from(remoteHosts).all().length,
+	});
 }
 
 function embeddedBuildNumber(): number | undefined {
@@ -343,13 +349,14 @@ function embeddedBuildNumber(): number | undefined {
 
 async function createDefaultBundle() {
 	const privateRoot = localPrivateRoot();
-	const [report, recentLogs] = await Promise.all([
+	const [report, recentLogs, storage] = await Promise.all([
 		runDefaultHealthChecks(),
 		readRecentDiagnosticEntries({
 			directory: resolveDiagnosticsLogDirectory(privateRoot),
 			limit: DIAGNOSTIC_EVENT_LIMIT,
 			homePaths: [SUPERSET_HOME_DIR, privateRoot],
-		}),
+		}).catch(() => []),
+		readStorageHealth().catch(() => undefined),
 	]);
 	return createDiagnosticsExport({
 		report,
@@ -361,6 +368,7 @@ async function createDefaultBundle() {
 			arch: process.arch,
 		},
 		stateShape: currentStateShape(),
+		storage,
 		paths: { syncRoot: SUPERSET_HOME_DIR, privateRoot },
 		recentLogs,
 		now: () => new Date(),

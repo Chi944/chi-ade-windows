@@ -10,12 +10,12 @@ import { app, dialog } from "electron";
 import { validate as uuidValidate, version as uuidVersion } from "uuid";
 import { env } from "../../env.main";
 import {
-	ensureSupersetHomeDirExists,
 	SUPERSET_HOME_DIR,
 	SUPERSET_SENSITIVE_FILE_MODE,
 } from "../app-environment";
 import { resolveLocalPrivateRoot } from "../diagnostics/private-root";
 import { backupSqliteDatabase } from "./backup";
+import { openValidatedLocalDatabase } from "./filesystem-safety";
 import {
 	checkSqliteDatabaseIntegrity,
 	type LocalDatabaseIntegrityResult,
@@ -26,9 +26,6 @@ import {
 } from "./migration-backup";
 
 const DB_PATH = join(SUPERSET_HOME_DIR, "local.db");
-const DATABASE_EXISTED_BEFORE_OPEN = existsSync(DB_PATH);
-
-ensureSupersetHomeDirExists();
 
 /**
  * Gets the migrations directory path.
@@ -86,7 +83,11 @@ function getMigrationsDirectory(): string {
 
 const migrationsFolder = getMigrationsDirectory();
 
-const sqlite = new Database(DB_PATH);
+const { database: sqlite, existedBeforeOpen: DATABASE_EXISTED_BEFORE_OPEN } =
+	openValidatedLocalDatabase(
+		DB_PATH,
+		(validatedPath) => new Database(validatedPath),
+	);
 try {
 	chmodSync(DB_PATH, SUPERSET_SENSITIVE_FILE_MODE);
 } catch {

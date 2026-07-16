@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
+	chmod,
 	mkdir,
 	mkdtemp,
 	readdir,
 	readFile,
+	realpath,
 	rm,
+	stat,
 	symlink,
 	writeFile,
 } from "node:fs/promises";
@@ -15,7 +18,9 @@ import { createRecoveryManager } from "./recovery";
 const temporaryDirectories: string[] = [];
 
 async function temporaryRecoveryRoot(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "ade-recovery-"));
+	const directory = await mkdtemp(
+		join(await realpath(tmpdir()), "ade-recovery-"),
+	);
 	temporaryDirectories.push(directory);
 	return directory;
 }
@@ -33,6 +38,19 @@ async function createDirectoryLink(
 	);
 }
 
+async function createBackupOutputLink(
+	target: string,
+	path: string,
+): Promise<void> {
+	if (process.platform === "win32") {
+		await mkdir(target, { recursive: true });
+		await symlink(target, path, "junction");
+		return;
+	}
+	await writeFile(target, "outside database", "utf8");
+	await symlink(target, path, "file");
+}
+
 afterEach(async () => {
 	await Promise.all(
 		temporaryDirectories
@@ -46,13 +64,19 @@ function createHarness(
 	options: { databaseExists?: boolean } = {},
 ) {
 	let state: unknown = { marker: "initial" };
+	let revision = 0;
 	let now = 1_000;
 	let sequence = 0;
 	const order: string[] = [];
-	const replaceAppState = mock(async (replacement: unknown) => {
-		order.push("replace");
-		state = structuredClone(replacement);
-	});
+	const replaceAppState = mock(
+		async (replacement: unknown, expectedRevision: number) => {
+			if (revision !== expectedRevision) return "stale" as const;
+			order.push("replace");
+			state = structuredClone(replacement);
+			revision += 1;
+			return "committed" as const;
+		},
+	);
 	const validateSerializedAppState = mock((raw: string) => {
 		order.push("validate");
 		return JSON.parse(raw) as unknown;
@@ -64,8 +88,9 @@ function createHarness(
 	const manager = createRecoveryManager({
 		recoveryRoot,
 		getAppStateSnapshot: () => structuredClone(state),
+		getAppStateRevision: () => revision,
 		validateSerializedAppState,
-		replaceAppState,
+		replaceAppStateAtRevision: replaceAppState,
 		createDefaultAppState: () => ({ marker: "default" }),
 		backupDatabase,
 		databaseExists: async () => options.databaseExists ?? true,
@@ -81,6 +106,7 @@ function createHarness(
 		getState: () => structuredClone(state),
 		setState: (next: unknown) => {
 			state = structuredClone(next);
+			revision += 1;
 		},
 		advance: () => {
 			now += 1_000;
@@ -113,6 +139,42 @@ describe("local recovery snapshots", () => {
 				name.endsWith(".part"),
 			),
 		).toBe(false);
+	});
+
+	test("retries app-state capture when its revision changes during sampling", async () => {
+		const recoveryRoot = await temporaryRecoveryRoot();
+		let state: unknown = { marker: "before-concurrent-mutation" };
+		let revision = 0;
+		let snapshotReads = 0;
+		const manager = createRecoveryManager({
+			recoveryRoot,
+			getAppStateRevision: () => revision,
+			getAppStateSnapshot: () => {
+				const snapshot = structuredClone(state);
+				if (snapshotReads === 0) {
+					state = { marker: "after-concurrent-mutation" };
+					revision += 1;
+				}
+				snapshotReads += 1;
+				return snapshot;
+			},
+			validateSerializedAppState: JSON.parse,
+			replaceAppStateAtRevision: async () => "committed",
+			createDefaultAppState: () => ({}),
+			backupDatabase: async (destination) => {
+				await writeFile(destination, "database", "utf8");
+			},
+			databaseExists: async () => true,
+			now: () => 1_000,
+			createId: () => "revision-retry",
+		});
+
+		const snapshot = await manager.createSnapshot("manual");
+
+		expect(snapshotReads).toBe(2);
+		expect(JSON.parse(await readFile(snapshot.appStatePath, "utf8"))).toEqual({
+			marker: "after-concurrent-mutation",
+		});
 	});
 
 	test("keeps three app-state snapshots and two database snapshots", async () => {
@@ -173,6 +235,38 @@ describe("local recovery snapshots", () => {
 		);
 	});
 
+	test("rejects a linked database backup result before fsync or promotion", async () => {
+		const recoveryRoot = await temporaryRecoveryRoot();
+		const outside = join(recoveryRoot, "outside-backup-target");
+		if (process.platform === "win32") {
+			await mkdir(outside, { recursive: true });
+		} else {
+			await writeFile(outside, "outside database", "utf8");
+			await chmod(outside, 0o644);
+		}
+		const harness = createHarness(recoveryRoot);
+		harness.backupDatabase.mockImplementationOnce(async (destination) => {
+			await createBackupOutputLink(outside, destination);
+		});
+		const outsideModeBefore =
+			process.platform === "win32" ? -1 : (await stat(outside)).mode;
+
+		await expect(harness.manager.createSnapshot("manual")).rejects.toThrow(
+			/symbolic link|junction|regular file/i,
+		);
+		expect(
+			(await readdir(join(recoveryRoot, "database"))).some((name) =>
+				name.endsWith(".part"),
+			),
+		).toBe(false);
+		if (process.platform === "win32") {
+			expect(await readdir(outside)).toEqual([]);
+		} else {
+			expect(await readFile(outside, "utf8")).toBe("outside database");
+			expect((await stat(outside)).mode).toBe(outsideModeBefore);
+		}
+	});
+
 	test("ignores and removes interrupted part files before snapshotting", async () => {
 		const recoveryRoot = await temporaryRecoveryRoot();
 		await mkdir(join(recoveryRoot, "app-state"), { recursive: true });
@@ -209,6 +303,93 @@ describe("local recovery snapshots", () => {
 });
 
 describe("recovery operations", () => {
+	test("restore and reset preserve a concurrent app-state mutation while the safety backup is pending", async () => {
+		for (const operation of ["restore", "reset"] as const) {
+			const recoveryRoot = await temporaryRecoveryRoot();
+			let state: unknown = { marker: "restore-source" };
+			let revision = 0;
+			let sequence = 0;
+			let shouldBlockBackup = false;
+			let signalBackupStarted: (() => void) | undefined;
+			let releaseBackup: (() => void) | undefined;
+			const backupStarted = new Promise<void>((resolve) => {
+				signalBackupStarted = resolve;
+			});
+			const backupPending = new Promise<void>((resolve) => {
+				releaseBackup = resolve;
+			});
+			const replaceAppStateAtRevision = mock(
+				async (replacement: unknown, expectedRevision: number) => {
+					if (revision !== expectedRevision) return "stale" as const;
+					state = structuredClone(replacement);
+					revision += 1;
+					return "committed" as const;
+				},
+			);
+			const manager = createRecoveryManager({
+				recoveryRoot,
+				getAppStateSnapshot: () => structuredClone(state),
+				getAppStateRevision: () => revision,
+				validateSerializedAppState: JSON.parse,
+				replaceAppStateAtRevision,
+				createDefaultAppState: () => ({ marker: "default" }),
+				backupDatabase: async (destination) => {
+					await writeFile(destination, `database-${operation}`, "utf8");
+					if (shouldBlockBackup) {
+						signalBackupStarted?.();
+						await backupPending;
+					}
+				},
+				databaseExists: async () => true,
+				now: () => 1_000,
+				createId: () => `id-${++sequence}`,
+			});
+
+			if (operation === "restore") {
+				await manager.createSnapshot("manual");
+				state = { marker: "current" };
+				revision += 1;
+			}
+
+			const stateBeforeRecovery = structuredClone(state);
+			shouldBlockBackup = true;
+			const recovery =
+				operation === "restore"
+					? manager.restoreLatestAppStateSnapshot()
+					: manager.resetAppStateWithBackup();
+			await backupStarted;
+			state = { marker: `concurrent-${operation}` };
+			revision += 1;
+			releaseBackup?.();
+
+			await expect(recovery).rejects.toThrow(
+				/app state changed while the recovery backup was being created/i,
+			);
+			expect(state).toEqual({ marker: `concurrent-${operation}` });
+			expect(replaceAppStateAtRevision).toHaveBeenCalledTimes(1);
+
+			const stateNames = await readdir(join(recoveryRoot, "app-state"));
+			const safetyName = stateNames.find((name) =>
+				name.includes(`before-${operation}`),
+			);
+			expect(safetyName).toBeDefined();
+			expect(
+				JSON.parse(
+					await readFile(
+						join(recoveryRoot, "app-state", safetyName as string),
+						"utf8",
+					),
+				),
+			).toEqual(stateBeforeRecovery);
+			expect(stateNames.some((name) => name.endsWith(".part"))).toBe(false);
+			expect(
+				(await readdir(join(recoveryRoot, "database"))).some((name) =>
+					name.endsWith(".part"),
+				),
+			).toBe(false);
+		}
+	});
+
 	test("restores the latest validated snapshot through the serialized coordinator after backing up current state", async () => {
 		const recoveryRoot = await temporaryRecoveryRoot();
 		const harness = createHarness(recoveryRoot);
@@ -351,8 +532,9 @@ describe("recovery operation serialization", () => {
 		const manager = createRecoveryManager({
 			recoveryRoot,
 			getAppStateSnapshot: () => ({ id }),
+			getAppStateRevision: () => 0,
 			validateSerializedAppState: JSON.parse,
-			replaceAppState: async () => {},
+			replaceAppStateAtRevision: async () => "committed",
 			createDefaultAppState: () => ({}),
 			backupDatabase,
 			databaseExists: async () => true,
@@ -402,12 +584,14 @@ describe("recovery operation serialization", () => {
 		const order: string[] = [];
 		const replaceAppState = mock(async () => {
 			order.push("replace");
+			return "committed" as const;
 		});
 		const manager = createRecoveryManager({
 			recoveryRoot,
 			getAppStateSnapshot: () => ({ current: true }),
+			getAppStateRevision: () => 0,
 			validateSerializedAppState: JSON.parse,
-			replaceAppState,
+			replaceAppStateAtRevision: replaceAppState,
 			createDefaultAppState: () => ({ default: true }),
 			backupDatabase: async (destination) => {
 				backupCalls += 1;
@@ -448,12 +632,13 @@ describe("recovery operation serialization", () => {
 	test("continues the FIFO after a failed operation", async () => {
 		const recoveryRoot = await temporaryRecoveryRoot();
 		let backupCalls = 0;
-		const replaceAppState = mock(async () => {});
+		const replaceAppState = mock(async () => "committed" as const);
 		const manager = createRecoveryManager({
 			recoveryRoot,
 			getAppStateSnapshot: () => ({ current: true }),
+			getAppStateRevision: () => 0,
 			validateSerializedAppState: JSON.parse,
-			replaceAppState,
+			replaceAppStateAtRevision: replaceAppState,
 			createDefaultAppState: () => ({ default: true }),
 			backupDatabase: async (destination) => {
 				backupCalls += 1;

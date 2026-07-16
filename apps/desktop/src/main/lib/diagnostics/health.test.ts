@@ -4,6 +4,7 @@ import {
 	exportDiagnostics,
 	fetchHealthUpdateManifest,
 	type HealthCheckDependencies,
+	readStateShapeBestEffort,
 	runHealthChecks,
 } from "./health";
 
@@ -87,9 +88,13 @@ function healthyDependencies(
 		readStorageHealth: async () => ({
 			diagnosticLogCount: 3,
 			diagnosticLogBytes: 3 * 1024 * 1024,
+			crashDumpCount: 0,
+			crashDumpBytes: 0,
+			invalidCrashDumpEntryCount: 0,
 			appStateSnapshotCount: 3,
 			databaseSnapshotCount: 2,
 			completedInstallerVersions: 1,
+			completedInstallerBytes: 100,
 			updateVersionOverageCount: 0,
 			invalidUpdateEntryCount: 0,
 		}),
@@ -184,6 +189,12 @@ describe("health checks", () => {
 		expect(resultById(report, "private-root").status).toBe("pass");
 		expect(resultById(report, "app-state").status).toBe("fail");
 		expect(resultById(report, "local-database").status).toBe("fail");
+		expect(resultById(report, "local-database").remediation).toBe(
+			"Export diagnostics, then restart ADE. Do not use Reset app state or Restore app state; neither action can repair local.db.",
+		);
+		expect(resultById(report, "local-database").remediation).not.toContain(
+			"recovery procedure",
+		);
 	});
 
 	it("distinguishes required commands from optional agent and remote tooling", async () => {
@@ -309,9 +320,13 @@ describe("health checks", () => {
 				readStorageHealth: async () => ({
 					diagnosticLogCount: 4,
 					diagnosticLogBytes: 4 * 1024 * 1024,
+					crashDumpCount: 4,
+					crashDumpBytes: 20 * 1024 * 1024,
+					invalidCrashDumpEntryCount: 2,
 					appStateSnapshotCount: 4,
 					databaseSnapshotCount: 3,
 					completedInstallerVersions: 4,
+					completedInstallerBytes: 2 * 1024 * 1024 * 1024,
 					updateVersionOverageCount: 1,
 					invalidUpdateEntryCount: 2,
 				}),
@@ -328,22 +343,70 @@ describe("health checks", () => {
 		expect(resultById(report, "recovery-conflicts").status).toBe("warning");
 	});
 
-	it("allows multiple completed update versions when each keeps one installer", async () => {
+	it("warns when completed installers exceed the global retention budget", async () => {
 		const report = await runHealthChecks(
 			healthyDependencies({
 				readStorageHealth: async () => ({
 					diagnosticLogCount: 3,
 					diagnosticLogBytes: 3 * 1024 * 1024,
+					crashDumpCount: 0,
+					crashDumpBytes: 0,
+					invalidCrashDumpEntryCount: 0,
 					appStateSnapshotCount: 3,
 					databaseSnapshotCount: 2,
 					completedInstallerVersions: 4,
+					completedInstallerBytes: 400,
 					updateVersionOverageCount: 0,
 					invalidUpdateEntryCount: 0,
 				}),
 			}),
 		);
 
-		expect(resultById(report, "storage-budget").status).toBe("pass");
+		expect(resultById(report, "storage-budget").status).toBe("warning");
+	});
+
+	it("warns when crash dumps exceed their local count or byte budget", async () => {
+		const report = await runHealthChecks(
+			healthyDependencies({
+				readStorageHealth: async () => ({
+					diagnosticLogCount: 3,
+					diagnosticLogBytes: 3 * 1024 * 1024,
+					crashDumpCount: 4,
+					crashDumpBytes: 20 * 1024 * 1024,
+					invalidCrashDumpEntryCount: 0,
+					appStateSnapshotCount: 3,
+					databaseSnapshotCount: 2,
+					completedInstallerVersions: 1,
+					completedInstallerBytes: 100,
+					updateVersionOverageCount: 0,
+					invalidUpdateEntryCount: 0,
+				}),
+			}),
+		);
+
+		expect(resultById(report, "storage-budget").status).toBe("warning");
+	});
+
+	it("warns when one retained installer exceeds the global byte budget", async () => {
+		const report = await runHealthChecks(
+			healthyDependencies({
+				readStorageHealth: async () => ({
+					diagnosticLogCount: 3,
+					diagnosticLogBytes: 3 * 1024 * 1024,
+					crashDumpCount: 0,
+					crashDumpBytes: 0,
+					invalidCrashDumpEntryCount: 0,
+					appStateSnapshotCount: 3,
+					databaseSnapshotCount: 2,
+					completedInstallerVersions: 1,
+					completedInstallerBytes: 1024 * 1024 * 1024 + 1,
+					updateVersionOverageCount: 0,
+					invalidUpdateEntryCount: 0,
+				}),
+			}),
+		);
+
+		expect(resultById(report, "storage-budget").status).toBe("warning");
 	});
 
 	it("contains probe failures and returns actionable fail results without leaking errors", async () => {
@@ -359,6 +422,9 @@ describe("health checks", () => {
 		);
 
 		expect(resultById(report, "local-database").status).toBe("fail");
+		expect(resultById(report, "local-database").remediation).toBe(
+			"Export diagnostics, then restart ADE. Do not use Reset app state or Restore app state; neither action can repair local.db.",
+		);
 		expect(resultById(report, "provider-bindings").status).toBe("fail");
 		const serialized = JSON.stringify(report);
 		expect(serialized).not.toContain("hunter2");
@@ -367,6 +433,55 @@ describe("health checks", () => {
 });
 
 describe("diagnostics export", () => {
+	it("contains each state-shape reader failure without exporting its error", () => {
+		const summary = readStateShapeBestEffort({
+			projectCount: () => 2,
+			workspaceCount: () => {
+				throw new Error("C:\\Users\\secret\\local.db token=hunter2");
+			},
+			tabCount: () => 3,
+			paneCount: () => 4,
+			accountCount: () => {
+				throw new Error("account 550e8400-e29b-41d4-a716-446655440000");
+			},
+			remoteHostCount: () => 1,
+		});
+
+		expect(summary).toEqual({
+			projectCount: 2,
+			workspaceCount: 0,
+			tabCount: 3,
+			paneCount: 4,
+			accountCount: 0,
+			remoteHostCount: 1,
+			unavailableMetricCount: 2,
+		});
+		expect(JSON.stringify(summary)).not.toContain("hunter2");
+		expect(JSON.stringify(summary)).not.toContain("550e8400");
+	});
+
+	it("uses a truthful bounded placeholder when state-shape reads are unavailable", async () => {
+		const report = await runHealthChecks(healthyDependencies());
+		const bundle = createDiagnosticsExport({
+			report,
+			app: { version: "0.6.0", platform: "win32", arch: "x64" },
+			stateShape: undefined as never,
+			paths: {},
+			recentLogs: [],
+			now: () => new Date(0),
+		});
+
+		expect(bundle.stateShape).toEqual({
+			projectCount: 0,
+			workspaceCount: 0,
+			tabCount: 0,
+			paneCount: 0,
+			accountCount: 0,
+			remoteHostCount: 0,
+			unavailableMetricCount: 6,
+		});
+	});
+
 	it("emits a strict allowlist with counts, hashes, and categorized log metadata only", async () => {
 		const report = await runHealthChecks(healthyDependencies());
 		const exportedChecks = report.checks.map(({ id, group, status }) => ({
@@ -390,6 +505,14 @@ describe("diagnostics export", () => {
 				paneCount: 5,
 				accountCount: 2,
 				remoteHostCount: 1,
+				unavailableMetricCount: 0,
+			},
+			storage: {
+				completedInstallerVersions: 2,
+				completedInstallerBytes: 1_234,
+				crashDumpCount: 1,
+				crashDumpBytes: 456,
+				unavailableMetricCount: 0,
 			},
 			paths: {
 				syncRoot: "C:\\Users\\secret-user\\.ade",
@@ -438,6 +561,14 @@ describe("diagnostics export", () => {
 				paneCount: 5,
 				accountCount: 2,
 				remoteHostCount: 1,
+				unavailableMetricCount: 0,
+			},
+			storage: {
+				completedInstallerVersions: 2,
+				completedInstallerBytes: 1_234,
+				crashDumpCount: 1,
+				crashDumpBytes: 456,
+				unavailableMetricCount: 0,
 			},
 			pathHashes: {
 				syncRoot: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -573,6 +704,7 @@ describe("diagnostics export", () => {
 			paneCount: 1,
 			accountCount: 1,
 			remoteHostCount: 1,
+			unavailableMetricCount: 3,
 		});
 		expect(bundle.recentEvents).toHaveLength(100);
 		expect(bundle.recentEvents[0]?.timestamp).toBe(
