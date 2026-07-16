@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import {
@@ -10,7 +17,7 @@ import {
 } from "./subscription-profile-storage";
 
 const TEST_ROOT = join(
-	tmpdir(),
+	realpathSync.native(tmpdir()),
 	`ade-private-profile-storage-${process.pid}-${Date.now()}`,
 );
 const nativePath = process.platform === "win32" ? win32 : posix;

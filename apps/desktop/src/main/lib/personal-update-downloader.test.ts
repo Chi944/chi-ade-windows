@@ -5,6 +5,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	realpath,
 	rm,
 	symlink,
 	writeFile,
@@ -30,7 +31,9 @@ afterEach(async () => {
 });
 
 async function temporaryDirectory(): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "ade-update-test-"));
+	const directory = await mkdtemp(
+		join(await realpath(tmpdir()), "ade-update-test-"),
+	);
 	temporaryDirectories.push(directory);
 	return directory;
 }

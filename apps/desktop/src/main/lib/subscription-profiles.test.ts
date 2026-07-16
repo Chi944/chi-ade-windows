@@ -14,6 +14,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	symlinkSync,
@@ -42,7 +43,7 @@ import {
 } from "./subscription-profiles";
 
 const TEST_ROOT = join(
-	tmpdir(),
+	realpathSync.native(tmpdir()),
 	`ade-subscription-profiles-${process.pid}-${Date.now()}`,
 );
 const LINK_TEST_ROOT = `${TEST_ROOT}-linked-provider`;
@@ -546,7 +547,7 @@ describe("subscription profiles", () => {
 });
 
 const MIGRATION_TEST_ROOT = join(
-	tmpdir(),
+	realpathSync.native(tmpdir()),
 	`ade-subscription-profile-migration-${process.pid}-${Date.now()}`,
 );
 const MIGRATION_ADE_HOME = join(MIGRATION_TEST_ROOT, "syncable-home");
@@ -1082,7 +1083,7 @@ describe("subscription profile storage migration", () => {
 });
 
 const RECONCILE_TEST_ROOT = join(
-	tmpdir(),
+	realpathSync.native(tmpdir()),
 	`ade-subscription-profile-reconcile-${process.pid}-${Date.now()}`,
 );
 
