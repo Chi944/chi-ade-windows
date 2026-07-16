@@ -91,12 +91,8 @@ process.on("unhandledRejection", (reason) => {
 const ownsSingleInstance = acquireSingleInstanceLock(() =>
 	app.requestSingleInstanceLock(),
 );
-if (!ownsSingleInstance) {
-	getDiagnosticsLogger().info("startup.secondary-instance", {
-		bootAttemptRecorded: false,
-	});
-	app.exit(0);
-} else {
+
+async function startOwnerApplication(): Promise<void> {
 	try {
 		const recoveryDirectory = ensurePrivateDiagnosticsDirectory(
 			join(privateRoot, "recovery"),
@@ -122,4 +118,16 @@ if (!ownsSingleInstance) {
 		logProcessFailure("bootstrap-import", error);
 		throw error;
 	}
+}
+
+if (!ownsSingleInstance) {
+	getDiagnosticsLogger().info("startup.secondary-instance", {
+		bootAttemptRecorded: false,
+	});
+	app.exit(0);
+} else {
+	void startOwnerApplication().catch((error) => {
+		logProcessFailure("bootstrap-fatal", error);
+		app.exit(1);
+	});
 }

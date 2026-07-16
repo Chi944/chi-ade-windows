@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import ts from "typescript";
 import {
 	createDiagnosticsLogger,
 	DIAGNOSTICS_LOG_MAX_BYTES,
@@ -51,6 +52,44 @@ describe("diagnostics paths", () => {
 });
 
 describe("early diagnostics bootstrap", () => {
+	test("launches owner startup through a CommonJS-compatible terminal failure path", async () => {
+		const source = await readFile(
+			join(import.meta.dir, "..", "..", "bootstrap.ts"),
+			"utf8",
+		);
+		const sourceFile = ts.createSourceFile(
+			"bootstrap.ts",
+			source,
+			ts.ScriptTarget.Latest,
+			true,
+			ts.ScriptKind.TS,
+		);
+		const topLevelAwaitLines: number[] = [];
+		const visit = (node: ts.Node, insideFunction = false): void => {
+			if (ts.isAwaitExpression(node) && !insideFunction) {
+				topLevelAwaitLines.push(
+					sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1,
+				);
+			}
+			const childInsideFunction = insideFunction || ts.isFunctionLike(node);
+			ts.forEachChild(node, (child) => visit(child, childInsideFunction));
+		};
+		visit(sourceFile);
+
+		expect(topLevelAwaitLines).toEqual([]);
+		expect(source).toContain(
+			"async function startOwnerApplication(): Promise<void>",
+		);
+		expect(source).toContain("void startOwnerApplication().catch((error) => {");
+		const ownerLaunch = source.indexOf("void startOwnerApplication().catch(");
+		const terminalFailurePath = source.slice(ownerLaunch);
+		expect(ownerLaunch).toBeGreaterThan(source.indexOf("} else {"));
+		expect(terminalFailurePath).toContain(
+			'logProcessFailure("bootstrap-fatal", error)',
+		);
+		expect(terminalFailurePath).toContain("app.exit(1)");
+	});
+
 	test("configures local paths and crash capture before logging and main import", async () => {
 		const source = await readFile(
 			join(import.meta.dir, "..", "..", "bootstrap.ts"),

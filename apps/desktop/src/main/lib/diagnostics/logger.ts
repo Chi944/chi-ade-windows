@@ -343,7 +343,11 @@ export function logHealthOperation(
 }
 
 export function logProcessFailure(
-	kind: "uncaught-exception" | "unhandled-rejection" | "bootstrap-import",
+	kind:
+		| "uncaught-exception"
+		| "unhandled-rejection"
+		| "bootstrap-import"
+		| "bootstrap-fatal",
 	error: unknown,
 ): void {
 	activeLogger.error(`process.${kind}`, { error });
