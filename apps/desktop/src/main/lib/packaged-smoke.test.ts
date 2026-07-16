@@ -8,7 +8,6 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	canonicalizePackagedSmokeTempDirectory,
@@ -33,12 +32,18 @@ interface StartupFixture {
 	cleanup: () => void;
 }
 
-function createStartupFixture(launch: 1 | 2 = 1): StartupFixture {
+function requireCanonicalTempDirectory(): string {
 	const tempDirectory = canonicalizePackagedSmokeTempDirectory();
 	if (!tempDirectory) {
 		throw new Error("Expected a canonical operating-system temp directory");
 	}
-	const root = mkdtempSync(join(tempDirectory, "ade-packaged-gui-"));
+	return tempDirectory;
+}
+
+function createStartupFixture(launch: 1 | 2 = 1): StartupFixture {
+	const root = mkdtempSync(
+		join(requireCanonicalTempDirectory(), "ade-packaged-gui-"),
+	);
 	const home = join(root, "ade-home");
 	mkdirSync(home, { mode: 0o700 });
 	return {
@@ -114,7 +119,9 @@ describe("packaged smoke startup contract", () => {
 	});
 
 	test("rejects a smoke-shaped root that is not a direct child of the OS temp directory", () => {
-		const parent = mkdtempSync(join(tmpdir(), "ade-packaged-smoke-parent-"));
+		const parent = mkdtempSync(
+			join(requireCanonicalTempDirectory(), "ade-packaged-smoke-parent-"),
+		);
 		const root = mkdtempSync(join(parent, "ade-packaged-gui-"));
 		const home = join(root, "ade-home");
 		const validFixture = createStartupFixture();
