@@ -4,6 +4,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -15,7 +16,9 @@ import { openValidatedLocalDatabase } from "./filesystem-safety";
 const temporaryDirectories: string[] = [];
 
 function createTemporaryRoot(): string {
-	const root = mkdtempSync(join(tmpdir(), "ade-local-db-safety-"));
+	const root = mkdtempSync(
+		join(realpathSync.native(tmpdir()), "ade-local-db-safety-"),
+	);
 	temporaryDirectories.push(root);
 	return root;
 }
