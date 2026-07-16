@@ -1,6 +1,8 @@
 import {
 	createFileRoute,
+	Navigate,
 	Outlet,
+	useLocation,
 	useNavigate,
 } from "@tanstack/react-router";
 import { DndProvider } from "react-dnd";
@@ -15,21 +17,43 @@ import { useHotkeysSync } from "renderer/stores/hotkeys";
 import { useAgentHookListener } from "renderer/stores/tabs/useAgentHookListener";
 import { useTabsSyncSubscription } from "renderer/stores/tabs/useTabsSyncSubscription";
 import { useWorkspaceInitStore } from "renderer/stores/workspace-init";
-import { MOCK_ORG_ID } from "shared/constants";
 import { AgentHooks } from "./components/AgentHooks";
 import { TeardownLogsDialog } from "./components/TeardownLogsDialog";
 import { CollectionsProvider } from "./providers/CollectionsProvider";
+import { getAuthenticatedLayoutMode } from "./safe-recovery-mode";
 
 export const Route = createFileRoute("/_authenticated")({
 	component: AuthenticatedLayout,
 });
 
 function AuthenticatedLayout() {
+	return getAuthenticatedLayoutMode(window.location.search) === "safe" ? (
+		<SafeRecoveryLayout />
+	) : (
+		<NormalAuthenticatedLayout />
+	);
+}
+
+function SafeRecoveryLayout() {
+	const location = useLocation();
+	const navigate = useNavigate();
+	electronTrpc.menu.subscribe.useSubscription(undefined, {
+		onData: (event) => {
+			if (event.type === "open-settings") {
+				navigate({ to: "/settings/health" });
+			}
+		},
+	});
+
+	if (!location.pathname.startsWith("/settings/health")) {
+		return <Navigate to="/settings/health" replace />;
+	}
+	return <Outlet />;
+}
+
+function NormalAuthenticatedLayout() {
 	const navigate = useNavigate();
 	const utils = electronTrpc.useUtils();
-
-	// Local build: always authenticated, no cloud auth
-	const activeOrganizationId = MOCK_ORG_ID;
 
 	useAgentHookListener();
 	useUpdateListener();

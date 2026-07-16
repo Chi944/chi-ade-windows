@@ -1,48 +1,45 @@
 import { EventEmitter } from "node:events";
-import { app, dialog } from "electron";
+import { join } from "node:path";
+import { app, dialog, net, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { env } from "main/env.main";
 import { setSkipQuitConfirmation } from "main/index";
 import { prerelease } from "semver";
-import { AUTO_UPDATE_STATUS, type AutoUpdateStatus } from "shared/auto-update";
+import {
+	AUTO_UPDATE_READY_ACTION,
+	AUTO_UPDATE_STATUS,
+	type AutoUpdateReadyAction,
+	type AutoUpdateStatus,
+} from "shared/auto-update";
 import { PLATFORM } from "shared/constants";
+import { SUPERSET_HOME_DIR } from "./app-environment";
+import { isSafeRecoveryMode } from "./diagnostics/boot-state";
+import { logUpdateFailure } from "./diagnostics/logger";
+import { createRecoverySnapshot } from "./diagnostics/recovery";
+import { runLegacyUpdateInstall } from "./legacy-update-install";
+import {
+	createPersonalUpdateController,
+	isPersonalUpdateNetworkError,
+	type PersonalUpdateController,
+	parsePersonalBuildIdentity,
+} from "./personal-auto-updater";
 
-const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4; // 4 hours
-
-// ---------------------------------------------------------------------------
-// Release repo + auto-update gating
-//
-// The updater feed points at GitHub Releases on the PUBLIC repo. There is a
-// single source of truth for the repo name below.
-//
-// Keep this fork identity in sync with apps/desktop/electron-builder.ts.
+const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 4;
 const RELEASE_REPO_OWNER = "Chi944";
 const RELEASE_REPO_NAME = "chi-ade-windows";
-
-// Update checks are enabled in packaged builds. Downloads and installation are
-// always user initiated; see setupAutoUpdater() below.
 const AUTO_UPDATE_ENABLED = true;
+const LEGACY_INSTALL_SNAPSHOT_ERROR =
+	"ADE could not prepare the update safely. Restart ADE and try again.";
 
-/**
- * Detect if this is a prerelease build from app version using semver.
- * Versions like "0.0.53-canary" have prerelease component ["canary"].
- * Stable versions like "0.0.53" have no prerelease component.
- */
 function isPrereleaseBuild(): boolean {
-	const version = app.getVersion();
-	const prereleaseComponents = prerelease(version);
-	return prereleaseComponents !== null && prereleaseComponents.length > 0;
+	const components = prerelease(app.getVersion());
+	return components !== null && components.length > 0;
 }
 
 const IS_PRERELEASE = isPrereleaseBuild();
-const IS_AUTO_UPDATE_PLATFORM =
+const IS_LEGACY_AUTO_UPDATE_PLATFORM =
 	PLATFORM.IS_MAC || PLATFORM.IS_LINUX || PLATFORM.IS_WINDOWS;
-
-// Use explicit feed URLs to ensure we always fetch platform-specific manifests
-// (for example latest-mac.yml, latest-linux.yml, and latest.yml) from the
-// correct release.
-// - Stable: fetches from /releases/latest/download/ (latest non-prerelease)
-// - Canary: fetches from /releases/download/desktop-canary/ (rolling canary tag)
+const IS_PERSONAL_UPDATE_PLATFORM = PLATFORM.IS_MAC || PLATFORM.IS_WINDOWS;
 const UPDATE_FEED_URL = IS_PRERELEASE
 	? `https://github.com/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/download/desktop-canary`
 	: `https://github.com/${RELEASE_REPO_OWNER}/${RELEASE_REPO_NAME}/releases/latest/download`;
@@ -52,77 +49,76 @@ export interface AutoUpdateStatusEvent {
 	version?: string;
 	error?: string;
 	progress?: number;
+	readyAction?: AutoUpdateReadyAction;
 }
 
 export const autoUpdateEmitter = new EventEmitter();
 
-// Network errors that don't need to be shown to the user
-// These are transient/expected and will resolve on retry
-const SILENT_ERROR_PATTERNS = [
-	"net::ERR_INTERNET_DISCONNECTED",
-	"net::ERR_NETWORK_CHANGED",
-	"net::ERR_CONNECTION_REFUSED",
-	"net::ERR_NAME_NOT_RESOLVED",
-	"net::ERR_CONNECTION_TIMED_OUT",
-	"net::ERR_CONNECTION_RESET",
-	"ENOTFOUND",
-	"ETIMEDOUT",
-	"ECONNREFUSED",
-	"ECONNRESET",
-];
-
-function isNetworkError(error: Error | string): boolean {
-	const message = typeof error === "string" ? error : error.message;
-	return SILENT_ERROR_PATTERNS.some((pattern) => message.includes(pattern));
-}
-
 let currentStatus: AutoUpdateStatus = AUTO_UPDATE_STATUS.IDLE;
 let currentVersion: string | undefined;
+let currentError: string | undefined;
 let currentProgress: number | undefined;
-let isDismissed = false;
+let currentReadyAction: AutoUpdateReadyAction | undefined;
+let personalController: PersonalUpdateController | undefined;
+
+function updatesSuppressedForSafeRecovery(): boolean {
+	try {
+		return isSafeRecoveryMode();
+	} catch {
+		// Unit tests and non-bootstrap tooling may import the updater in isolation.
+		return false;
+	}
+}
+
+function mirrorUpdateFailureInDevelopment(
+	message: string,
+	error: unknown,
+): void {
+	if (env.NODE_ENV === "development") console.error(message, error);
+}
 
 function emitStatus(
 	status: AutoUpdateStatus,
 	version?: string,
 	error?: string,
 	progress?: number,
+	readyAction?: AutoUpdateReadyAction,
 ): void {
 	currentStatus = status;
 	currentVersion = version;
+	currentError = error;
 	currentProgress = progress;
-
-	if (
-		isDismissed &&
-		(status === AUTO_UPDATE_STATUS.AVAILABLE ||
-			status === AUTO_UPDATE_STATUS.READY)
-	) {
-		return;
+	currentReadyAction = readyAction;
+	if (status === AUTO_UPDATE_STATUS.ERROR && error) {
+		logUpdateFailure(error, { version });
 	}
-
 	autoUpdateEmitter.emit("status-changed", {
 		status,
-		version,
-		error,
-		progress,
-	});
+		...(version !== undefined ? { version } : {}),
+		...(error !== undefined ? { error } : {}),
+		...(progress !== undefined ? { progress } : {}),
+		...(readyAction !== undefined ? { readyAction } : {}),
+	} satisfies AutoUpdateStatusEvent);
 }
 
 export function getUpdateStatus(): AutoUpdateStatusEvent {
-	if (
-		isDismissed &&
-		(currentStatus === AUTO_UPDATE_STATUS.AVAILABLE ||
-			currentStatus === AUTO_UPDATE_STATUS.READY)
-	) {
-		return { status: AUTO_UPDATE_STATUS.IDLE };
-	}
 	return {
 		status: currentStatus,
-		version: currentVersion,
-		progress: currentProgress,
+		...(currentVersion !== undefined ? { version: currentVersion } : {}),
+		...(currentError !== undefined ? { error: currentError } : {}),
+		...(currentProgress !== undefined ? { progress: currentProgress } : {}),
+		...(currentReadyAction !== undefined
+			? { readyAction: currentReadyAction }
+			: {}),
 	};
 }
 
-export function downloadUpdate(): void {
+export async function downloadUpdate(): Promise<void> {
+	if (updatesSuppressedForSafeRecovery()) return;
+	if (personalController) {
+		await personalController.download();
+		return;
+	}
 	if (!AUTO_UPDATE_ENABLED || env.NODE_ENV === "development") {
 		console.info("[auto-updater] Download skipped outside a packaged build");
 		return;
@@ -134,19 +130,28 @@ export function downloadUpdate(): void {
 		return;
 	}
 
-	isDismissed = false;
 	emitStatus(AUTO_UPDATE_STATUS.DOWNLOADING, currentVersion, undefined, 0);
-	autoUpdater.downloadUpdate().catch((error) => {
-		console.error("[auto-updater] Failed to download update:", error);
+	try {
+		await autoUpdater.downloadUpdate();
+	} catch (error) {
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to download update:",
+			error,
+		);
 		emitStatus(
 			AUTO_UPDATE_STATUS.ERROR,
 			currentVersion,
 			error instanceof Error ? error.message : String(error),
 		);
-	});
+	}
 }
 
-export function installUpdate(): void {
+export async function installUpdate(): Promise<void> {
+	if (updatesSuppressedForSafeRecovery()) return;
+	if (personalController) {
+		await personalController.install();
+		return;
+	}
 	if (!AUTO_UPDATE_ENABLED || env.NODE_ENV === "development") {
 		console.info("[auto-updater] Install skipped in dev mode");
 		emitStatus(AUTO_UPDATE_STATUS.IDLE);
@@ -158,21 +163,45 @@ export function installUpdate(): void {
 		);
 		return;
 	}
-	// Skip confirmation dialog - quitAndInstall internally calls app.quit()
-	setSkipQuitConfirmation();
-	autoUpdater.quitAndInstall(false, true);
+	try {
+		await runLegacyUpdateInstall({
+			createSnapshot: () =>
+				createRecoverySnapshot("update").then(() => undefined),
+			setSkipQuitConfirmation,
+			quitAndInstall: () => autoUpdater.quitAndInstall(false, true),
+		});
+	} catch (error) {
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to create an update recovery snapshot:",
+			error,
+		);
+		logUpdateFailure(error, { phase: "legacy-install-snapshot" });
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			currentVersion,
+			LEGACY_INSTALL_SNAPSHOT_ERROR,
+		);
+	}
 }
 
 export function dismissUpdate(): void {
-	isDismissed = true;
-	autoUpdateEmitter.emit("status-changed", { status: AUTO_UPDATE_STATUS.IDLE });
+	if (personalController) {
+		personalController.dismiss();
+		return;
+	}
+	emitStatus(AUTO_UPDATE_STATUS.IDLE);
 }
 
 export function checkForUpdates(): void {
+	if (updatesSuppressedForSafeRecovery()) return;
+	if (personalController) {
+		void personalController.check();
+		return;
+	}
 	if (
 		!AUTO_UPDATE_ENABLED ||
 		env.NODE_ENV === "development" ||
-		!IS_AUTO_UPDATE_PLATFORM
+		!IS_LEGACY_AUTO_UPDATE_PLATFORM
 	) {
 		return;
 	}
@@ -183,26 +212,43 @@ export function checkForUpdates(): void {
 		return;
 	}
 	if (currentStatus === AUTO_UPDATE_STATUS.READY) {
-		isDismissed = false;
 		emitStatus(currentStatus, currentVersion, undefined, currentProgress);
 		return;
 	}
-	isDismissed = false;
 	emitStatus(AUTO_UPDATE_STATUS.CHECKING);
 	autoUpdater.checkForUpdates().catch((error) => {
-		if (isNetworkError(error)) {
+		if (isPersonalUpdateNetworkError(error)) {
 			console.info("[auto-updater] Network unavailable, will retry later");
 			emitStatus(AUTO_UPDATE_STATUS.IDLE);
 			return;
 		}
-		console.error("[auto-updater] Failed to check for updates:", error);
-		emitStatus(AUTO_UPDATE_STATUS.ERROR, undefined, error.message);
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Failed to check for updates:",
+			error,
+		);
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			undefined,
+			error instanceof Error ? error.message : String(error),
+		);
 	});
 }
 
 export function checkForUpdatesInteractive(): void {
+	if (updatesSuppressedForSafeRecovery()) {
+		void dialog.showMessageBox({
+			type: "info",
+			title: "Updates paused in recovery mode",
+			message: "Restart ADE in normal mode before checking for updates.",
+		});
+		return;
+	}
+	if (personalController) {
+		void personalController.check({ interactive: true });
+		return;
+	}
 	if (!AUTO_UPDATE_ENABLED) {
-		dialog.showMessageBox({
+		void dialog.showMessageBox({
 			type: "info",
 			title: "Updates",
 			message: "Auto-updates are not enabled for this build.",
@@ -210,18 +256,18 @@ export function checkForUpdatesInteractive(): void {
 		return;
 	}
 	if (env.NODE_ENV === "development") {
-		dialog.showMessageBox({
+		void dialog.showMessageBox({
 			type: "info",
 			title: "Updates",
 			message: "Auto-updates are disabled in development mode.",
 		});
 		return;
 	}
-	if (!IS_AUTO_UPDATE_PLATFORM) {
-		dialog.showMessageBox({
+	if (!IS_LEGACY_AUTO_UPDATE_PLATFORM) {
+		void dialog.showMessageBox({
 			type: "info",
 			title: "Updates",
-			message: "Auto-updates are only available on macOS, Linux, and Windows.",
+			message: "Auto-updates are not available on this platform.",
 		});
 		return;
 	}
@@ -232,14 +278,11 @@ export function checkForUpdatesInteractive(): void {
 		return;
 	}
 	if (currentStatus === AUTO_UPDATE_STATUS.READY) {
-		isDismissed = false;
 		emitStatus(currentStatus, currentVersion, undefined, currentProgress);
 		return;
 	}
 
-	isDismissed = false;
 	emitStatus(AUTO_UPDATE_STATUS.CHECKING);
-
 	autoUpdater
 		.checkForUpdates()
 		.then((result) => {
@@ -248,7 +291,7 @@ export function checkForUpdatesInteractive(): void {
 				result.updateInfo.version === app.getVersion()
 			) {
 				emitStatus(AUTO_UPDATE_STATUS.IDLE);
-				dialog.showMessageBox({
+				void dialog.showMessageBox({
 					type: "info",
 					title: "No Updates",
 					message: "You're up to date!",
@@ -257,20 +300,21 @@ export function checkForUpdatesInteractive(): void {
 			}
 		})
 		.catch((error) => {
-			if (isNetworkError(error)) {
+			if (isPersonalUpdateNetworkError(error)) {
 				console.info("[auto-updater] Network unavailable");
 				emitStatus(AUTO_UPDATE_STATUS.IDLE);
-				dialog.showMessageBox({
-					type: "info",
-					title: "No Internet Connection",
-					message:
-						"Unable to check for updates. Please check your internet connection.",
-				});
 				return;
 			}
-			console.error("[auto-updater] Failed to check for updates:", error);
-			emitStatus(AUTO_UPDATE_STATUS.ERROR, undefined, error.message);
-			dialog.showMessageBox({
+			mirrorUpdateFailureInDevelopment(
+				"[auto-updater] Failed to check for updates:",
+				error,
+			);
+			emitStatus(
+				AUTO_UPDATE_STATUS.ERROR,
+				undefined,
+				error instanceof Error ? error.message : String(error),
+			);
+			void dialog.showMessageBox({
 				type: "error",
 				title: "Update Error",
 				message: "Failed to check for updates. Please try again later.",
@@ -280,25 +324,27 @@ export function checkForUpdatesInteractive(): void {
 
 export function simulateUpdateReady(): void {
 	if (env.NODE_ENV !== "development") return;
-	isDismissed = false;
-	emitStatus(AUTO_UPDATE_STATUS.READY, "99.0.0-test");
+	emitStatus(
+		AUTO_UPDATE_STATUS.READY,
+		"99.0.0-test",
+		undefined,
+		undefined,
+		AUTO_UPDATE_READY_ACTION.INSTALL_AND_RESTART,
+	);
 }
 
 export function simulateUpdateAvailable(): void {
 	if (env.NODE_ENV !== "development") return;
-	isDismissed = false;
 	emitStatus(AUTO_UPDATE_STATUS.AVAILABLE, "99.0.0-test");
 }
 
 export function simulateDownloading(): void {
 	if (env.NODE_ENV !== "development") return;
-	isDismissed = false;
 	emitStatus(AUTO_UPDATE_STATUS.DOWNLOADING, "99.0.0-test");
 }
 
 export function simulateError(): void {
 	if (env.NODE_ENV !== "development") return;
-	isDismissed = false;
 	emitStatus(
 		AUTO_UPDATE_STATUS.ERROR,
 		undefined,
@@ -306,79 +352,111 @@ export function simulateError(): void {
 	);
 }
 
-export function setupAutoUpdater(): void {
-	// Only runs in a packaged app on a supported platform. Development builds
-	// can exercise each state through the Dev menu.
-	if (!AUTO_UPDATE_ENABLED || !app.isPackaged || !IS_AUTO_UPDATE_PLATFORM) {
-		return;
+function scheduleUpdateChecks(): void {
+	const interval = setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
+	interval.unref();
+	if (app.isReady()) {
+		checkForUpdates();
+	} else {
+		app
+			.whenReady()
+			.then(() => checkForUpdates())
+			.catch((error) => {
+				logUpdateFailure(error, { operation: "schedule-update-checks" });
+				mirrorUpdateFailureInDevelopment(
+					"[auto-updater] Failed to start update checks:",
+					error,
+				);
+			});
 	}
+}
 
-	// Never download or install behind the user's back. A background check only
-	// surfaces an AVAILABLE toast; downloadUpdate() and installUpdate() are
-	// explicit renderer actions.
+function setupPersonalUpdater(buildNumber: number): void {
+	personalController = createPersonalUpdateController({
+		installedVersion: app.getVersion(),
+		installedBuildNumber: buildNumber,
+		platform: process.platform,
+		arch: process.arch,
+		updatesDirectory: join(SUPERSET_HOME_DIR, "updates"),
+		fetch: net.fetch.bind(net) as typeof globalThis.fetch,
+		confirm: async ({ version, buildNumber: availableBuild, name }) => {
+			const result = await dialog.showMessageBox({
+				type: "warning",
+				title: "Open verified ADE installer?",
+				message: `Open ADE ${version} installer?`,
+				detail: [
+					`${name} passed ADE's size and SHA-256 checks.`,
+					`Build ${availableBuild} is unsigned, so Windows or macOS may show a publisher warning.`,
+					"ADE will create a local recovery snapshot before opening it. The installer will not run automatically.",
+				].join("\n\n"),
+				buttons: ["Open Installer", "Cancel"],
+				defaultId: 1,
+				cancelId: 1,
+				noLink: true,
+			});
+			return result.response === 0;
+		},
+		createSnapshot: async () => {
+			await createRecoverySnapshot("update");
+		},
+		openPath: (path) => shell.openPath(path),
+		showUpToDate: async () => {
+			await dialog.showMessageBox({
+				type: "info",
+				title: "No Updates",
+				message: "You're up to date!",
+				detail: `Version ${app.getVersion()} is the latest available personal build.`,
+			});
+		},
+		onStatus: (event) =>
+			emitStatus(
+				event.status,
+				event.version,
+				event.error,
+				event.progress,
+				event.readyAction,
+			),
+	});
+	console.info(
+		`[auto-updater] Initialized verified personal channel: version=${app.getVersion()}, build=${buildNumber}`,
+	);
+	scheduleUpdateChecks();
+}
+
+function setupLegacyUpdater(): void {
 	autoUpdater.autoDownload = false;
 	autoUpdater.autoInstallOnAppQuit = false;
 	autoUpdater.disableDifferentialDownload = false;
-
-	// macOS update artifacts are built and smoke-tested natively for each CPU
-	// architecture. Separate channel manifests prevent an Intel install from
-	// ever selecting an Apple Silicon archive (and vice versa).
-	if (PLATFORM.IS_MAC) {
-		autoUpdater.channel = `latest-${process.arch}`;
-	}
-	// Setting a custom channel enables downgrades inside electron-updater, so
-	// apply our policy after the architecture-specific channel assignment.
+	if (PLATFORM.IS_MAC) autoUpdater.channel = `latest-${process.arch}`;
 	autoUpdater.allowDowngrade = IS_PRERELEASE;
-
-	// Use generic provider with explicit feed URL so electron-updater can request
-	// the correct manifest for the current platform from GitHub release assets.
-	autoUpdater.setFeedURL({
-		provider: "generic",
-		url: UPDATE_FEED_URL,
-	});
-
-	console.info(
-		`[auto-updater] Initialized: version=${app.getVersion()}, channel=${IS_PRERELEASE ? "canary" : "stable"}, feedURL=${UPDATE_FEED_URL}`,
-	);
+	autoUpdater.setFeedURL({ provider: "generic", url: UPDATE_FEED_URL });
 
 	autoUpdater.on("error", (error) => {
-		if (isNetworkError(error)) {
+		if (isPersonalUpdateNetworkError(error)) {
 			console.info("[auto-updater] Network unavailable, will retry later");
 			emitStatus(AUTO_UPDATE_STATUS.IDLE);
 			return;
 		}
-		console.error(
-			`[auto-updater] Error during update (currentVersion=${app.getVersion()}):`,
-			error?.message || error,
+		mirrorUpdateFailureInDevelopment(
+			"[auto-updater] Error during update:",
+			error,
 		);
-		emitStatus(AUTO_UPDATE_STATUS.ERROR, undefined, error.message);
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			undefined,
+			error instanceof Error ? error.message : String(error),
+		);
 	});
-
 	autoUpdater.on("checking-for-update", () => {
-		console.info(
-			`[auto-updater] Checking for updates... (currentVersion=${app.getVersion()}, feedURL=${UPDATE_FEED_URL})`,
-		);
 		emitStatus(AUTO_UPDATE_STATUS.CHECKING);
 	});
-
 	autoUpdater.on("update-available", (info) => {
-		console.info(
-			`[auto-updater] Update available: ${app.getVersion()} → ${info.version} (files: ${info.files?.map((f: { url: string }) => f.url).join(", ")})`,
-		);
 		emitStatus(AUTO_UPDATE_STATUS.AVAILABLE, info.version);
 	});
-
-	autoUpdater.on("update-not-available", (info) => {
-		console.info(
-			`[auto-updater] No updates available (currentVersion=${app.getVersion()}, latestVersion=${info.version})`,
-		);
+	autoUpdater.on("update-not-available", () => {
 		emitStatus(AUTO_UPDATE_STATUS.IDLE);
 	});
-
 	autoUpdater.on("download-progress", (progress) => {
-		console.info(
-			`[auto-updater] Download progress: ${progress.percent.toFixed(1)}% (${(progress.transferred / 1024 / 1024).toFixed(1)}MB / ${(progress.total / 1024 / 1024).toFixed(1)}MB)`,
-		);
 		emitStatus(
 			AUTO_UPDATE_STATUS.DOWNLOADING,
 			currentVersion,
@@ -386,25 +464,58 @@ export function setupAutoUpdater(): void {
 			progress.percent,
 		);
 	});
-
 	autoUpdater.on("update-downloaded", (info) => {
-		console.info(
-			`[auto-updater] Update downloaded: ${app.getVersion()} → ${info.version}. Ready to install.`,
+		emitStatus(
+			AUTO_UPDATE_STATUS.READY,
+			info.version,
+			undefined,
+			undefined,
+			AUTO_UPDATE_READY_ACTION.INSTALL_AND_RESTART,
 		);
-		emitStatus(AUTO_UPDATE_STATUS.READY, info.version);
 	});
 
-	const interval = setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
-	interval.unref();
+	console.info(
+		`[auto-updater] Initialized signed channel: version=${app.getVersion()}, channel=${IS_PRERELEASE ? "canary" : "stable"}, feedURL=${UPDATE_FEED_URL}`,
+	);
+	scheduleUpdateChecks();
+}
 
-	if (app.isReady()) {
-		void checkForUpdates();
-	} else {
-		app
-			.whenReady()
-			.then(() => checkForUpdates())
-			.catch((error) => {
-				console.error("[auto-updater] Failed to start update checks:", error);
-			});
+export function setupAutoUpdater(): void {
+	if (
+		updatesSuppressedForSafeRecovery() ||
+		!AUTO_UPDATE_ENABLED ||
+		!app.isPackaged
+	) {
+		return;
 	}
+	let personalBuild: ReturnType<typeof parsePersonalBuildIdentity>;
+	try {
+		personalBuild = parsePersonalBuildIdentity(
+			process.env.ADE_BUILD_SHA,
+			process.env.ADE_BUILD_NUMBER,
+		);
+	} catch (error) {
+		emitStatus(
+			AUTO_UPDATE_STATUS.ERROR,
+			undefined,
+			error instanceof Error ? error.message : String(error),
+		);
+		return;
+	}
+
+	if (personalBuild) {
+		if (!IS_PERSONAL_UPDATE_PLATFORM) {
+			emitStatus(
+				AUTO_UPDATE_STATUS.ERROR,
+				undefined,
+				`Unsupported personal update platform: ${process.platform}-${process.arch}`,
+			);
+			return;
+		}
+		setupPersonalUpdater(personalBuild.buildNumber);
+		return;
+	}
+
+	if (!IS_LEGACY_AUTO_UPDATE_PLATFORM) return;
+	setupLegacyUpdater();
 }

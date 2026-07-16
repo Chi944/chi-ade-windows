@@ -1,0 +1,178 @@
+{
+	"schemaVersion": 2,
+	"evidenceSets": {
+		"minimatch-3": {
+			"package": "minimatch",
+			"instanceCount": 40,
+			"runtimeInstanceCount": 4,
+			"versions": ["3.1.2"],
+			"shippingTargets": ["apps/mobile"],
+			"instancesSha256": "31fe37ab4bcc41c73bb8b307458115ba4c491de904d6e310792aa8a6efe7567a"
+		},
+		"minimatch-5": {
+			"package": "minimatch",
+			"instanceCount": 1,
+			"runtimeInstanceCount": 0,
+			"versions": ["5.1.6"],
+			"shippingTargets": [],
+			"instancesSha256": "2b555f78d890e5f70eb28a5964473767d907bbc7d62707b46af6173690a66463"
+		},
+		"minimatch-9": {
+			"package": "minimatch",
+			"instanceCount": 102,
+			"runtimeInstanceCount": 5,
+			"versions": ["9.0.5"],
+			"shippingTargets": [
+				"apps/admin",
+				"apps/api",
+				"apps/docs",
+				"apps/marketing",
+				"apps/mobile",
+				"apps/web"
+			],
+			"instancesSha256": "c010bcb89fb2c98c9ea3f9808fad4279df36849616451c36785b625f772ced7f"
+		},
+		"minimatch-10": {
+			"package": "minimatch",
+			"instanceCount": 3,
+			"runtimeInstanceCount": 1,
+			"versions": ["10.1.1"],
+			"shippingTargets": ["apps/mobile"],
+			"instancesSha256": "92460c5cbfc610a12c35d6a861093a63fae6c165ac9029095dbf8c9f644c0670"
+		}
+	},
+	"exceptions": [
+		{
+			"package": "minimatch",
+			"advisoryId": 1113459,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-3",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-3ppc-4f35-3m26"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113461,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-5",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-3ppc-4f35-3m26"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113465,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-9",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-3ppc-4f35-3m26"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113466,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-10",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-3ppc-4f35-3m26"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113538,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-3",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-7r86-cg39-jmmj"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113540,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-5",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-7r86-cg39-jmmj"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113544,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-9",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-7r86-cg39-jmmj"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113545,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-10",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-7r86-cg39-jmmj"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113546,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-3",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-23c5-xmqv-rm74"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113548,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-5",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-23c5-xmqv-rm74"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113552,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-9",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-23c5-xmqv-rm74"
+		},
+		{
+			"package": "minimatch",
+			"advisoryId": 1113553,
+			"severity": "high",
+			"owner": "Chi944",
+			"expiresOn": "2026-08-15",
+			"evidenceSet": "minimatch-10",
+			"scope": "Exact vulnerable versions, lock paths, and apps/* reachability are bound by the referenced SHA-256 evidence set.",
+			"rationale": "Temporary exception; any instance, path, version, or shipping-target drift fails the gate. Update the pinned parent dependencies before expiry.",
+			"upstream": "https://github.com/advisories/GHSA-23c5-xmqv-rm74"
+		}
+	]
+}

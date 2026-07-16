@@ -1,162 +1,484 @@
-/**
- * Cross-Mac workspace identity layer.
- *
- * Local workspace UUIDs are random per-Mac (see packages/local-db schema:
- * `workspaces.id` uses uuidv4). For cross-Mac sync of `app-state.json` we
- * need a stable, deterministic identifier so a tab referring to "the foo
- * project / main branch / worktree" resolves to the same workspace on
- * either machine.
- *
- * The canonical identifier is `sha256(mainRepoPath + ":" + branch + ":" + type)`.
- * On peer-state hydrate we resolve canonical -> local UUID via the workspaces
- * table; if the workspace doesn't exist yet locally and we have embedded
- * metadata, we can opt-in auto-create the local row.
- *
- * `local.db` itself is NEVER synced across Macs — only this hash bridges.
- */
-
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { projects, workspaces, type SelectWorkspace } from "@superset/local-db";
+import { projects, type WorkspaceType, workspaces } from "@superset/local-db";
 import { eq } from "drizzle-orm";
-import type { WorkspaceType } from "@superset/local-db";
 import { localDb } from "main/lib/local-db";
 
-export interface WorkspaceIdentityInput {
-	mainRepoPath: string;
+export interface PortableWorkspaceMetadata {
+	repository: string;
 	branch: string;
-	type: string;
+	type: WorkspaceType;
 }
 
-export interface EmbeddedWorkspaceMeta extends WorkspaceIdentityInput {}
+export type LocalWorkspaceIdentityResolution =
+	| {
+			status: "verified";
+			canonical: string;
+			metadata: PortableWorkspaceMetadata;
+	  }
+	| { status: "missing" | "ambiguous" | "deleted" | "unresolved" };
+
+export interface WorkspaceIdentityInput extends PortableWorkspaceMetadata {}
+
+export interface EmbeddedWorkspaceMeta extends PortableWorkspaceMetadata {}
 
 export interface ResolveLocalWorkspaceIdOptions {
 	autoCreate?: boolean;
 }
 
-/**
- * Canonical cross-Mac workspace identifier.
- * Deterministic from project mainRepoPath + branch + type.
- */
-export function canonicalizeWorkspace(
-	input: WorkspaceIdentityInput,
-): string {
-	const payload = `${input.mainRepoPath}:${input.branch}:${input.type}`;
-	return createHash("sha256").update(payload).digest("hex");
+export interface WorkspaceIdentityDependencies {
+	readOrigin: (mainRepoPath: string) => string | null;
+}
+
+export interface RequestedIdentityProject {
+	id: string;
+	mainRepoPath: string;
+}
+
+export interface RequestedIdentityWorkspace {
+	id: string;
+	projectId: string;
+	branch: string;
+	type: WorkspaceType;
+	deletingAt?: unknown | null;
+}
+
+export interface RequestedCanonicalWorkspaceMatchInput {
+	canonicalWorkspaceIds: readonly string[];
+	projects: readonly RequestedIdentityProject[];
+	workspaces: readonly RequestedIdentityWorkspace[];
+	readOrigin: WorkspaceIdentityDependencies["readOrigin"];
+	preferredLocalWorkspaceIdsByCanonical?: Readonly<
+		Record<string, readonly string[]>
+	>;
+	workspaceMetadataByCanonical?: Readonly<
+		Record<string, PortableWorkspaceMetadata | undefined>
+	>;
+}
+
+export type PortableWorkspaceIdentityResult =
+	| {
+			status: "resolved";
+			canonical: string;
+			metadata: PortableWorkspaceMetadata;
+	  }
+	| { status: "unresolved"; warning: string };
+
+const UNRESOLVED_ORIGIN_WARNING =
+	"Workspace synchronization was skipped because the Git origin is not portable.";
+
+function trimRepositoryPath(pathname: string): string | null {
+	let path = pathname.replace(/^\/+|\/+$/g, "");
+	path = path.replace(/\.git$/i, "").replace(/\/+$/g, "");
+	return path.length > 0 ? path : null;
 }
 
 /**
- * Resolve a canonical workspace hash to a local workspaces.id UUID.
- *
- * Returns null if no matching local workspace exists and either
- *  - no embeddedMeta was supplied, or
- *  - options.autoCreate !== true.
- *
- * When autoCreate is true and embeddedMeta is provided, a workspaces row
- * (and project if necessary — but we don't fabricate projects here; we
- * require the project to exist) will be inserted using the embedded
- * metadata, and the new local UUID returned.
- *
- * NOTE: We intentionally do NOT create projects on the fly. If the peer
- * Mac references a project the local Mac doesn't know about, the resolve
- * fails and the caller decides how to handle it (typically: hide the tab
- * until the user opens that project locally once).
+ * Return a credential-free repository identifier shared by HTTPS and SSH
+ * spellings. Local paths and file remotes deliberately have no portable form.
  */
+export function normalizeGitOrigin(origin: string): string | null {
+	const value = origin.trim();
+	if (
+		value.length === 0 ||
+		/^[a-zA-Z]:[\\/]/.test(value) ||
+		value.startsWith("/") ||
+		value.startsWith("./") ||
+		value.startsWith("../") ||
+		value.includes("\\") ||
+		/^file:/i.test(value)
+	) {
+		return null;
+	}
+
+	if (/^(?:https|ssh):\/\//i.test(value)) {
+		try {
+			const url = new URL(value);
+			const protocol = url.protocol.toLowerCase();
+			if (protocol !== "https:" && protocol !== "ssh:") return null;
+			const repositoryPath = trimRepositoryPath(url.pathname);
+			if (!repositoryPath || url.hostname.length === 0) return null;
+			const port =
+				url.port &&
+				!(
+					(protocol === "ssh:" && url.port === "22") ||
+					(protocol === "https:" && url.port === "443")
+				)
+					? `:${url.port}`
+					: "";
+			return `${url.hostname.toLowerCase()}${port}/${repositoryPath}`;
+		} catch {
+			return null;
+		}
+	}
+	// Do not reinterpret an unsupported URL as SCP syntax. In particular, its
+	// authority may contain credentials that must never enter portable metadata.
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return null;
+
+	const scp = value.match(/^(?:[^@\s/:]+@)?([^\s/:]+):(.+)$/);
+	if (!scp) return null;
+	const repositoryPath = trimRepositoryPath(scp[2]);
+	if (!repositoryPath) return null;
+	return `${scp[1].toLowerCase()}/${repositoryPath}`;
+}
+
+export function canonicalizeWorkspace(input: WorkspaceIdentityInput): string {
+	const payload = JSON.stringify([input.repository, input.branch, input.type]);
+	return createHash("sha256").update(payload).digest("hex");
+}
+
+export function createPortableWorkspaceIdentity(input: {
+	origin: string;
+	branch: string;
+	type: WorkspaceType;
+}): PortableWorkspaceIdentityResult {
+	const repository = normalizeGitOrigin(input.origin);
+	if (!repository) {
+		return { status: "unresolved", warning: UNRESOLVED_ORIGIN_WARNING };
+	}
+	const metadata: PortableWorkspaceMetadata = {
+		repository,
+		branch: input.branch,
+		type: input.type,
+	};
+	return {
+		status: "resolved",
+		canonical: canonicalizeWorkspace(metadata),
+		metadata,
+	};
+}
+
+function readOriginFromGit(mainRepoPath: string): string | null {
+	try {
+		const value = execFileSync(
+			"git",
+			["-C", mainRepoPath, "config", "--get", "remote.origin.url"],
+			{
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 5_000,
+			},
+		).trim();
+		return value.length > 0 ? value : null;
+	} catch {
+		return null;
+	}
+}
+
+const defaultDependencies: WorkspaceIdentityDependencies = {
+	readOrigin: readOriginFromGit,
+};
+
+function collectRequestedCanonicalWorkspaceIds(
+	input: RequestedCanonicalWorkspaceMatchInput,
+): Map<string, string | null> {
+	const requested = new Set(input.canonicalWorkspaceIds);
+	if (requested.size === 0) return new Map();
+	const validMetadata = new Map<string, PortableWorkspaceMetadata>();
+	for (const canonical of requested) {
+		const metadata = input.workspaceMetadataByCanonical?.[canonical];
+		if (metadata && canonicalizeWorkspace(metadata) === canonical) {
+			validMetadata.set(canonical, metadata);
+		}
+	}
+	const hasUnconstrainedRequest = [...requested].some(
+		(canonical) => !validMetadata.has(canonical),
+	);
+	const requestedWorkspaceShapes = new Set(
+		[...validMetadata.values()].map((metadata) =>
+			JSON.stringify([metadata.branch, metadata.type]),
+		),
+	);
+	const projectsById = new Map(
+		input.projects.map((project) => [project.id, project] as const),
+	);
+	const repositoryByProjectId = new Map<string, string | null>();
+	const candidates = new Map<string, string | null>();
+	const workspacesById = new Map(
+		input.workspaces.map((workspace) => [workspace.id, workspace] as const),
+	);
+	const consideredWorkspaceIds = new Set<string>();
+	const consider = (workspace: RequestedIdentityWorkspace): void => {
+		if (consideredWorkspaceIds.has(workspace.id)) return;
+		consideredWorkspaceIds.add(workspace.id);
+		if (workspace.deletingAt != null) return;
+		if (
+			!hasUnconstrainedRequest &&
+			!requestedWorkspaceShapes.has(
+				JSON.stringify([workspace.branch, workspace.type]),
+			)
+		) {
+			return;
+		}
+		const project = projectsById.get(workspace.projectId);
+		if (!project) return;
+		let repository = repositoryByProjectId.get(project.id);
+		if (repository === undefined) {
+			repository = normalizeGitOrigin(
+				input.readOrigin(project.mainRepoPath) ?? "",
+			);
+			repositoryByProjectId.set(project.id, repository);
+		}
+		if (!repository) return;
+		const canonical = canonicalizeWorkspace({
+			repository,
+			branch: workspace.branch,
+			type: workspace.type,
+		});
+		if (!requested.has(canonical)) return;
+		if (candidates.has(canonical)) {
+			candidates.set(canonical, null);
+		} else {
+			candidates.set(canonical, workspace.id);
+		}
+	};
+
+	for (const canonical of requested) {
+		for (const workspaceId of input.preferredLocalWorkspaceIdsByCanonical?.[
+			canonical
+		] ?? []) {
+			const workspace = workspacesById.get(workspaceId);
+			if (workspace) consider(workspace);
+		}
+	}
+	// Preferences determine probe order only. Every plausible candidate must be
+	// considered so an unpersisted duplicate cannot hide behind a preferred ID.
+	for (const workspace of input.workspaces) consider(workspace);
+
+	return candidates;
+}
+
+/**
+ * Resolve only requested canonical IDs while reading each plausible project's
+ * Git origin at most once. Canonical collisions and deleting workspaces are
+ * intentionally omitted.
+ */
+export function matchRequestedCanonicalWorkspaceIds(
+	input: RequestedCanonicalWorkspaceMatchInput,
+): Record<string, string> {
+	const candidates = collectRequestedCanonicalWorkspaceIds(input);
+
+	return Object.fromEntries(
+		[...candidates].flatMap(([canonical, workspaceId]) =>
+			workspaceId ? [[canonical, workspaceId] as const] : [],
+		),
+	);
+}
+
+export function getLocalWorkspaceMappingsForCanonicalIds(
+	canonicalWorkspaceIds: readonly string[],
+	options: {
+		dependencies?: WorkspaceIdentityDependencies;
+		preferredLocalWorkspaceIdsByCanonical?: Readonly<
+			Record<string, readonly string[]>
+		>;
+		workspaceMetadataByCanonical?: Readonly<
+			Record<string, PortableWorkspaceMetadata | undefined>
+		>;
+	} = {},
+): Record<string, string> {
+	return matchRequestedCanonicalWorkspaceIds({
+		canonicalWorkspaceIds,
+		projects: localDb.select().from(projects).all(),
+		workspaces: localDb.select().from(workspaces).all(),
+		readOrigin: (options.dependencies ?? defaultDependencies).readOrigin,
+		preferredLocalWorkspaceIdsByCanonical:
+			options.preferredLocalWorkspaceIdsByCanonical,
+		workspaceMetadataByCanonical: options.workspaceMetadataByCanonical,
+	});
+}
+
+function identityForWorkspace(
+	workspace: RequestedIdentityWorkspace,
+	project: RequestedIdentityProject,
+	dependencies: WorkspaceIdentityDependencies,
+): PortableWorkspaceIdentityResult {
+	return createPortableWorkspaceIdentity({
+		origin: dependencies.readOrigin(project.mainRepoPath) ?? "",
+		branch: workspace.branch,
+		type: workspace.type,
+	});
+}
+
+function memoizeOriginReads(
+	dependencies: WorkspaceIdentityDependencies,
+): WorkspaceIdentityDependencies {
+	const origins = new Map<string, string | null>();
+	return {
+		readOrigin(mainRepoPath) {
+			if (!origins.has(mainRepoPath)) {
+				origins.set(mainRepoPath, dependencies.readOrigin(mainRepoPath));
+			}
+			return origins.get(mainRepoPath) ?? null;
+		},
+	};
+}
+
+export function resolveRequestedLocalWorkspaceIdentities(input: {
+	workspaceIds: readonly string[];
+	projects: readonly RequestedIdentityProject[];
+	workspaces: readonly RequestedIdentityWorkspace[];
+	readOrigin: WorkspaceIdentityDependencies["readOrigin"];
+}): Record<string, LocalWorkspaceIdentityResolution> {
+	const workspaceIds = [...new Set(input.workspaceIds)];
+	const projectsById = new Map(
+		input.projects.map((project) => [project.id, project] as const),
+	);
+	const workspacesById = new Map(
+		input.workspaces.map((workspace) => [workspace.id, workspace] as const),
+	);
+	const dependencies = memoizeOriginReads({ readOrigin: input.readOrigin });
+	const resolutions: Record<string, LocalWorkspaceIdentityResolution> = {};
+	const tentative = new Map<
+		string,
+		{ canonical: string; metadata: PortableWorkspaceMetadata }
+	>();
+
+	for (const workspaceId of workspaceIds) {
+		const workspace = workspacesById.get(workspaceId);
+		if (!workspace) {
+			resolutions[workspaceId] = { status: "missing" };
+			continue;
+		}
+		if (workspace.deletingAt != null) {
+			resolutions[workspaceId] = { status: "deleted" };
+			continue;
+		}
+		const project = projectsById.get(workspace.projectId);
+		if (!project) {
+			resolutions[workspaceId] = { status: "missing" };
+			continue;
+		}
+		const identity = identityForWorkspace(workspace, project, dependencies);
+		if (identity.status === "unresolved") {
+			resolutions[workspaceId] = { status: "unresolved" };
+			continue;
+		}
+		tentative.set(workspaceId, {
+			canonical: identity.canonical,
+			metadata: identity.metadata,
+		});
+	}
+
+	const workspaceMetadataByCanonical = Object.fromEntries(
+		[...tentative.values()].map(({ canonical, metadata }) => [
+			canonical,
+			metadata,
+		]),
+	);
+	const matches = collectRequestedCanonicalWorkspaceIds({
+		canonicalWorkspaceIds: [
+			...new Set([...tentative.values()].map(({ canonical }) => canonical)),
+		],
+		projects: input.projects,
+		workspaces: input.workspaces,
+		readOrigin: dependencies.readOrigin,
+		workspaceMetadataByCanonical,
+	});
+	for (const [workspaceId, identity] of tentative) {
+		resolutions[workspaceId] =
+			matches.get(identity.canonical) === workspaceId
+				? { status: "verified", ...identity }
+				: { status: "ambiguous" };
+	}
+	return resolutions;
+}
+
+export function getLocalWorkspaceIdentityResolutions(
+	workspaceIds: readonly string[],
+	dependencies: WorkspaceIdentityDependencies = defaultDependencies,
+): Record<string, LocalWorkspaceIdentityResolution> {
+	return resolveRequestedLocalWorkspaceIdentities({
+		workspaceIds,
+		projects: localDb.select().from(projects).all(),
+		workspaces: localDb.select().from(workspaces).all(),
+		readOrigin: dependencies.readOrigin,
+	});
+}
+
+function collectLocalWorkspaceMatches(
+	canonicalWorkspaceIds: readonly string[],
+	options: {
+		dependencies: WorkspaceIdentityDependencies;
+		workspaceMetadataByCanonical?: Readonly<
+			Record<string, PortableWorkspaceMetadata | undefined>
+		>;
+	},
+): Map<string, string | null> {
+	return collectRequestedCanonicalWorkspaceIds({
+		canonicalWorkspaceIds,
+		projects: localDb.select().from(projects).all(),
+		workspaces: localDb.select().from(workspaces).all(),
+		readOrigin: options.dependencies.readOrigin,
+		workspaceMetadataByCanonical: options.workspaceMetadataByCanonical,
+	});
+}
+
+/** Resolve portable canonical identity without fabricating missing projects. */
 export function resolveLocalWorkspaceId(
 	canonical: string,
 	embeddedMeta?: EmbeddedWorkspaceMeta,
 	options?: ResolveLocalWorkspaceIdOptions,
+	dependencies: WorkspaceIdentityDependencies = defaultDependencies,
 ): string | null {
-	// Fast path: scan local workspaces, recomputing each canonical hash.
-	// For ADE's scale (dozens of workspaces) this is fine; switching
-	// to a precomputed index is a future micro-optimization.
-	const local = findLocalWorkspaceByCanonical(canonical);
-	if (local) return local.id;
+	const memoizedDependencies = memoizeOriginReads(dependencies);
+	const matches = collectLocalWorkspaceMatches([canonical], {
+		dependencies: memoizedDependencies,
+		workspaceMetadataByCanonical: embeddedMeta
+			? { [canonical]: embeddedMeta }
+			: undefined,
+	});
+	if (matches.has(canonical)) return matches.get(canonical) ?? null;
 
 	if (!embeddedMeta || !options?.autoCreate) return null;
+	if (canonicalizeWorkspace(embeddedMeta) !== canonical) return null;
 
-	// Auto-create path: require an existing project with the matching
-	// mainRepoPath. If none, bail — we do not invent projects.
 	const matchingProject = localDb
 		.select()
 		.from(projects)
-		.where(eq(projects.mainRepoPath, embeddedMeta.mainRepoPath))
-		.get();
-
+		.all()
+		.find(
+			(project) =>
+				normalizeGitOrigin(
+					memoizedDependencies.readOrigin(project.mainRepoPath) ?? "",
+				) === embeddedMeta.repository,
+		);
 	if (!matchingProject) return null;
 
-	const type = embeddedMeta.type as WorkspaceType;
-
-	// Compute next tabOrder for the project.
 	const siblingWorkspaces = localDb
 		.select()
 		.from(workspaces)
 		.where(eq(workspaces.projectId, matchingProject.id))
 		.all();
 	const maxTabOrder = siblingWorkspaces.reduce(
-		(max, w) => (w.tabOrder > max ? w.tabOrder : max),
+		(max, workspace) => Math.max(max, workspace.tabOrder),
 		-1,
 	);
-
 	const inserted = localDb
 		.insert(workspaces)
 		.values({
 			projectId: matchingProject.id,
 			branch: embeddedMeta.branch,
-			type,
+			type: embeddedMeta.type,
 			name: embeddedMeta.branch,
 			tabOrder: maxTabOrder + 1,
 			isUnnamed: true,
 		})
 		.returning()
 		.get();
-
 	return inserted?.id ?? null;
 }
 
-function findLocalWorkspaceByCanonical(
-	canonical: string,
-): SelectWorkspace | null {
-	const all = localDb.select().from(workspaces).all();
-	for (const ws of all) {
-		const project = localDb
-			.select()
-			.from(projects)
-			.where(eq(projects.id, ws.projectId))
-			.get();
-		if (!project) continue;
-		const hash = canonicalizeWorkspace({
-			mainRepoPath: project.mainRepoPath,
-			branch: ws.branch,
-			type: ws.type,
-		});
-		if (hash === canonical) return ws;
-	}
-	return null;
-}
-
-/**
- * Look up a local workspace's canonical hash + embedded metadata,
- * given its local UUID. Used at write-time to stamp the sync envelope.
- */
+/** Look up a local workspace using only its current credential-free origin. */
 export function getCanonicalForLocalWorkspaceId(
 	localWorkspaceId: string,
+	dependencies: WorkspaceIdentityDependencies = defaultDependencies,
 ): { canonical: string; meta: EmbeddedWorkspaceMeta } | null {
-	const ws = localDb
-		.select()
-		.from(workspaces)
-		.where(eq(workspaces.id, localWorkspaceId))
-		.get();
-	if (!ws) return null;
-	const project = localDb
-		.select()
-		.from(projects)
-		.where(eq(projects.id, ws.projectId))
-		.get();
-	if (!project) return null;
-	const meta: EmbeddedWorkspaceMeta = {
-		mainRepoPath: project.mainRepoPath,
-		branch: ws.branch,
-		type: ws.type,
-	};
-	return { canonical: canonicalizeWorkspace(meta), meta };
+	const resolution = getLocalWorkspaceIdentityResolutions(
+		[localWorkspaceId],
+		dependencies,
+	)[localWorkspaceId];
+	return resolution?.status === "verified"
+		? { canonical: resolution.canonical, meta: resolution.metadata }
+		: null;
 }

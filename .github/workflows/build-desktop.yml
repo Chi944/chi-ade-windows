@@ -130,17 +130,40 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bun run package -- --mac --${{ matrix.arch }} --publish never --config ${{ inputs.electron_builder_config }}
 
-      - name: Smoke-test packaged macOS native modules
+      - name: Smoke-test packaged macOS GUI
+        id: packaged_gui_smoke
         working-directory: apps/desktop
+        env:
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          SMOKE_ARTIFACTS: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+          TARGET_ARCH: ${{ matrix.arch }}
         run: |
-          APP_DIR=$(find release -maxdepth 3 -name '*.app' -type d | head -1)
-          test -n "$APP_DIR" || { echo "::error::Packaged .app not found"; exit 1; }
-          APP_DIR=$(cd "$APP_DIR" && pwd -P)
-          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")
-          test -n "$EXECUTABLE" || { echo "::error::CFBundleExecutable is missing"; exit 1; }
-          export ELECTRON_RUN_AS_NODE=1
-          export ADE_SMOKE_MODULE_ROOT="$APP_DIR/Contents/Resources/app.asar/node_modules"
-          "$APP_DIR/Contents/MacOS/$EXECUTABLE" scripts/smoke-native-runtime.cjs
+          if [ "$RELEASE_CHANNEL" = "canary" ]; then
+            PRODUCT_NAME="ADE Canary"
+            VARIANT="canary"
+          else
+            PRODUCT_NAME="ADE"
+            VARIANT="standard"
+          fi
+          if [ "$TARGET_ARCH" = "arm64" ]; then
+            APP_DIR="release/mac-arm64/$PRODUCT_NAME.app"
+          else
+            APP_DIR="release/mac/$PRODUCT_NAME.app"
+          fi
+          test -d "$APP_DIR" || { echo "::error::Packaged app not found: $APP_DIR"; exit 1; }
+          ACTUAL_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")
+          test "$ACTUAL_EXECUTABLE" = "$PRODUCT_NAME" || { echo "::error::Unexpected CFBundleExecutable: $ACTUAL_EXECUTABLE"; exit 1; }
+          EXECUTABLE=$(cd "$APP_DIR/Contents/MacOS" && pwd -P)/"$PRODUCT_NAME"
+          bun run smoke:packaged-gui -- --platform darwin --app "$EXECUTABLE" --variant "$VARIANT" --artifacts "$SMOKE_ARTIFACTS"
+
+      - name: Upload packaged macOS GUI smoke failure
+        if: always() && steps.packaged_gui_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-gui-smoke-macos-${{ matrix.arch }}-${{ inputs.channel }}
+          path: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Enforce macOS package storage budget
         working-directory: apps/desktop
@@ -397,17 +420,25 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: bun run package -- --publish never --config ${{ inputs.electron_builder_config }}
 
-      - name: Smoke-test packaged Windows native modules
+      - name: Smoke-test packaged Windows GUI
+        id: packaged_gui_smoke
         shell: pwsh
+        env:
+          SMOKE_ARTIFACTS: ${{ runner.temp }}/ade-packaged-smoke-artifacts
         run: |
-          $env:ELECTRON_RUN_AS_NODE = "1"
-          $asar = (Resolve-Path "apps/desktop/release/win-unpacked/resources/app.asar").Path
-          $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
           $exeName = if ("${{ inputs.channel }}" -eq "canary") { "ADE Canary.exe" } else { "ADE.exe" }
+          $variant = if ("${{ inputs.channel }}" -eq "canary") { "canary" } else { "standard" }
           $exe = (Resolve-Path "apps/desktop/release/win-unpacked/$exeName").Path
-          $smokeScript = (Resolve-Path "apps/desktop/scripts/smoke-native-runtime.cjs").Path
-          $process = Start-Process -FilePath $exe -ArgumentList @($smokeScript) -Wait -PassThru -NoNewWindow
-          if ($process.ExitCode -ne 0) { throw "Packaged Windows runtime smoke failed with exit code $($process.ExitCode)" }
+          bun run --cwd apps/desktop smoke:packaged-gui -- --platform win32 --app "$exe" --variant "$variant" --artifacts "$env:SMOKE_ARTIFACTS"
+
+      - name: Upload packaged Windows GUI smoke failure
+        if: always() && steps.packaged_gui_smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-gui-smoke-windows-x64-${{ inputs.channel }}
+          path: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Enforce Windows package storage budget
         working-directory: apps/desktop

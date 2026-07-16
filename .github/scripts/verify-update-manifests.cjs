@@ -8,12 +8,11 @@ const {
 	statSync,
 } = require("node:fs");
 const { basename, dirname, isAbsolute, join } = require("node:path");
-
-const manifestPaths = process.argv.slice(2);
-
-if (manifestPaths.length === 0) {
-	throw new Error("Pass at least one updater manifest path");
-}
+const {
+	ASSET_DEFINITIONS,
+	MANIFEST_NAME,
+	assertPersonalUpdateManifest,
+} = require("./create-personal-update-manifest.cjs");
 
 function parseScalar(raw, label) {
 	const value = raw.trim();
@@ -108,7 +107,7 @@ function sha512(filePath) {
 	});
 }
 
-async function verifyManifest(manifestPath) {
+async function verifyYamlManifest(manifestPath) {
 	if (!existsSync(manifestPath) || !statSync(manifestPath).isFile()) {
 		throw new Error(`${manifestPath}: manifest does not exist`);
 	}
@@ -150,7 +149,96 @@ async function verifyManifest(manifestPath) {
 	console.log(`verified updater manifest: ${manifestPath}`);
 }
 
-Promise.all(manifestPaths.map(verifyManifest)).catch((error) => {
-	console.error(error instanceof Error ? error.message : error);
-	process.exitCode = 1;
-});
+function sha256(filePath) {
+	return new Promise((resolve, reject) => {
+		const hash = createHash("sha256");
+		createReadStream(filePath)
+			.on("error", reject)
+			.on("data", (chunk) => hash.update(chunk))
+			.on("end", () => resolve(hash.digest("hex")));
+	});
+}
+
+async function verifyPersonalUpdateManifest(manifestPath) {
+	if (!existsSync(manifestPath) || !statSync(manifestPath).isFile()) {
+		throw new Error(`${manifestPath}: manifest does not exist`);
+	}
+	let manifest;
+	try {
+		manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	} catch (error) {
+		throw new Error(
+			`${manifestPath}: personal update manifest JSON is invalid: ${error instanceof Error ? error.message : error}`,
+		);
+	}
+	assertPersonalUpdateManifest(manifest);
+
+	for (const [key, name] of ASSET_DEFINITIONS) {
+		const filePath = join(dirname(manifestPath), name);
+		if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+			throw new Error(`${manifestPath}: referenced asset is missing: ${name}`);
+		}
+		const actualSize = statSync(filePath).size;
+		if (actualSize !== manifest.assets[key].size) {
+			throw new Error(`${manifestPath}: size mismatch for ${name}`);
+		}
+		const actualDigest = await sha256(filePath);
+		if (actualDigest !== manifest.assets[key].sha256) {
+			throw new Error(`${manifestPath}: SHA-256 mismatch for ${name}`);
+		}
+	}
+
+	console.log(`verified personal update manifest: ${manifestPath}`);
+}
+
+function verifyConfiguration() {
+	const assets = {};
+	for (const [key, name] of ASSET_DEFINITIONS) {
+		assets[key] = {
+			name,
+			url: `https://github.com/Chi944/chi-ade-windows/releases/download/personal-latest/${name}`,
+			size: 1,
+			sha256: "a".repeat(64),
+		};
+	}
+	assertPersonalUpdateManifest({
+		schemaVersion: 1,
+		version: "0.6.0",
+		buildNumber: 1,
+		commitSha: "a".repeat(40),
+		publishedAt: "2026-01-01T00:00:00.000Z",
+		releaseNotesUrl:
+			"https://github.com/Chi944/chi-ade-windows/releases/tag/personal-latest",
+		assets,
+	});
+	console.log(
+		`verified ${MANIFEST_NAME} verifier configuration (no release files supplied)`,
+	);
+}
+
+async function main(manifestPaths = process.argv.slice(2)) {
+	if (manifestPaths.length === 0) {
+		verifyConfiguration();
+		return;
+	}
+	await Promise.all(
+		manifestPaths.map((manifestPath) =>
+			basename(manifestPath) === MANIFEST_NAME || manifestPath.endsWith(".json")
+				? verifyPersonalUpdateManifest(manifestPath)
+				: verifyYamlManifest(manifestPath),
+		),
+	);
+}
+
+module.exports = {
+	main,
+	verifyPersonalUpdateManifest,
+	verifyYamlManifest,
+};
+
+if (require.main === module) {
+	main().catch((error) => {
+		console.error(error instanceof Error ? error.message : error);
+		process.exitCode = 1;
+	});
+}

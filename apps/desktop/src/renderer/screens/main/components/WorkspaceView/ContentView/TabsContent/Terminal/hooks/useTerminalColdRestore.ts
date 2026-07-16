@@ -2,9 +2,11 @@ import type { AgentRuntime } from "@superset/local-db";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import { useCallback, useRef, useState } from "react";
-import { normalizeTerminalCommand } from "renderer/lib/terminal/launch-command";
 import { electronTrpcClient as trpcClient } from "renderer/lib/trpc-client";
-import { consumeSyncedPane } from "renderer/stores/tabs/syncedPaneRegistry";
+import {
+	preparePaneResumeInput,
+	restorePaneResumeMarkerAfterWriteFailure,
+} from "renderer/stores/tabs/syncedPaneRegistry";
 import { buildAgentResumeCommand } from "shared/agent-session-recovery";
 import { coldRestoreState } from "../state";
 import type {
@@ -261,9 +263,7 @@ export function useTerminalColdRestore({
 					});
 					if (resumeCommand) {
 						// Synced-from-peer panes stage the command without pressing Enter.
-						const terminalInput = consumeSyncedPane(paneId)
-							? resumeCommand
-							: normalizeTerminalCommand(resumeCommand);
+						const terminalInput = preparePaneResumeInput(paneId, resumeCommand);
 						setTimeout(() => {
 							trpcClient.terminal.write
 								.mutate({
@@ -271,6 +271,10 @@ export function useTerminalColdRestore({
 									data: terminalInput,
 								})
 								.catch((err) => {
+									restorePaneResumeMarkerAfterWriteFailure(
+										paneId,
+										terminalInput,
+									);
 									console.warn(
 										"[Terminal] Failed to auto-resume Claude session:",
 										err,

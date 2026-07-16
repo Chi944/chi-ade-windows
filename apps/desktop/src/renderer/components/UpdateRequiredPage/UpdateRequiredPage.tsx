@@ -5,7 +5,12 @@ import { HiArrowPath, HiExclamationTriangle } from "react-icons/hi2";
 import { electronTrpc } from "renderer/lib/electron-trpc";
 import { AppFrame } from "renderer/screens/main/components/AppFrame";
 import { Background } from "renderer/screens/main/components/Background";
-import { AUTO_UPDATE_STATUS, type AutoUpdateStatus } from "shared/auto-update";
+import {
+	AUTO_UPDATE_READY_ACTION,
+	AUTO_UPDATE_STATUS,
+	type AutoUpdateReadyAction,
+	type AutoUpdateStatus,
+} from "shared/auto-update";
 
 interface UpdateRequiredPageProps {
 	currentVersion: string;
@@ -27,12 +32,17 @@ export function UpdateRequiredPage({
 	const [updateStatus, setUpdateStatus] = useState<{
 		status: AutoUpdateStatus;
 		error?: string;
+		readyAction?: AutoUpdateReadyAction;
 	}>({ status: AUTO_UPDATE_STATUS.IDLE });
 
 	// Subscribe to auto-update status changes
 	electronTrpc.autoUpdate.subscribe.useSubscription(undefined, {
 		onData: (event) => {
-			setUpdateStatus({ status: event.status, error: event.error });
+			setUpdateStatus({
+				status: event.status,
+				error: event.error,
+				readyAction: event.readyAction,
+			});
 		},
 	});
 
@@ -42,6 +52,8 @@ export function UpdateRequiredPage({
 	const isReady = updateStatus.status === AUTO_UPDATE_STATUS.READY;
 	const isError = updateStatus.status === AUTO_UPDATE_STATUS.ERROR;
 	const isLoading = isChecking || isDownloading;
+	const opensInstaller =
+		updateStatus.readyAction === AUTO_UPDATE_READY_ACTION.OPEN_INSTALLER;
 
 	const handleCheckForUpdate = () => {
 		checkMutation.mutate();
@@ -94,8 +106,12 @@ export function UpdateRequiredPage({
 								disabled={installMutation.isPending}
 							>
 								{installMutation.isPending
-									? "Installing..."
-									: "Install & Restart"}
+									? opensInstaller
+										? "Opening..."
+										: "Restarting..."
+									: opensInstaller
+										? "Open Installer"
+										: "Restart to Install"}
 							</Button>
 						) : isAvailable ? (
 							<Button

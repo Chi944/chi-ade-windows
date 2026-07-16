@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -29,6 +30,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh api "repos/${{ github.repository }}/git/ref/tags/personal-latest" --silent
 
+      - name: Require successful CI for exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUNS=$(gh api \
+            --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+            -f head_sha="$GITHUB_SHA" \
+            -f branch="main" \
+            -f event="push" \
+            -f status="completed" \
+            -f per_page="100")
+          MATCHES=$(jq \
+            --arg sha "$GITHUB_SHA" \
+            '[.workflow_runs[] | select(
+              .head_sha == $sha and
+              .head_branch == "main" and
+              .event == "push" and
+              .status == "completed" and
+              .conclusion == "success"
+            )] | length' <<< "$RUNS")
+          test "$MATCHES" -ge 1 || {
+            echo "::error::No successful completed CI push run exists for exact SHA $GITHUB_SHA"
+            exit 1
+          }
+
   package:
     needs: validate
     name: Package unsigned - ${{ matrix.name }}
@@ -42,18 +69,21 @@ jobs:
             runner: windows-latest
             target_arch: x64
             package_args: --win --x64
+            prepackaged_path: release/win-unpacked
             artifact_name: direct-windows-x64
             checksum_name: SHA256SUMS-windows-x64.txt
           - name: macOS Apple Silicon
             runner: macos-15
             target_arch: arm64
             package_args: --mac --arm64
+            prepackaged_path: release/mac-arm64/ADE.app
             artifact_name: direct-macos-arm64
             checksum_name: SHA256SUMS-macos-arm64.txt
           - name: macOS Intel
             runner: macos-15-intel
             target_arch: x64
             package_args: --mac --x64
+            prepackaged_path: release/mac/ADE.app
             artifact_name: direct-macos-x64
             checksum_name: SHA256SUMS-macos-x64.txt
 
@@ -92,27 +122,83 @@ jobs:
           apps/desktop/src/lib/trpc/routers/config/config.test.ts
           apps/desktop/src/lib/trpc/routers/config/project-config-files.test.ts
 
+      - name: Test verified personal update channel
+        run: >-
+          bun test --isolate
+          apps/desktop/src/shared/personal-update.test.ts
+          apps/desktop/src/main/lib/personal-update-downloader.test.ts
+          apps/desktop/src/main/lib/personal-auto-updater.test.ts
+          apps/desktop/src/main/lib/recovery/update-snapshot.test.ts
+          apps/desktop/src/main/lib/local-db/backup.test.ts
+
+      - name: Test personal update publication contract
+        run: node --test .github/scripts/create-personal-update-manifest.test.cjs
+
       - name: Compile desktop
+        env:
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
         run: bun run --cwd apps/desktop compile:app
 
       - name: Smoke native runtime
         run: bun run --cwd apps/desktop smoke:native
 
-      - name: Package unsigned Windows installer
+      - name: Package unsigned directory for GUI smoke
+        env:
+          ADE_TARGET_ARCH: ${{ matrix.target_arch }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bun run --cwd apps/desktop package -- --dir ${{ matrix.package_args }} --publish never --config electron-builder.ts
+
+      - name: Smoke packaged Windows GUI
+        id: smoke_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SMOKE_ARTIFACTS: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+        run: |
+          $exe = (Resolve-Path "apps/desktop/release/win-unpacked/ADE.exe").Path
+          bun run --cwd apps/desktop smoke:packaged-gui -- --platform win32 --app "$exe" --artifacts "$env:SMOKE_ARTIFACTS"
+
+      - name: Smoke packaged macOS GUI
+        id: smoke_macos
+        if: runner.os == 'macOS'
+        env:
+          SMOKE_ARTIFACTS: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+          TARGET_ARCH: ${{ matrix.target_arch }}
+        run: |
+          if [ "$TARGET_ARCH" = "arm64" ]; then
+            EXECUTABLE="apps/desktop/release/mac-arm64/ADE.app/Contents/MacOS/ADE"
+          else
+            EXECUTABLE="apps/desktop/release/mac/ADE.app/Contents/MacOS/ADE"
+          fi
+          test -x "$EXECUTABLE" || { echo "::error::Packaged executable not found: $EXECUTABLE"; exit 1; }
+          EXECUTABLE=$(cd "$(dirname "$EXECUTABLE")" && pwd -P)/ADE
+          bun run --cwd apps/desktop smoke:packaged-gui -- --platform darwin --app "$EXECUTABLE" --artifacts "$SMOKE_ARTIFACTS"
+
+      - name: Upload packaged GUI smoke failure
+        if: always() && (steps.smoke_windows.outcome == 'failure' || steps.smoke_macos.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-gui-smoke-${{ runner.os }}-${{ matrix.target_arch }}
+          path: ${{ runner.temp }}/ade-packaged-smoke-artifacts
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Package unsigned Windows installer from smoke-tested directory
         if: runner.os == 'Windows'
         env:
           ADE_TARGET_ARCH: ${{ matrix.target_arch }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: bun run --cwd apps/desktop package -- ${{ matrix.package_args }} --publish never --config electron-builder.ts
+        run: bun run --cwd apps/desktop package -- --prepackaged "${{ matrix.prepackaged_path }}" ${{ matrix.package_args }} --publish never --config electron-builder.ts
 
-      - name: Package unsigned macOS installers
+      - name: Package unsigned macOS installers from smoke-tested directory
         if: runner.os == 'macOS'
         env:
           ADE_TARGET_ARCH: ${{ matrix.target_arch }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           for attempt in 1 2; do
-            if bun run --cwd apps/desktop package -- ${{ matrix.package_args }} --publish never --config electron-builder.ts; then
+            if bun run --cwd apps/desktop package -- --prepackaged "${{ matrix.prepackaged_path }}" ${{ matrix.package_args }} --publish never --config electron-builder.ts; then
               exit 0
             fi
             if [ "$attempt" -eq 2 ]; then
@@ -146,30 +232,6 @@ jobs:
           if ($signature.SignerCertificate) {
             throw "Personal Windows artifact unexpectedly has an Authenticode signature"
           }
-
-      - name: Smoke packaged Windows runtime
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:ELECTRON_RUN_AS_NODE = "1"
-          $asar = (Resolve-Path "apps/desktop/release/win-unpacked/resources/app.asar").Path
-          $env:ADE_SMOKE_MODULE_ROOT = "$asar/node_modules"
-          $exe = (Resolve-Path "apps/desktop/release/win-unpacked/ADE.exe").Path
-          $smokeScript = (Resolve-Path "apps/desktop/scripts/smoke-native-runtime.cjs").Path
-          $process = Start-Process -FilePath $exe -ArgumentList @($smokeScript) -Wait -PassThru -NoNewWindow
-          if ($process.ExitCode -ne 0) { throw "Packaged Windows runtime smoke failed with exit code $($process.ExitCode)" }
-
-      - name: Smoke packaged macOS runtime
-        if: runner.os == 'macOS'
-        run: |
-          APP_DIR=$(find apps/desktop/release -maxdepth 3 -name '*.app' -type d | head -1)
-          test -n "$APP_DIR" || { echo "::error::Packaged .app not found"; exit 1; }
-          APP_DIR=$(cd "$APP_DIR" && pwd -P)
-          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIR/Contents/Info.plist")
-          test -n "$EXECUTABLE" || { echo "::error::CFBundleExecutable is missing"; exit 1; }
-          export ELECTRON_RUN_AS_NODE=1
-          export ADE_SMOKE_MODULE_ROOT="$APP_DIR/Contents/Resources/app.asar/node_modules"
-          "$APP_DIR/Contents/MacOS/$EXECUTABLE" apps/desktop/scripts/smoke-native-runtime.cjs
 
       - name: Enforce personal package storage budget
         env:
@@ -293,10 +355,26 @@ jobs:
           VERSION=$(node -p "require('./apps/desktop/package.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Create and verify personal update manifest
+        env:
+          ADE_VERSION: ${{ steps.version.outputs.version }}
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          COMMIT_DATE=$(git show -s --format=%cI "$GITHUB_SHA")
+          export ADE_PUBLISHED_AT
+          ADE_PUBLISHED_AT=$(date --utc --date="$COMMIT_DATE" +"%Y-%m-%dT%H:%M:%S.000Z")
+          node .github/scripts/create-personal-update-manifest.cjs release-assets
+          node .github/scripts/verify-update-manifests.cjs \
+            release-assets/ade-personal-update-v1.json
+
       - name: Publish verified rolling direct downloads
         env:
           GH_TOKEN: ${{ github.token }}
           ADE_VERSION: ${{ steps.version.outputs.version }}
+          ADE_BUILD_SHA: ${{ github.sha }}
+          ADE_BUILD_NUMBER: ${{ github.run_number }}
           RELEASE_DIR: release-assets
         shell: bash
         run: bash .github/scripts/publish-direct-downloads.sh

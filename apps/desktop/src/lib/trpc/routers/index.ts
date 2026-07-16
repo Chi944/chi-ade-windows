@@ -8,6 +8,7 @@ import { createCacheRouter } from "./cache";
 import { createChangesRouter } from "./changes";
 import { createConfigRouter } from "./config";
 import { createCoordinationRouter } from "./coordination";
+import { createDiagnosticsRouter } from "./diagnostics";
 import { createExtensionsRouter } from "./extensions";
 import { createExternalRouter } from "./external";
 import { createFilesystemRouter } from "./filesystem";
@@ -52,6 +53,7 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		settings: createSettingsRouter(),
 		config: createConfigRouter(),
 		coordination: createCoordinationRouter(),
+		diagnostics: createDiagnosticsRouter(),
 		uiState: createUiStateRouter(),
 		sync: createSyncRouter(),
 		ringtone: createRingtoneRouter(getWindow),

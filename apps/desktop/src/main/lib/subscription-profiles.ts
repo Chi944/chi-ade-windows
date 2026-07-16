@@ -11,6 +11,12 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+	getSubscriptionProfileStorageRoot,
+	initializeSubscriptionProfileStorageRoot,
+	migrateSubscriptionProfileStorage,
+	type ResolveSubscriptionProfileStorageRootOptions,
+} from "./subscription-profile-storage";
 
 export const SUBSCRIPTION_PROFILE_PROVIDERS = ["claude", "codex"] as const;
 export type SubscriptionProfileProvider =
@@ -72,13 +78,7 @@ const MAX_BINDINGS = 5000;
 const CODEX_FILE_CREDENTIALS_SETTING = 'cli_auth_credentials_store = "file"';
 const CODEX_INITIAL_CONFIG = `# Keep this alternate account scoped to its isolated CODEX_HOME.\n${CODEX_FILE_CREDENTIALS_SETTING}\n`;
 let accountsRootOverride: string | null = null;
-let userDataPathResolver: (() => string) | null = null;
-
-export function setSubscriptionProfilesUserDataPathResolver(
-	resolver: (() => string) | null,
-): void {
-	userDataPathResolver = resolver;
-}
+let initializedAccountsRoot: string | null = null;
 
 /** @internal Test seam; never exposed through renderer RPC. */
 export function setSubscriptionProfilesRootForTests(root: string | null): void {
@@ -87,10 +87,149 @@ export function setSubscriptionProfilesRootForTests(root: string | null): void {
 
 function accountsRoot(): string {
 	if (accountsRootOverride) return accountsRootOverride;
-	if (!userDataPathResolver) {
+	if (!initializedAccountsRoot) {
 		throw new Error("Subscription profile storage is not initialized");
 	}
-	return join(userDataPathResolver(), "provider-accounts");
+	return initializedAccountsRoot;
+}
+
+export type SubscriptionProfilesMigrationStatus =
+	| "not-needed"
+	| "migrated"
+	| "duplicate-removed"
+	| "conflict-recovered"
+	| "deferred";
+
+export interface SubscriptionProfilesInitializationResult {
+	root: string;
+	migrationStatus: SubscriptionProfilesMigrationStatus;
+	warning?: string;
+	recoveryRoot?: string;
+}
+
+export interface InitializeSubscriptionProfilesOptions
+	extends ResolveSubscriptionProfileStorageRootOptions {
+	stopTerminalSessions: () => Promise<void>;
+	resetTerminalService: () => void;
+	/** @internal Test seam for promotion failures. */
+	renameForMigration?: (source: string, destination: string) => void;
+	/** @internal Test seam for verification failures. */
+	copyFileForMigration?: (source: string, destination: string) => void;
+	/** @internal Test seam for legacy cleanup failures. */
+	removeTreeForMigration?: (root: string) => void;
+}
+
+export async function initializeSubscriptionProfiles({
+	adeHomeDir,
+	platform,
+	env,
+	homeDir,
+	stopTerminalSessions,
+	resetTerminalService,
+	renameForMigration,
+	copyFileForMigration,
+	removeTreeForMigration,
+}: InitializeSubscriptionProfilesOptions): Promise<SubscriptionProfilesInitializationResult> {
+	const storageOptions: ResolveSubscriptionProfileStorageRootOptions = {
+		adeHomeDir,
+		...(platform ? { platform } : {}),
+		...(env ? { env } : {}),
+		...(homeDir ? { homeDir } : {}),
+	};
+	const legacyRoot = join(resolve(adeHomeDir), "provider-accounts");
+	let privateRoot: string;
+	try {
+		privateRoot = getSubscriptionProfileStorageRoot(storageOptions);
+	} catch (error) {
+		if (!existsSync(legacyRoot)) throw error;
+		initializedAccountsRoot = legacyRoot;
+		return {
+			root: legacyRoot,
+			migrationStatus: "deferred",
+			warning:
+				"Provider account migration was deferred; legacy storage remains active and migration will retry on the next launch.",
+		};
+	}
+
+	try {
+		const migration = await migrateSubscriptionProfileStorage({
+			legacyRoot,
+			privateRoot,
+			stopTerminalSessions,
+			resetTerminalService,
+			...(renameForMigration ? { renameForMigration } : {}),
+			...(copyFileForMigration ? { copyFileForMigration } : {}),
+			...(removeTreeForMigration ? { removeTreeForMigration } : {}),
+		});
+		if (migration.status === "legacy-deferred") {
+			initializedAccountsRoot = legacyRoot;
+			return {
+				root: legacyRoot,
+				migrationStatus: "deferred",
+				warning:
+					"Provider account migration was deferred; legacy storage remains active and migration will retry on the next launch.",
+			};
+		}
+		let root: string;
+		try {
+			root = initializeSubscriptionProfileStorageRoot(storageOptions);
+		} catch (error) {
+			if (
+				migration.status !== "cleanup-deferred" &&
+				migration.status !== "private-deferred"
+			) {
+				throw error;
+			}
+			initializedAccountsRoot = privateRoot;
+			return {
+				root: privateRoot,
+				migrationStatus: "deferred",
+				warning:
+					"Private provider account storage must remain active after an incomplete legacy cleanup, but account changes are disabled until initialization can retry.",
+			};
+		}
+		initializedAccountsRoot = root;
+		if (migration.status === "cleanup-deferred") {
+			return {
+				root,
+				migrationStatus: "deferred",
+				...(migration.recoveryRoot
+					? { recoveryRoot: migration.recoveryRoot }
+					: {}),
+				warning:
+					"Provider account storage is active in the private location, but legacy cleanup was incomplete and will retry on the next launch.",
+			};
+		}
+		if (migration.status === "private-deferred") {
+			return {
+				root,
+				migrationStatus: "deferred",
+				warning:
+					"Private provider account storage remains active; legacy migration was deferred and will retry on the next launch.",
+			};
+		}
+		if (migration.status === "conflict-recovered") {
+			return {
+				root,
+				migrationStatus: migration.status,
+				recoveryRoot: migration.recoveryRoot,
+				warning:
+					"Legacy provider account storage had a conflict and was preserved in device-local recovery.",
+			};
+		}
+		return { root, migrationStatus: migration.status };
+	} catch {
+		const legacyStorageExists = existsSync(legacyRoot);
+		const activeRoot = legacyStorageExists ? legacyRoot : privateRoot;
+		initializedAccountsRoot = activeRoot;
+		return {
+			root: activeRoot,
+			migrationStatus: "deferred",
+			warning: legacyStorageExists
+				? "Provider account migration was deferred; legacy storage remains active and migration will retry on the next launch."
+				: "Private provider account storage is unavailable; account changes are disabled and initialization will retry on the next launch.",
+		};
+	}
 }
 
 function metadataPath(): string {
@@ -898,4 +1037,129 @@ export function pruneOrphanedSubscriptionHomes(): number {
 		}
 	}
 	return removed;
+}
+
+export interface DurableSubscriptionProfilePane {
+	paneId: string;
+	provider: SubscriptionProfileProvider | null;
+	workspaceId?: string;
+}
+
+export interface ReconcileSubscriptionProfilePaneBindingsInput {
+	stateTrust: "trusted" | "recovered" | "untrusted";
+	durablePanes: readonly DurableSubscriptionProfilePane[];
+	unresolvedWorkspaceIds?: ReadonlySet<string>;
+}
+
+export interface SubscriptionProfileBindingReconciliationResult {
+	removedBindings: number;
+	backfilledWorkspaceIds: number;
+	prunedHomes: number;
+	preservedUnresolvedBindings: number;
+	warnings: string[];
+}
+
+/**
+ * Reconciles device-local account bindings only after durable state has passed
+ * trusted validation. Task 2 owns startup wiring once workspace identities are
+ * localized; shallow or recovered state must never trigger deletion.
+ */
+export function reconcileSubscriptionProfilePaneBindings({
+	stateTrust,
+	durablePanes,
+	unresolvedWorkspaceIds = new Set<string>(),
+}: ReconcileSubscriptionProfilePaneBindingsInput): SubscriptionProfileBindingReconciliationResult {
+	if (stateTrust !== "trusted") {
+		return {
+			removedBindings: 0,
+			backfilledWorkspaceIds: 0,
+			prunedHomes: 0,
+			preservedUnresolvedBindings: 0,
+			warnings: [
+				"Provider account binding cleanup was deferred because durable state is not trusted.",
+			],
+		};
+	}
+
+	const durablePanesById = new Map(
+		durablePanes.map((pane) => [pane.paneId, pane] as const),
+	);
+	const state = readState();
+	const staleBindings: Array<
+		[string, SubscriptionProfilesFile["bindings"][string]]
+	> = [];
+	let preservedUnresolvedBindings = 0;
+	let backfilledWorkspaceIds = 0;
+
+	for (const [paneId, binding] of Object.entries(state.bindings)) {
+		const durablePane = durablePanesById.get(paneId);
+		if (durablePane) {
+			if (
+				!durablePane.workspaceId ||
+				unresolvedWorkspaceIds.has(durablePane.workspaceId) ||
+				Boolean(
+					binding.workspaceId &&
+						unresolvedWorkspaceIds.has(binding.workspaceId),
+				)
+			) {
+				preservedUnresolvedBindings += 1;
+				continue;
+			}
+			if (
+				durablePane.provider !== binding.provider ||
+				Boolean(
+					binding.workspaceId &&
+						binding.workspaceId !== durablePane.workspaceId,
+				)
+			) {
+				staleBindings.push([paneId, binding]);
+				continue;
+			}
+			if (!binding.workspaceId) {
+				state.bindings[paneId] = {
+					...binding,
+					workspaceId: durablePane.workspaceId,
+				};
+				backfilledWorkspaceIds += 1;
+			}
+			continue;
+		}
+		if (
+			binding.workspaceId
+				? unresolvedWorkspaceIds.has(binding.workspaceId)
+				: unresolvedWorkspaceIds.size > 0
+		) {
+			preservedUnresolvedBindings += 1;
+			continue;
+		}
+		staleBindings.push([paneId, binding]);
+	}
+
+	if (staleBindings.length > 0 || backfilledWorkspaceIds > 0) {
+		for (const [paneId] of staleBindings) delete state.bindings[paneId];
+		writeState(state);
+	}
+
+	let prunedHomes = 0;
+	for (const [paneId, binding] of staleBindings) {
+		if (
+			binding.profileId === null &&
+			removeUnboundHomeBestEffort(binding.provider, `pane:${paneId}`)
+		) {
+			prunedHomes += 1;
+		}
+	}
+
+	return {
+		removedBindings: staleBindings.length,
+		backfilledWorkspaceIds,
+		prunedHomes,
+		preservedUnresolvedBindings,
+		warnings:
+			preservedUnresolvedBindings > 0
+				? [
+						"Some provider account bindings were preserved because workspace identity is unresolved.",
+					]
+				: [],
+	};
 }

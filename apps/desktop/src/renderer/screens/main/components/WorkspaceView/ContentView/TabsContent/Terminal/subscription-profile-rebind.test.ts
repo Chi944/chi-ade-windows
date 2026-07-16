@@ -8,6 +8,18 @@ import type { Pane } from "shared/tabs-types";
 const PROFILE_ID = "11111111-1111-4111-8111-111111111111";
 
 describe("resolveSubscriptionProfileGate", () => {
+	test("keeps a live new default provider pane ungated before persistence", () => {
+		expect(
+			resolveSubscriptionProfileGate({
+				agentRuntime: "claude",
+				subscriptionProfileId: undefined,
+				subscriptionProfilePinned: undefined,
+				binding: undefined,
+				isBindingLoading: false,
+			}),
+		).toBe("ready");
+	});
+
 	test("allows a new pane with a transient explicit account selection", () => {
 		expect(
 			resolveSubscriptionProfileGate({

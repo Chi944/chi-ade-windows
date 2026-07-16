@@ -1,83 +1,106 @@
-/**
- * Cross-Mac sync subscription router.
- *
- * Pushes peer-originated `app-state.json` updates to the renderer so
- * `useTabsStore` (Agent B) can merge them in with per-workspace
- * last-writer-wins semantics.
- *
- * Mirrors the `terminal.stream` observable pattern.
- */
-
-import { remoteWorkspaceBindings } from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
-import type {
-	AppStateSyncEnvelope,
-	TabsState,
+import { getAppStateSnapshot } from "main/lib/app-state";
+import {
+	canonicalWorkspaceIdSchema,
+	MAX_PEER_MERGE_CANONICAL_IDS,
 } from "main/lib/app-state/schemas";
-import { appStateWatcher } from "main/lib/app-state/watcher";
-import { localDb } from "main/lib/local-db";
-import { getCanonicalForLocalWorkspaceId } from "main/lib/sync/workspace-identity";
-import { sanitizeSubscriptionProfilesForPersistence } from "shared/subscription-profile-rebind";
+import { peerSyncService } from "main/lib/app-state/sync-service";
+import {
+	appStateWatcher,
+	type PeerAppStateEventMetadata,
+	peerAppStateEventCache,
+} from "main/lib/app-state/watcher";
+import {
+	getLocalWorkspaceMappingsForCanonicalIds,
+	type PortableWorkspaceMetadata,
+} from "main/lib/sync/workspace-identity";
+import { z } from "zod";
 import { publicProcedure, router } from "../..";
 
-export interface AppStateUpdatePayload {
-	tabsState: TabsState;
-	sync: AppStateSyncEnvelope;
-}
+const rebasePeerUpdateInputSchema = z.strictObject({
+	eventId: z.string().min(1).max(256),
+	baseRevision: z.number().int().nonnegative(),
+	canonicalToLocal: z
+		.record(canonicalWorkspaceIdSchema, z.string().min(1).max(256))
+		.refine(
+			(value) => Object.keys(value).length <= MAX_PEER_MERGE_CANONICAL_IDS,
+			{
+				message: "Too many workspace mappings",
+			},
+		),
+});
 
-function getPeerRemoteWorkspaceIds(
-	sync: AppStateSyncEnvelope,
-): ReadonlySet<string> {
-	const localRemoteWorkspaceIds = localDb
-		.select({ workspaceId: remoteWorkspaceBindings.workspaceId })
-		.from(remoteWorkspaceBindings)
-		.all()
-		.map(({ workspaceId }) => workspaceId);
-	const remoteCanonicalIds = new Set(
-		localRemoteWorkspaceIds.flatMap((workspaceId) => {
-			const identity = getCanonicalForLocalWorkspaceId(workspaceId);
-			return identity ? [identity.canonical] : [];
+const localWorkspaceMappingsInputSchema = z.strictObject({
+	canonicalWorkspaceIds: z
+		.array(canonicalWorkspaceIdSchema)
+		.max(MAX_PEER_MERGE_CANONICAL_IDS),
+});
+
+function localWorkspaceResolutionHints(
+	canonicalWorkspaceIds: readonly string[],
+): {
+	preferredLocalWorkspaceIdsByCanonical: Record<string, string[]>;
+	workspaceMetadataByCanonical: Record<string, PortableWorkspaceMetadata>;
+} {
+	const requested = new Set(canonicalWorkspaceIds);
+	const snapshot = getAppStateSnapshot();
+	const preferredLocalWorkspaceIdsByCanonical: Record<string, string[]> = {};
+	for (const [localWorkspaceId, canonical] of Object.entries(
+		snapshot.sync.localToCanonical,
+	)) {
+		if (!requested.has(canonical)) continue;
+		const workspaceIds = preferredLocalWorkspaceIdsByCanonical[canonical] ?? [];
+		workspaceIds.push(localWorkspaceId);
+		preferredLocalWorkspaceIdsByCanonical[canonical] = workspaceIds;
+	}
+	for (const workspaceIds of Object.values(
+		preferredLocalWorkspaceIdsByCanonical,
+	)) {
+		workspaceIds.sort();
+	}
+	const workspaceMetadataByCanonical = Object.fromEntries(
+		canonicalWorkspaceIds.flatMap((canonical) => {
+			const metadata = snapshot.sync.workspaceMetadata[canonical];
+			return metadata ? [[canonical, metadata] as const] : [];
 		}),
 	);
-	const peerRemoteWorkspaceIds = new Set(localRemoteWorkspaceIds);
-	for (const [peerWorkspaceId, canonicalId] of Object.entries(
-		sync.localToCanonical ?? {},
-	)) {
-		if (remoteCanonicalIds.has(canonicalId)) {
-			peerRemoteWorkspaceIds.add(peerWorkspaceId);
-		}
-	}
-	return peerRemoteWorkspaceIds;
+	return {
+		preferredLocalWorkspaceIdsByCanonical,
+		workspaceMetadataByCanonical,
+	};
 }
 
-export const createSyncRouter = () => {
-	return router({
-		/**
-		 * Subscribe to peer-originated changes to `~/.ade/app-state.json`.
-		 * Emits the parsed `tabsState` + `sync` envelope each time the
-		 * file is rewritten by another Mac (detected via `sync.deviceId`
-		 * differing from the local deviceId).
-		 */
-		appStateUpdates: publicProcedure.subscription(() => {
-			return observable<AppStateUpdatePayload>((emit) => {
-				const onUpdate = (payload: {
-					state: { tabsState: TabsState; sync?: AppStateSyncEnvelope };
-				}) => {
-					const sync = payload.state.sync;
-					if (!sync) return;
-					emit.next({
-						tabsState: sanitizeSubscriptionProfilesForPersistence({
-							state: payload.state.tabsState,
-							remoteWorkspaceIds: getPeerRemoteWorkspaceIds(sync),
-						}),
-						sync,
-					});
+export const createSyncRouter = () =>
+	router({
+		/** Emits only opaque cache metadata; peer state never crosses optimistically. */
+		appStateUpdates: publicProcedure.subscription(() =>
+			observable<PeerAppStateEventMetadata>((emit) => {
+				const emittedEventIds = new Set<string>();
+				const onUpdate = (metadata: PeerAppStateEventMetadata) => {
+					if (emittedEventIds.has(metadata.eventId)) return;
+					emittedEventIds.add(metadata.eventId);
+					emit.next(metadata);
 				};
+				// Attach first so an event arriving during cache enumeration cannot be lost.
 				appStateWatcher.on("peer-update", onUpdate);
-				return () => {
-					appStateWatcher.off("peer-update", onUpdate);
-				};
-			});
-		}),
+				for (const metadata of peerAppStateEventCache.listMetadata()) {
+					onUpdate(metadata);
+				}
+				return () => appStateWatcher.off("peer-update", onUpdate);
+			}),
+		),
+
+		/** Portable identities the renderer may use to build a peer rebase map. */
+		localWorkspaceMappings: publicProcedure
+			.input(localWorkspaceMappingsInputSchema)
+			.query(({ input }) =>
+				getLocalWorkspaceMappingsForCanonicalIds(input.canonicalWorkspaceIds, {
+					...localWorkspaceResolutionHints(input.canonicalWorkspaceIds),
+				}),
+			),
+
+		/** Revalidates and commits the cached event inside the app-state queue. */
+		rebasePeerUpdate: publicProcedure
+			.input(rebasePeerUpdateInputSchema)
+			.mutation(({ input }) => peerSyncService.rebasePeerUpdate(input)),
 	});
-};

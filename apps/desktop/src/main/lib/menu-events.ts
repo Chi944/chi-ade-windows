@@ -6,7 +6,8 @@ export type SettingsSection =
 	| "appearance"
 	| "keyboard"
 	| "terminal"
-	| "integrations";
+	| "integrations"
+	| "health";
 
 export interface OpenSettingsEvent {
 	section?: SettingsSection;

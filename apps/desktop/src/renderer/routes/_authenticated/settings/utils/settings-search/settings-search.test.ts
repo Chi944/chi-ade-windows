@@ -63,3 +63,23 @@ describe("settings search - font settings", () => {
 		expect(terminalFont?.section).toBe("appearance");
 	});
 });
+
+describe("settings search - health and recovery", () => {
+	it("finds the Health & Recovery section by diagnostics terms", () => {
+		const ids = getIds(searchSettings("diagnostics"));
+		expect(ids).toContain("health-diagnostics");
+	});
+
+	it("finds recovery controls by snapshot and safe-mode terms", () => {
+		const snapshotIds = getIds(searchSettings("snapshot"));
+		const safeModeIds = getIds(searchSettings("safe mode"));
+		expect(snapshotIds).toContain("health-recovery");
+		expect(safeModeIds).toContain("health-recovery");
+	});
+
+	it("assigns health results and recovery controls to the health section", () => {
+		const matches = searchSettings("health recovery");
+		expect(matches.length).toBeGreaterThan(0);
+		expect(matches.every((item) => item.section === "health")).toBe(true);
+	});
+});

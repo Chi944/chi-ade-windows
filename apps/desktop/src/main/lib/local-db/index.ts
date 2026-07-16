@@ -10,14 +10,22 @@ import { app, dialog } from "electron";
 import { validate as uuidValidate, version as uuidVersion } from "uuid";
 import { env } from "../../env.main";
 import {
-	ensureSupersetHomeDirExists,
 	SUPERSET_HOME_DIR,
 	SUPERSET_SENSITIVE_FILE_MODE,
 } from "../app-environment";
+import { resolveLocalPrivateRoot } from "../diagnostics/private-root";
+import { backupSqliteDatabase } from "./backup";
+import { openValidatedLocalDatabase } from "./filesystem-safety";
+import {
+	checkSqliteDatabaseIntegrity,
+	type LocalDatabaseIntegrityResult,
+} from "./integrity";
+import {
+	prepareMigrationBackup,
+	runMigrationsWithBackup,
+} from "./migration-backup";
 
 const DB_PATH = join(SUPERSET_HOME_DIR, "local.db");
-
-ensureSupersetHomeDirExists();
 
 /**
  * Gets the migrations directory path.
@@ -75,7 +83,11 @@ function getMigrationsDirectory(): string {
 
 const migrationsFolder = getMigrationsDirectory();
 
-const sqlite = new Database(DB_PATH);
+const { database: sqlite, existedBeforeOpen: DATABASE_EXISTED_BEFORE_OPEN } =
+	openValidatedLocalDatabase(
+		DB_PATH,
+		(validatedPath) => new Database(validatedPath),
+	);
 try {
 	chmodSync(DB_PATH, SUPERSET_SENSITIVE_FILE_MODE);
 } catch {
@@ -95,9 +107,15 @@ console.log(`[local-db] Running migrations from: ${migrationsFolder}`);
 
 export const localDb = drizzle(sqlite, { schema });
 
-try {
-	migrate(localDb, { migrationsFolder });
-} catch (error) {
+export function backupLocalDatabase(destination: string): Promise<void> {
+	return backupSqliteDatabase(sqlite, destination);
+}
+
+export function checkLocalDatabaseIntegrity(): LocalDatabaseIntegrityResult {
+	return checkSqliteDatabaseIntegrity(sqlite);
+}
+
+function handleMigrationFailure(error: unknown): void {
 	// A failed migration leaves the schema in an unknown state; continuing would
 	// produce undefined behavior on every query. Surface a fatal dialog naming
 	// the data dir (so the user can inspect/back up the DB) and quit.
@@ -124,9 +142,38 @@ try {
 			app.on("ready", showFatal);
 		}
 	}
-	throw error;
 }
 
-console.log("[local-db] Migrations complete");
+let migrationInitialization: Promise<void> | null = null;
+
+export async function initializeLocalDatabase(): Promise<void> {
+	migrationInitialization ??= (async () => {
+		const privateRoot = resolveLocalPrivateRoot({
+			adeHomeDir: SUPERSET_HOME_DIR,
+		});
+		try {
+			await runMigrationsWithBackup({
+				prepareBackup: () =>
+					prepareMigrationBackup({
+						databaseExists: DATABASE_EXISTED_BEFORE_OPEN,
+						migrationsFolder,
+						recoveryDirectory: join(privateRoot, "recovery", "database"),
+						markerPath: join(
+							privateRoot,
+							"recovery",
+							"migration-fingerprint.json",
+						),
+						backupDatabase: backupLocalDatabase,
+					}),
+				migrate: () => migrate(localDb, { migrationsFolder }),
+			});
+			console.log("[local-db] Migrations complete");
+		} catch (error) {
+			handleMigrationFailure(error);
+			throw error;
+		}
+	})();
+	return migrationInitialization;
+}
 
 export type LocalDb = typeof localDb;

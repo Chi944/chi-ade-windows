@@ -4,8 +4,10 @@ import { eq } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { app, Notification, nativeTheme } from "electron";
 import { createWindow } from "lib/electron-app/factories/windows/create";
+import { mergeRouters } from "lib/trpc";
 import { createAppRouter } from "lib/trpc/routers";
 import { getWorkspacesInVisualOrder } from "lib/trpc/routers/workspaces/procedures/query";
+import { redactWindowUrlForLogs } from "lib/window-loader";
 import { localDb } from "main/lib/local-db";
 import { NOTIFICATION_EVENTS, PLATFORM } from "shared/constants";
 import {
@@ -29,6 +31,12 @@ import {
 	getNotificationTitle,
 	getWorkspaceName,
 } from "../lib/notifications/utils";
+import {
+	createPackagedSmokeController,
+	createPackagedSmokeRouter,
+	getPackagedSmokeWindowQuery,
+	type PackagedSmokeStartup,
+} from "../lib/packaged-smoke";
 import { AgentWatcher } from "../lib/scheduler/watcher";
 import {
 	configureTestServer,
@@ -43,7 +51,10 @@ import {
 import { getWorkspaceRuntimeRegistry } from "../lib/workspace-runtime";
 
 // Singleton IPC handler to prevent duplicate handlers on window reopen (macOS)
-let ipcHandler: ReturnType<typeof createIPCHandler> | null = null;
+let ipcHandler: {
+	attachWindow: (window: BrowserWindow) => void;
+	detachWindow: (window: BrowserWindow) => void;
+} | null = null;
 
 function getWorkspaceNameFromDb(workspaceId: string | undefined): string {
 	if (!workspaceId) return "Workspace";
@@ -94,7 +105,17 @@ app.on("child-process-gone", (_event, details) => {
 	}
 });
 
-export async function MainWindow() {
+export interface MainWindowOptions {
+	safeMode?: boolean;
+	packagedSmoke?: PackagedSmokeStartup;
+	onPackagedSmokeComplete?: (exitCode: number) => void;
+}
+
+export async function MainWindow({
+	safeMode = false,
+	packagedSmoke,
+	onPackagedSmokeComplete,
+}: MainWindowOptions = {}) {
 	const savedWindowState = loadWindowState();
 	const initialBounds = getInitialWindowBounds(savedWindowState);
 
@@ -106,6 +127,11 @@ export async function MainWindow() {
 
 	const window = createWindow({
 		id: "main",
+		query: packagedSmoke
+			? getPackagedSmokeWindowQuery(packagedSmoke)
+			: safeMode
+				? { adeSafeRecovery: "1" }
+				: undefined,
 		title: windowTitle,
 		width: initialBounds.width,
 		height: initialBounds.height,
@@ -185,93 +211,117 @@ export async function MainWindow() {
 		}
 	});
 
+	const packagedSmokeController = packagedSmoke
+		? createPackagedSmokeController({
+				startup: packagedSmoke,
+				authorizedSenderId: window.webContents.id,
+				scheduleExit: (exitCode) => onPackagedSmokeComplete?.(exitCode),
+			})
+		: null;
+
 	if (ipcHandler) {
 		ipcHandler.attachWindow(window);
 	} else {
+		const appRouter = createAppRouter(getWindow);
 		ipcHandler = createIPCHandler({
-			router: createAppRouter(getWindow),
+			router: packagedSmokeController
+				? mergeRouters(
+						appRouter,
+						createPackagedSmokeRouter(packagedSmokeController),
+					)
+				: appRouter,
+			createContext: async ({ event }) => ({
+				senderId: event.sender.id,
+				isMainFrame: event.senderFrame === event.sender.mainFrame,
+			}),
 			windows: [window],
 		});
 	}
 
-	const server = notificationsApp.listen(
-		env.DESKTOP_NOTIFICATIONS_PORT,
-		"127.0.0.1",
-		() => {
-			console.log(
-				`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
-			);
-		},
-	);
-
-	// Non-LLM event watcher → fires POST /agent/invoke. Opt-in via ~/agents/watchers.json.
-	const agentWatcher = new AgentWatcher(env.DESKTOP_NOTIFICATIONS_PORT);
-	agentWatcher.start();
-
-	if (env.NODE_ENV === "development") {
-		configureTestServer(() => window);
-		testServerApp.listen(TEST_SERVER_PORT, "127.0.0.1", () => {
-			console.log(
-				`[test-server] Listening on http://127.0.0.1:${TEST_SERVER_PORT}`,
-			);
-		});
-	}
-
-	const notificationManager = new NotificationManager({
-		isSupported: () => Notification.isSupported(),
-		createNotification: (opts) => new Notification(opts),
-		playSound: playNotificationSound,
-		onNotificationClick: (ids) => {
-			window.show();
-			window.focus();
-			notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
-		},
-		getVisibilityContext: () => ({
-			isFocused: window.isFocused(),
-			currentWorkspaceId: extractWorkspaceIdFromUrl(
-				window.webContents.getURL(),
-			),
-			tabsState: appState.data?.tabsState,
-		}),
-		getWorkspaceName: getWorkspaceNameFromDb,
-		getNotificationTitle: (event) =>
-			getNotificationTitle({
-				tabId: event.tabId,
-				paneId: event.paneId,
-				tabs: appState.data?.tabsState?.tabs,
-				panes: appState.data?.tabsState?.panes,
-			}),
-	});
-	notificationManager.start();
-
-	notificationsEmitter.on(
-		NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
-		(event: AgentLifecycleEvent) => {
-			notificationManager.handleAgentLifecycle(event);
-		},
-	);
-
-	// Forward low-volume terminal lifecycle events to the renderer via the existing
-	// notifications subscription. This is used only for correctness (e.g. clearing
-	// stuck agent lifecycle statuses when terminal panes aren't mounted).
-	getWorkspaceRuntimeRegistry()
-		.getDefault()
-		.terminal.on(
-			"terminalExit",
-			(event: {
-				paneId: string;
-				exitCode: number;
-				signal?: number;
-				reason?: "killed" | "exited" | "error";
-			}) => {
-				notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
-					paneId: event.paneId,
-					exitCode: event.exitCode,
-					signal: event.signal,
-					reason: event.reason,
-				});
+	let server: ReturnType<typeof notificationsApp.listen> | null = null;
+	let agentWatcher: AgentWatcher | null = null;
+	let notificationManager: NotificationManager | null = null;
+	if (!safeMode && !packagedSmoke) {
+		server = notificationsApp.listen(
+			env.DESKTOP_NOTIFICATIONS_PORT,
+			"127.0.0.1",
+			() => {
+				console.log(
+					`[notifications] Listening on http://127.0.0.1:${env.DESKTOP_NOTIFICATIONS_PORT}`,
+				);
 			},
 		);
+
+		// Non-LLM event watcher → fires POST /agent/invoke. Opt-in via ~/agents/watchers.json.
+		agentWatcher = new AgentWatcher(env.DESKTOP_NOTIFICATIONS_PORT);
+		agentWatcher.start();
+
+		if (env.NODE_ENV === "development") {
+			configureTestServer(() => window);
+			testServerApp.listen(TEST_SERVER_PORT, "127.0.0.1", () => {
+				console.log(
+					`[test-server] Listening on http://127.0.0.1:${TEST_SERVER_PORT}`,
+				);
+			});
+		}
+
+		const activeNotificationManager = new NotificationManager({
+			isSupported: () => Notification.isSupported(),
+			createNotification: (opts) => new Notification(opts),
+			playSound: playNotificationSound,
+			onNotificationClick: (ids) => {
+				window.show();
+				window.focus();
+				notificationsEmitter.emit(NOTIFICATION_EVENTS.FOCUS_TAB, ids);
+			},
+			getVisibilityContext: () => ({
+				isFocused: window.isFocused(),
+				currentWorkspaceId: extractWorkspaceIdFromUrl(
+					window.webContents.getURL(),
+				),
+				tabsState: appState.data?.tabsState,
+			}),
+			getWorkspaceName: getWorkspaceNameFromDb,
+			getNotificationTitle: (event) =>
+				getNotificationTitle({
+					tabId: event.tabId,
+					paneId: event.paneId,
+					tabs: appState.data?.tabsState?.tabs,
+					panes: appState.data?.tabsState?.panes,
+				}),
+		});
+		notificationManager = activeNotificationManager;
+		activeNotificationManager.start();
+
+		notificationsEmitter.on(
+			NOTIFICATION_EVENTS.AGENT_LIFECYCLE,
+			(event: AgentLifecycleEvent) => {
+				activeNotificationManager.handleAgentLifecycle(event);
+			},
+		);
+
+		// Forward low-volume terminal lifecycle events to the renderer via the existing
+		// notifications subscription. This is used only for correctness (e.g. clearing
+		// stuck agent lifecycle statuses when terminal panes aren't mounted).
+		getWorkspaceRuntimeRegistry()
+			.getDefault()
+			.terminal.on(
+				"terminalExit",
+				(event: {
+					paneId: string;
+					exitCode: number;
+					signal?: number;
+					reason?: "killed" | "exited" | "error";
+				}) => {
+					notificationsEmitter.emit(NOTIFICATION_EVENTS.TERMINAL_EXIT, {
+						paneId: event.paneId,
+						exitCode: event.exitCode,
+						signal: event.signal,
+						reason: event.reason,
+					});
+				},
+			);
+	}
 
 	// macOS Sequoia+: occluded/minimized windows can lose compositor layers
 	if (PLATFORM.IS_MAC) {
@@ -291,7 +341,7 @@ export async function MainWindow() {
 		if (savedWindowState?.zoomLevel !== undefined) {
 			window.webContents.setZoomLevel(savedWindowState.zoomLevel);
 		}
-		window.show();
+		if (!packagedSmoke) window.show();
 	});
 
 	window.webContents.on(
@@ -300,20 +350,23 @@ export async function MainWindow() {
 			console.error("[main-window] Failed to load renderer:");
 			console.error(`  Error code: ${errorCode}`);
 			console.error(`  Description: ${errorDescription}`);
-			console.error(`  URL: ${validatedURL}`);
+			console.error(`  URL: ${redactWindowUrlForLogs(validatedURL)}`);
 			// Show the window anyway so user can see something is wrong
-			window.show();
+			if (!packagedSmoke) window.show();
+			void packagedSmokeController?.fail();
 		},
 	);
 
 	window.webContents.on("render-process-gone", (_event, details) => {
 		console.error("[main-window] Renderer process gone:", details);
+		void packagedSmokeController?.fail();
 	});
 
 	window.webContents.on("preload-error", (_event, preloadPath, error) => {
 		console.error("[main-window] Preload script error:");
 		console.error(`  Path: ${preloadPath}`);
 		console.error(`  Error:`, error);
+		void packagedSmokeController?.fail();
 	});
 
 	window.on("close", () => {
@@ -331,12 +384,14 @@ export async function MainWindow() {
 		});
 
 		browserManager.unregisterAll();
-		server.close();
-		agentWatcher.stop();
-		notificationManager.dispose();
+		server?.close();
+		agentWatcher?.stop();
+		notificationManager?.dispose();
 		notificationsEmitter.removeAllListeners();
 		// Remove terminal listeners to prevent duplicates when window reopens on macOS
-		getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+		if (!safeMode) {
+			getWorkspaceRuntimeRegistry().getDefault().terminal.detachAllListeners();
+		}
 		// Detach window from IPC handler (handler stays alive for window reopen)
 		ipcHandler?.detachWindow(window);
 		currentWindow = null;

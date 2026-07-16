@@ -3,7 +3,11 @@ import { Button } from "@superset/ui/button";
 import { toast } from "@superset/ui/sonner";
 import { HiMiniXMark } from "react-icons/hi2";
 import { electronTrpc } from "renderer/lib/electron-trpc";
-import { AUTO_UPDATE_STATUS } from "shared/auto-update";
+import {
+	AUTO_UPDATE_READY_ACTION,
+	AUTO_UPDATE_STATUS,
+	type AutoUpdateReadyAction,
+} from "shared/auto-update";
 
 interface UpdateToastProps {
 	toastId: string | number;
@@ -11,6 +15,7 @@ interface UpdateToastProps {
 	version?: string;
 	error?: string;
 	progress?: number;
+	readyAction?: AutoUpdateReadyAction;
 }
 
 export function UpdateToast({
@@ -19,6 +24,7 @@ export function UpdateToast({
 	version,
 	error,
 	progress,
+	readyAction,
 }: UpdateToastProps) {
 	const openUrl = electronTrpc.external.openUrl.useMutation();
 	const downloadMutation = electronTrpc.autoUpdate.download.useMutation();
@@ -33,6 +39,8 @@ export function UpdateToast({
 	const isDownloading = status === AUTO_UPDATE_STATUS.DOWNLOADING;
 	const isReady = status === AUTO_UPDATE_STATUS.READY;
 	const isError = status === AUTO_UPDATE_STATUS.ERROR;
+	const opensInstaller =
+		readyAction === AUTO_UPDATE_READY_ACTION.OPEN_INSTALLER;
 
 	const handleSeeChanges = () => {
 		openUrl.mutate(COMPANY.CHANGELOG_URL);
@@ -96,9 +104,13 @@ export function UpdateToast({
 					<>
 						<span className="font-medium text-sm">Update available</span>
 						<span className="text-sm text-muted-foreground">
-							{version
-								? `Version ${version} is ready to install`
-								: "Ready to install"}
+							{opensInstaller
+								? version
+									? `Verified installer for version ${version} is ready to open`
+									: "Verified installer is ready to open"
+								: version
+									? `Version ${version} is ready to install`
+									: "Ready to install"}
 						</span>
 					</>
 				)}
@@ -142,7 +154,13 @@ export function UpdateToast({
 						onClick={handleInstall}
 						disabled={installMutation.isPending}
 					>
-						{installMutation.isPending ? "Installing..." : "Install"}
+						{installMutation.isPending
+							? opensInstaller
+								? "Opening..."
+								: "Restarting..."
+							: opensInstaller
+								? "Open Installer"
+								: "Restart to Install"}
 					</Button>
 				</div>
 			)}

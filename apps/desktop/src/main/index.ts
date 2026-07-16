@@ -20,36 +20,56 @@ import { getWorkspaceName } from "shared/env.shared";
 import { removeLegacyAgentCodexAuthFiles } from "./lib/agent-home";
 import { backfillAgentMemory } from "./lib/agent-memory-backfill";
 import { setupAgentHooks } from "./lib/agent-setup";
-import { SUPERSET_HOME_DIR } from "./lib/app-environment";
+import {
+	ensureSupersetHomeDirExists,
+	SUPERSET_HOME_DIR,
+} from "./lib/app-environment";
 import { initAppState } from "./lib/app-state";
-import { startAppStateWatcher } from "./lib/app-state/watcher";
+import { appStateWatcher, startAppStateWatcher } from "./lib/app-state/watcher";
 import { setupAutoUpdater } from "./lib/auto-updater";
+import {
+	getBootRuntimeStatus,
+	getStartupCapabilities,
+} from "./lib/diagnostics/boot-state";
+import {
+	getDiagnosticsLogger,
+	logAppStateRecovery,
+} from "./lib/diagnostics/logger";
 import { setWorkspaceDockIcon } from "./lib/dock-icon";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
-import { localDb } from "./lib/local-db";
+import { initializeLocalDatabase, localDb } from "./lib/local-db";
+import { getActivePackagedSmokeStartup } from "./lib/packaged-smoke";
 import {
 	ensureProjectIconsDir,
 	ensureWorkspaceIconsDir,
 	getIconPath,
 } from "./lib/project-icons";
 import { reconcileSshTunnels } from "./lib/remote/tunnel-manager";
+import { hasSingleInstanceLock } from "./lib/single-instance";
 import {
+	initializeSubscriptionProfiles,
 	pruneOrphanedSubscriptionHomes,
-	setSubscriptionProfilesUserDataPathResolver,
 } from "./lib/subscription-profiles";
 import {
+	assertSensitiveSyncIgnoreReady,
+	ensureSensitiveSyncIgnore,
+} from "./lib/sync/sensitive-ignore";
+import {
+	getServiceTerminalManager,
 	prewarmTerminalRuntime,
 	reconcileServiceSessions,
 } from "./lib/terminal";
+import { getTerminalHostClient } from "./lib/terminal-host/client";
 import { disposeTray, initTray } from "./lib/tray";
 import { MainWindow } from "./windows/main";
 
 console.log("[main] Local database ready:", !!localDb);
 
+const packagedSmokeStartup = getActivePackagedSmokeStartup();
+
 // Local build: set userData to our workspace-specific dir so singleton lock
 // doesn't conflict with the production Superset.app
 app.setPath("userData", SUPERSET_HOME_DIR);
-setSubscriptionProfilesUserDataPathResolver(() => app.getPath("userData"));
 
 // Dev mode: label the app with the workspace name so multiple worktrees are distinguishable
 if (process.env.NODE_ENV === "development") {
@@ -62,7 +82,10 @@ if (process.env.NODE_ENV === "development") {
 // Dev mode: register with execPath + app script so macOS launches Electron with
 // our entry point. Isolated startup smoke tests opt out to avoid touching the
 // user's OS protocol registration.
-if (process.env.ADE_DISABLE_PROTOCOL_REGISTRATION !== "1") {
+if (
+	!packagedSmokeStartup &&
+	process.env.ADE_DISABLE_PROTOCOL_REGISTRATION !== "1"
+) {
 	if (process.defaultApp) {
 		if (process.argv.length >= 2) {
 			app.setAsDefaultProtocolClient(PROTOCOL_SCHEME, process.execPath, [
@@ -166,8 +189,25 @@ export function quitWithoutConfirmation(): void {
 	app.exit(0);
 }
 
+async function quitPackagedSmokeCleanly(exitCode: number): Promise<void> {
+	setSkipQuitConfirmation();
+	try {
+		await getTerminalHostClient().shutdownIfRunning({ killSessions: true });
+	} catch {
+		// The runner independently checks terminal-host.pid and tree-kills any
+		// detached fallback before deleting the isolated home.
+	}
+	process.exitCode = exitCode;
+	app.quit();
+}
+
 app.on("before-quit", async (event) => {
 	if (isQuitting) return;
+	if (packagedSmokeStartup) {
+		isQuitting = true;
+		disposeTray();
+		return;
+	}
 
 	const isDev = process.env.NODE_ENV === "development";
 	const shouldConfirm =
@@ -195,16 +235,6 @@ app.on("before-quit", async (event) => {
 	isQuitting = true;
 	disposeTray();
 	app.exit(0);
-});
-
-process.on("uncaughtException", (error) => {
-	if (isQuitting) return;
-	console.error("[main] Uncaught exception:", error);
-});
-
-process.on("unhandledRejection", (reason) => {
-	if (isQuitting) return;
-	console.error("[main] Unhandled rejection:", reason);
 });
 
 // Without these handlers, Electron may not quit when electron-vite sends SIGTERM
@@ -238,19 +268,7 @@ if (process.env.NODE_ENV === "development") {
 	parentCheckInterval.unref();
 }
 
-protocol.registerSchemesAsPrivileged([
-	{
-		scheme: "superset-icon",
-		privileges: {
-			standard: true,
-			secure: true,
-			bypassCSP: true,
-			supportFetchAPI: true,
-		},
-	},
-]);
-
-const gotTheLock = app.requestSingleInstanceLock();
+const gotTheLock = hasSingleInstanceLock();
 
 if (!gotTheLock) {
 	app.exit(0);
@@ -266,7 +284,47 @@ if (!gotTheLock) {
 
 	(async () => {
 		await app.whenReady();
-		registerWithMacOSNotificationCenter();
+		const bootStatus = getBootRuntimeStatus();
+		const startup = getStartupCapabilities(bootStatus.safeMode);
+		getDiagnosticsLogger()[bootStatus.safeMode ? "warn" : "info"](
+			"startup.mode",
+			bootStatus,
+		);
+		ensureSupersetHomeDirExists();
+		await initializeLocalDatabase();
+		let sensitiveSyncIgnoreReady = true;
+		try {
+			ensureSensitiveSyncIgnore(SUPERSET_HOME_DIR);
+		} catch {
+			sensitiveSyncIgnoreReady = false;
+			console.error("[main] Failed to update managed sync ignores");
+		}
+		try {
+			assertSensitiveSyncIgnoreReady({
+				ignoreReady: sensitiveSyncIgnoreReady,
+			});
+		} catch {
+			app.quit();
+			return;
+		}
+
+		const subscriptionStorage = await initializeSubscriptionProfiles({
+			adeHomeDir: SUPERSET_HOME_DIR,
+			stopTerminalSessions: async () => {
+				await getServiceTerminalManager().shutdownForSubscriptionProfileMigration();
+			},
+			resetTerminalService: () => {
+				getServiceTerminalManager().reset();
+			},
+		});
+		if (subscriptionStorage.warning) {
+			console.warn(
+				"[main] Provider account storage warning:",
+				subscriptionStorage.warning,
+			);
+		}
+		if (!packagedSmokeStartup && startup.notifications)
+			registerWithMacOSNotificationCenter();
 
 		// Must register on both default session and the app's custom partition
 		const iconProtocolHandler = (request: Request) => {
@@ -293,69 +351,95 @@ if (!gotTheLock) {
 		// Boot-phase markers: each awaited step below can block window creation,
 		// so log entry/exit to make a boot hang localizable from the log alone.
 		console.log("[main] boot: initAppState…");
-		await initAppState();
-		startAppStateWatcher();
+		await initAppState({
+			beforeOverwrite: (displacedPath) =>
+				appStateWatcher.captureBeforeOverwrite(displacedPath),
+			onDiagnosticEvent: logAppStateRecovery,
+		});
+		if (!packagedSmokeStartup && startup.appStateWatcher)
+			await startAppStateWatcher();
 
 		console.log("[main] boot: loadWebviewBrowserExtension…");
-		await loadWebviewBrowserExtension();
+		if (!bootStatus.safeMode && !packagedSmokeStartup)
+			await loadWebviewBrowserExtension();
 
 		// Must happen before renderer restore runs
 		console.log("[main] boot: reconcileServiceSessions…");
-		await reconcileServiceSessions();
-		void reconcileSshTunnels().catch((error) => {
-			console.warn("[main] Failed to reconcile managed SSH tunnels:", error);
-		});
-		prewarmTerminalRuntime();
+		if (!packagedSmokeStartup && startup.terminalRestore)
+			await reconcileServiceSessions();
+		if (!packagedSmokeStartup && startup.sshTunnels) {
+			void reconcileSshTunnels().catch((error) => {
+				getDiagnosticsLogger().warn("ssh-tunnels.reconcile.failed", { error });
+			});
+		}
+		if (!packagedSmokeStartup && startup.terminalPrewarm)
+			prewarmTerminalRuntime();
 
-		try {
-			setupAgentHooks();
-		} catch (error) {
-			console.error("[main] Failed to set up agent hooks:", error);
+		if (!packagedSmokeStartup && startup.agentHooks) {
+			try {
+				setupAgentHooks();
+			} catch (error) {
+				getDiagnosticsLogger().error("agent-hooks.setup.failed", { error });
+			}
 		}
 
 		console.log("[main] boot: makeAppSetup (create window)…");
-		await makeAppSetup(() => MainWindow());
+		await makeAppSetup(() =>
+			MainWindow({
+				safeMode: bootStatus.safeMode,
+				packagedSmoke: packagedSmokeStartup ?? undefined,
+				onPackagedSmokeComplete: (exitCode) => {
+					// Let tRPC flush its response before Electron starts closing windows.
+					setTimeout(() => {
+						void quitPackagedSmokeCleanly(exitCode);
+					}, 100);
+				},
+			}),
+		);
 		console.log("[main] boot: window created");
-		setupAutoUpdater();
-		initTray();
+		if (!packagedSmokeStartup && startup.autoUpdater) setupAutoUpdater();
+		if (!packagedSmokeStartup && startup.tray) initTray();
 
 		// One-time: bring agents created before the memory scaffold was enabled
 		// up to spec (idempotent + self-guarding; no-op when the flag is off).
 		// Deliberately OFF the critical boot path — scheduled after the window is
 		// up and fire-and-forget — so a slow or broken backfill can NEVER delay or
 		// brick window creation. Runs on a macrotask so it can't block this tick.
-		setTimeout(() => {
-			try {
-				const prunedHomes = pruneOrphanedSubscriptionHomes();
-				if (prunedHomes > 0) {
-					console.info(
-						`[main] Pruned ${prunedHomes} orphaned provider ${prunedHomes === 1 ? "home" : "homes"}`,
-					);
+		if (!bootStatus.safeMode && !packagedSmokeStartup)
+			setTimeout(() => {
+				try {
+					const prunedHomes = pruneOrphanedSubscriptionHomes();
+					if (prunedHomes > 0) {
+						console.info(
+							`[main] Pruned ${prunedHomes} orphaned provider ${prunedHomes === 1 ? "home" : "homes"}`,
+						);
+					}
+				} catch (error) {
+					console.error("[main] Provider home cleanup failed:", error);
 				}
-			} catch (error) {
-				console.error("[main] Provider home cleanup failed:", error);
-			}
-			try {
-				const removedAuthFiles = removeLegacyAgentCodexAuthFiles();
-				if (removedAuthFiles > 0) {
-					console.info(
-						`[main] Removed ${removedAuthFiles} legacy Codex credential ${removedAuthFiles === 1 ? "copy" : "copies"}`,
-					);
+				try {
+					const removedAuthFiles = removeLegacyAgentCodexAuthFiles();
+					if (removedAuthFiles > 0) {
+						console.info(
+							`[main] Removed ${removedAuthFiles} legacy Codex credential ${removedAuthFiles === 1 ? "copy" : "copies"}`,
+						);
+					}
+					backfillAgentMemory();
+				} catch (error) {
+					console.error("[main] Memory backfill failed:", error);
 				}
-				backfillAgentMemory();
-			} catch (error) {
-				console.error("[main] Memory backfill failed:", error);
-			}
-		}, 0);
+			}, 0);
 
 		// Process any deep links from cold start
-		const coldStartUrl = findDeepLinkInArgv(process.argv);
-		if (coldStartUrl) {
-			await processDeepLink(coldStartUrl);
-		}
-		if (pendingDeepLinkUrl) {
-			await processDeepLink(pendingDeepLinkUrl);
-			pendingDeepLinkUrl = null;
+		if (!bootStatus.safeMode) {
+			const coldStartUrl = findDeepLinkInArgv(process.argv);
+			if (coldStartUrl) {
+				await processDeepLink(coldStartUrl);
+			}
+			if (pendingDeepLinkUrl) {
+				await processDeepLink(pendingDeepLinkUrl);
+				pendingDeepLinkUrl = null;
+			}
 		}
 
 		appReady = true;
